@@ -119,18 +119,23 @@ async fn login(
     };
     start_session(&state, creds).await?;
 
+    // Вход уже выполнен: ошибки сохранения настроек/пароля не отменяют его,
+    // а показываются пользователю предупреждением.
     let s = Settings { host, port, username };
-    settings::save(&app, &s)?;
-
-    let warning = if remember {
-        settings::store_password(&s, &password).err().map(|e| {
+    let mut warnings = Vec::new();
+    if let Err(e) = settings::save(&app, &s) {
+        log::warn!("settings not saved: {e}");
+        warnings.push(format!("Не удалось сохранить настройки подключения: {e}."));
+    }
+    if remember {
+        if let Err(e) = settings::store_password(&s, &password) {
             log::warn!("keyring unavailable: {e}");
-            "Не удалось сохранить пароль в системном хранилище — при следующем запуске его нужно будет ввести снова.".to_string()
-        })
+            warnings.push("Не удалось сохранить пароль в системном хранилище — при следующем запуске его нужно будет ввести снова.".to_string());
+        }
     } else {
         settings::forget_password(&s);
-        None
-    };
+    }
+    let warning = (!warnings.is_empty()).then(|| warnings.join(" "));
 
     Ok(LoginResult {
         account: account_of(&s),
@@ -185,10 +190,30 @@ async fn list_folders(state: State<'_, AppState>) -> Result<Vec<Folder>> {
 async fn list_messages(
     state: State<'_, AppState>,
     folder: String,
-    offset: u32,
+    before_uid: Option<u32>,
     limit: u32,
 ) -> Result<MessagePage> {
-    with_conn!(state, c => imap::list_messages(c, &folder, offset, limit))
+    with_conn!(state, c => imap::list_messages(c, &folder, before_uid, limit))
+}
+
+/// Текстовый отчёт о том, что отвечает сервер (без пароля) — для разбора проблем.
+#[tauri::command]
+async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> Result<String> {
+    let header = state
+        .creds
+        .lock()
+        .await
+        .clone()
+        .map(|c| format!("Сервер: {}:{}, пользователь: {}\n", c.host, c.port, c.username))
+        .unwrap_or_default();
+    // Отдельное соединение: диагностика не должна повлиять на рабочую сессию.
+    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let mut conn = imap::connect(&creds).await?;
+    let report = tokio::time::timeout(OP_TIMEOUT * 2, imap::diagnostics(&mut conn, folder.as_deref()))
+        .await
+        .map_err(|_| AppError::Timeout)??;
+    conn.logout().await;
+    Ok(format!("{header}{report}"))
 }
 
 #[tauri::command]
@@ -260,6 +285,7 @@ pub fn run() {
             get_message,
             set_flag,
             save_attachment,
+            diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RRCKI Mail");

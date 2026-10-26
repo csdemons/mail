@@ -39,6 +39,7 @@ impl std::fmt::Debug for Credentials {
 pub struct Connection {
     session: ImapSession,
     selected: Option<String>,
+    creds: Credentials,
 }
 
 /// TLS-подключение (IMAPS) и вход. Сертификат проверяется через системное
@@ -86,6 +87,7 @@ pub async fn connect(creds: &Credentials) -> Result<Connection> {
     Ok(Connection {
         session,
         selected: None,
+        creds: creds.clone(),
     })
 }
 
@@ -109,14 +111,38 @@ impl Connection {
         Ok(())
     }
 
+    /// Новое соединение вместо текущего (после рассинхронизации протокола).
+    async fn reconnect(&mut self) -> Result<()> {
+        log::warn!("IMAP: reconnecting after protocol desync");
+        let fresh = connect(&self.creds).await?;
+        let old = std::mem::replace(self, fresh);
+        drop(old); // старое соединение в неизвестном состоянии — просто закрываем сокет
+        Ok(())
+    }
+
+    /// SELECT с проверкой: ответ без обязательного UIDVALIDITY означает, что
+    /// поток ответов рассинхронизирован (сервер прислал то, что библиотека не
+    /// разобрала). В этом случае переподключаемся и повторяем один раз,
+    /// иначе папка выглядела бы «пустой» без всякой ошибки.
     async fn select(&mut self, folder: &str) -> Result<async_imap::types::Mailbox> {
-        self.selected = None;
-        let mailbox = self.session.select(folder).await.map_err(|e| match e {
-            async_imap::error::Error::No(_) => AppError::NotFound,
-            other => other.into(),
-        })?;
-        self.selected = Some(folder.to_string());
-        Ok(mailbox)
+        for attempt in 0..2 {
+            self.selected = None;
+            let mailbox = self.session.select(folder).await.map_err(|e| match e {
+                async_imap::error::Error::No(_) => AppError::NotFound,
+                other => other.into(),
+            })?;
+            if mailbox.uid_validity.is_some() {
+                self.selected = Some(folder.to_string());
+                return Ok(mailbox);
+            }
+            if attempt == 0 {
+                self.reconnect().await?;
+            }
+        }
+        Err(AppError::Imap(format!(
+            "сервер не вернул UIDVALIDITY для папки «{}»",
+            utf7_imap::decode_utf7_imap(folder.to_string())
+        )))
     }
 }
 
@@ -294,12 +320,23 @@ pub fn build_folder_tree(raw: Vec<RawFolder>) -> Vec<Folder> {
 }
 
 pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
-    let names: Vec<_> = conn
+    let mut names: Vec<_> = conn
         .session
         .list(Some(""), Some("*"))
         .await?
         .try_collect()
         .await?;
+    // INBOX есть у любого сервера; без него ответ LIST — признак
+    // рассинхронизированного соединения.
+    if !names.iter().any(|n| n.name().eq_ignore_ascii_case("INBOX")) {
+        conn.reconnect().await?;
+        names = conn
+            .session
+            .list(Some(""), Some("*"))
+            .await?
+            .try_collect()
+            .await?;
+    }
 
     let mut raw = Vec::new();
     for name in &names {
@@ -331,19 +368,21 @@ pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
     let mut folders = build_folder_tree(raw);
     for folder in folders.iter_mut().filter(|f| f.selectable) {
         // STATUS не должен ронять весь список, если одна папка недоступна.
+        // Отказ сервера (NO/BAD) — просто нет счётчика. Любая другая ошибка
+        // (неразобранный ответ, обрыв) портит соединение: переподключаемся.
         match conn.session.status(&folder.id, "(MESSAGES UNSEEN)").await {
             Ok(mb) => {
                 folder.total = mb.exists;
                 folder.unseen = mb.unseen.unwrap_or(0);
             }
+            Err(async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_)) => {}
             Err(e) => {
-                let e: AppError = e.into();
-                if e.is_connection() {
-                    return Err(e);
-                }
+                log::warn!("STATUS {} failed: {e}", folder.id);
+                conn.reconnect().await?;
             }
         }
     }
+    conn.selected = None;
     Ok(folders)
 }
 
@@ -428,6 +467,41 @@ fn repair_display_address(name: String, address: String) -> (String, String) {
     (name, address)
 }
 
+fn has_param(params: &async_imap::imap_proto::types::BodyParams<'_>, names: &[&str]) -> bool {
+    params
+        .as_ref()
+        .is_some_and(|list| list.iter().any(|(k, _)| names.iter().any(|n| k.eq_ignore_ascii_case(n))))
+}
+
+/// Есть ли во вложенной структуре MIME части-файлы: часть с
+/// `Content-Disposition: attachment`, нетекстовая часть с именем файла или
+/// вложенное письмо (message/rfc822).
+fn has_attachment_part(bs: &async_imap::imap_proto::types::BodyStructure<'_>) -> bool {
+    use async_imap::imap_proto::types::BodyStructure as B;
+    fn walk(bs: &B<'_>, is_root: bool) -> bool {
+        match bs {
+            B::Multipart { bodies, .. } => bodies.iter().any(|b| walk(b, false)),
+            B::Message { .. } => !is_root,
+            B::Basic { common, .. } | B::Text { common, .. } => {
+                if is_root {
+                    return false;
+                }
+                let disposition_attachment = common
+                    .disposition
+                    .as_ref()
+                    .is_some_and(|d| d.ty.eq_ignore_ascii_case("attachment"));
+                let named = has_param(&common.ty.params, &["name"])
+                    || common
+                        .disposition
+                        .as_ref()
+                        .is_some_and(|d| has_param(&d.params, &["filename", "filename*"]));
+                disposition_attachment || (named && matches!(bs, B::Basic { .. }))
+            }
+        }
+    }
+    walk(bs, true)
+}
+
 fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'_>>) -> MessageSummary {
     let flags: Vec<Flag<'_>> = fetch.flags().collect();
     let has = |f: &Flag<'_>| flags.iter().any(|x| x == f);
@@ -449,13 +523,7 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
         .map(|d| d.to_rfc3339())
         .or_else(|| msg.and_then(|m| m.date()).map(|d| d.to_rfc3339()));
 
-    let has_attachments = msg
-        .and_then(|m| m.content_type())
-        .map(|ct| {
-            ct.ctype().eq_ignore_ascii_case("multipart")
-                && ct.subtype().is_some_and(|s| s.eq_ignore_ascii_case("mixed"))
-        })
-        .unwrap_or(false);
+    let has_attachments = fetch.bodystructure().is_some_and(has_attachment_part);
 
     MessageSummary {
         folder: folder.to_string(),
@@ -477,51 +545,58 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
     }
 }
 
-/// Страница писем, новые сверху. Загружаются только заголовки нужной страницы,
-/// а не весь ящик.
+/// Страница писем, новые сверху. Курсор — UID: `before_uid` = UID последнего
+/// уже показанного письма. В отличие от номеров сообщений UID не сдвигаются,
+/// когда в папку приходят или из неё удаляются письма, поэтому догрузка не
+/// даёт пропусков и повторов. Загружаются только заголовки нужной страницы.
 pub async fn list_messages(
     conn: &mut Connection,
     folder: &str,
-    offset: u32,
+    before_uid: Option<u32>,
     limit: u32,
 ) -> Result<MessagePage> {
     let mailbox = conn.select(folder).await?;
     let total = mailbox.exists;
-    let limit = limit.clamp(1, 200);
+    let limit = limit.clamp(1, 200) as usize;
 
-    if total == 0 || offset >= total {
+    if total == 0 {
         return Ok(MessagePage { items: Vec::new(), total, has_more: false });
     }
 
-    let end = total - offset;
-    let start = end.saturating_sub(limit - 1).max(1);
+    let mut uids: Vec<u32> = conn.session.uid_search("ALL").await?.into_iter().collect();
+    uids.sort_unstable_by(|a, b| b.cmp(a));
+    if let Some(before) = before_uid {
+        uids.retain(|uid| *uid < before);
+    }
+    let has_more = uids.len() > limit;
+    uids.truncate(limit);
+    if uids.is_empty() {
+        return Ok(MessagePage { items: Vec::new(), total, has_more: false });
+    }
 
+    let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
     let fetches: Vec<Fetch> = conn
         .session
-        .fetch(
-            format!("{start}:{end}"),
-            "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])",
+        .uid_fetch(
+            set,
+            "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER])",
         )
         .await?
         .try_collect()
         .await?;
 
     let parser = MessageParser::default();
-    let mut items: Vec<(u32, MessageSummary)> = fetches
+    let mut items: Vec<MessageSummary> = fetches
         .iter()
         .filter(|f| f.uid.is_some())
         .map(|f| {
             let parsed = f.header().and_then(|h| parser.parse_headers(h));
-            (f.message, summary_from(folder, f, parsed.as_ref()))
+            summary_from(folder, f, parsed.as_ref())
         })
         .collect();
-    items.sort_by_key(|(seq, _)| std::cmp::Reverse(*seq));
+    items.sort_by_key(|m| std::cmp::Reverse(m.uid));
 
-    Ok(MessagePage {
-        items: items.into_iter().map(|(_, s)| s).collect(),
-        total,
-        has_more: start > 1,
-    })
+    Ok(MessagePage { items, total, has_more })
 }
 
 async fn fetch_raw(conn: &mut Connection, folder: &str, uid: u32) -> Result<Fetch> {
@@ -578,12 +653,33 @@ pub fn sanitize_filename(name: &str) -> String {
             c => c,
         })
         .collect();
-    let cleaned = cleaned.trim().trim_matches('.').to_string();
+    let mut cleaned = cleaned
+        .trim()
+        .trim_start_matches('.')
+        .trim_end_matches(['.', ' '])
+        .to_string();
     if cleaned.is_empty() {
-        "attachment".to_string()
-    } else {
-        cleaned
+        return "attachment".to_string();
     }
+    // Зарезервированные имена Windows (CON, NUL, COM1 … в т.ч. с расширением).
+    let stem = cleaned.split('.').next().unwrap_or("").trim().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        cleaned.insert(0, '_');
+    }
+    // Слишком длинные имена режем, сохраняя расширение.
+    if cleaned.chars().count() > 180 {
+        let ext: String = cleaned
+            .rfind('.')
+            .map(|i| cleaned[i..].chars().take(16).collect())
+            .unwrap_or_default();
+        let head: String = cleaned.chars().take(180 - ext.chars().count()).collect();
+        cleaned = format!("{}{}", head.trim_end_matches(['.', ' ']), ext);
+    }
+    cleaned
 }
 
 pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Result<MessageDetail> {
@@ -673,6 +769,155 @@ pub async fn set_flag(
     Ok(())
 }
 
+// ---------------------------------------------------------------- диагностика
+
+/// Выполняет произвольную команду и возвращает все ответы сервера текстом.
+#[doc(hidden)]
+pub async fn raw_command(conn: &mut Connection, command: &str) -> Vec<String> {
+    use async_imap::imap_proto::types::Response;
+    let mut out = Vec::new();
+    let tag = match conn.session.run_command(command).await {
+        Ok(tag) => tag,
+        Err(e) => return vec![format!("ошибка отправки: {e}")],
+    };
+    loop {
+        match conn.session.read_response().await {
+            Ok(Some(resp)) => {
+                let done = matches!(resp.parsed(), Response::Done { tag: t, .. } if *t == tag);
+                out.push(format!("{:?}", resp.parsed()));
+                if done {
+                    break;
+                }
+            }
+            Ok(None) => {
+                out.push("соединение закрыто".into());
+                break;
+            }
+            Err(e) => {
+                out.push(format!("ошибка чтения: {e}"));
+                // Поток ответов сломан — дальше работаем через новое соединение.
+                if let Err(e) = conn.reconnect().await {
+                    out.push(format!("переподключение не удалось: {e}"));
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Отчёт для разбора проблем: что сервер отвечает на ключевые запросы.
+/// Пароль в отчёт не попадает. Папка открывается только на чтение (EXAMINE).
+pub async fn diagnostics(conn: &mut Connection, folder: Option<&str>) -> Result<String> {
+    use std::fmt::Write;
+    let mut r = String::new();
+    let _ = writeln!(r, "RRCKI Mail {} — диагностика IMAP", env!("CARGO_PKG_VERSION"));
+
+    let caps = conn.capabilities().await.unwrap_or_else(|e| vec![format!("ошибка: {e}")]);
+    let _ = writeln!(r, "\n## CAPABILITY\n{}", caps.join(" "));
+
+    let _ = writeln!(r, "\n## LIST \"\" \"*\"");
+    let mut ids = Vec::new();
+    let listed: std::result::Result<Vec<_>, String> = match conn.session.list(Some(""), Some("*")).await {
+        Ok(stream) => stream.try_collect::<Vec<_>>().await.map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    match listed {
+        Ok(names) => {
+            for n in &names {
+                let _ = writeln!(
+                    r,
+                    "{:?} | {:?} | {} | {}",
+                    n.attributes(),
+                    n.delimiter(),
+                    n.name(),
+                    utf7_imap::decode_utf7_imap(n.name().to_string())
+                );
+                if !n.attributes().iter().any(|a| matches!(a, NameAttribute::NoSelect)) {
+                    ids.push(n.name().to_string());
+                }
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(r, "ошибка: {e}");
+            conn.reconnect().await?;
+        }
+    }
+
+    let _ = writeln!(r, "\n## STATUS (MESSAGES UNSEEN) по папкам");
+    for id in &ids {
+        match conn.session.status(id, "(MESSAGES UNSEEN)").await {
+            Ok(mb) => {
+                let _ = writeln!(r, "ok  {id}: {} / {:?}", mb.exists, mb.unseen);
+            }
+            Err(e) => {
+                let fatal = !matches!(e, async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_));
+                let _ = writeln!(r, "ERR {id}: {e}{}", if fatal { " — соединение пересоздано" } else { "" });
+                if fatal {
+                    conn.reconnect().await?;
+                }
+            }
+        }
+    }
+
+    if let Some(folder) = folder {
+        conn.selected = None;
+        let _ = writeln!(r, "\n## EXAMINE {folder} ({})", utf7_imap::decode_utf7_imap(folder.to_string()));
+        match conn.session.examine(folder).await {
+            Ok(mb) => {
+                let _ = writeln!(
+                    r,
+                    "exists={} recent={} unseen={:?} uidvalidity={:?} uidnext={:?}",
+                    mb.exists, mb.recent, mb.unseen, mb.uid_validity, mb.uid_next
+                );
+                match conn.session.uid_search("ALL").await {
+                    Ok(uids) => {
+                        let mut uids: Vec<u32> = uids.into_iter().collect();
+                        uids.sort_unstable();
+                        let _ = writeln!(
+                            r,
+                            "UID SEARCH ALL: {} шт., первые {:?}, последние {:?}",
+                            uids.len(),
+                            &uids[..uids.len().min(5)],
+                            &uids[uids.len().saturating_sub(5)..]
+                        );
+                        if let Some(last) = uids.last() {
+                            let _ = writeln!(r, "UID FETCH {last} (FLAGS RFC822.SIZE BODYSTRUCTURE):");
+                            for line in raw_command(
+                                conn,
+                                &format!("UID FETCH {last} (UID FLAGS RFC822.SIZE BODYSTRUCTURE)"),
+                            )
+                            .await
+                            {
+                                let _ = writeln!(r, "{}", line.chars().take(1500).collect::<String>());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(r, "UID SEARCH ALL: ошибка: {e}");
+                    }
+                }
+                if mb.exists > 0 {
+                    let _ = writeln!(r, "FETCH {}:{} (UID FLAGS):", mb.exists.saturating_sub(2).max(1), mb.exists);
+                    for line in raw_command(
+                        conn,
+                        &format!("FETCH {}:{} (UID FLAGS)", mb.exists.saturating_sub(2).max(1), mb.exists),
+                    )
+                    .await
+                    {
+                        let _ = writeln!(r, "{line}");
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(r, "ошибка: {e}");
+            }
+        }
+        conn.selected = None;
+    }
+    Ok(r)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,6 +928,13 @@ mod tests {
         assert_eq!(sanitize_filename("C:\\Users\\x\\отчёт.docx"), "отчёт.docx");
         assert_eq!(sanitize_filename("a<b>:c?.txt"), "a_b__c_.txt");
         assert_eq!(sanitize_filename(".."), "attachment");
+        assert_eq!(sanitize_filename("con.txt"), "_con.txt");
+        assert_eq!(sanitize_filename("COM1"), "_COM1");
+        assert_eq!(sanitize_filename("report.pdf. . "), "report.pdf");
+        assert_eq!(sanitize_filename("console.log"), "console.log");
+        let long = format!("{}.docx", "я".repeat(300));
+        let cut = sanitize_filename(&long);
+        assert!(cut.ends_with(".docx") && cut.chars().count() <= 180);
         assert_eq!(sanitize_filename(""), "attachment");
     }
 

@@ -29,14 +29,20 @@ async fn main() {
     }
 
     let t = std::time::Instant::now();
-    let page = imap::list_messages(&mut conn, "INBOX", 0, 50).await.expect("page");
+    let page = imap::list_messages(&mut conn, "INBOX", None, 50).await.expect("page");
     println!("INBOX page: {} of {} (more: {}) in {:?}", page.items.len(), page.total, page.has_more, t.elapsed());
     for m in page.items.iter().take(5) {
         println!("  #{} {} | {} <{}> | att={} unread={} flagged={}", m.uid, m.subject, m.from_name, m.from_address, m.has_attachments, m.unread, m.flagged);
     }
-    if let Ok(last) = imap::list_messages(&mut conn, "INBOX", page.total.saturating_sub(10), 50).await {
-        println!("last page: {} items, more: {}", last.items.len(), last.has_more);
+    let mut cursor = page.items.last().map(|m| m.uid);
+    let mut seen = page.items.len();
+    while let Some(before) = cursor {
+        let next = imap::list_messages(&mut conn, "INBOX", Some(before), 50).await.expect("next page");
+        seen += next.items.len();
+        cursor = if next.has_more { next.items.last().map(|m| m.uid) } else { None };
     }
+    println!("paged through {seen} of {} messages", page.total);
+    println!("{}", imap::diagnostics(&mut conn, Some("INBOX")).await.expect("diag").lines().take(12).collect::<Vec<_>>().join("\n"));
 
     for m in page.items.iter().take(5) {
         let d = imap::get_message(&mut conn, "INBOX", m.uid).await.expect("message");

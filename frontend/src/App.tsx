@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Star, Sun, Trash2, Users, X,
+  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Star, Stethoscope, Sun, Trash2, Users, X, Copy,
 } from 'lucide-react'
 
 import {
@@ -100,6 +100,9 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<MailFilter>('Все')
 
+  const [diagText, setDiagText] = useState<string | null>(null)
+  const [diagBusy, setDiagBusy] = useState(false)
+
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new')
   const [recipient, setRecipient] = useState('')
@@ -155,7 +158,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
       setDetail(null)
     }
     try {
-      const page = await api.listMessages(folder, 0, PAGE_SIZE)
+      const page = await api.listMessages(folder, null, PAGE_SIZE)
       if (request !== listRequest.current) return
       setMessages(page.items)
       setTotal(page.total)
@@ -187,7 +190,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     const request = listRequest.current
     setLoadingMore(true)
     try {
-      const page = await api.listMessages(folderId, messages.length, PAGE_SIZE)
+      const oldest = messages.reduce<number | null>((min, m) => (min === null || m.uid < min ? m.uid : min), null)
+      const page = await api.listMessages(folderId, oldest, PAGE_SIZE)
       if (request !== listRequest.current) return
       setMessages((items) => {
         const known = new Set(items.map(messageKey))
@@ -259,6 +263,31 @@ export default function App({ account, initialNotice, onLogout }: Props) {
       patchMessage(key, { [field]: before })
       if (flag === 'seen') adjustUnseen(message.folder, after ? -1 : +1)
       setNotice(`Не удалось изменить письмо: ${errorText(error)}`)
+    }
+  }
+
+  async function runDiagnostics() {
+    setDiagBusy(true)
+    setDiagText('Сбор данных…')
+    try {
+      const report = await api.diagnostics(currentFolder?.selectable ? folderId : null)
+      setDiagText(`Папка в интерфейсе: ${currentFolder?.path ?? folderId}, загружено писем: ${messages.length}, сервер сообщал: ${currentFolder?.total ?? '?'}\n${report}`)
+    } catch (error) {
+      setDiagText(`Ошибка диагностики: ${errorText(error)}`)
+    } finally {
+      setDiagBusy(false)
+    }
+  }
+
+  async function copyDiagnostics() {
+    if (!diagText) return
+    try {
+      await navigator.clipboard.writeText(diagText)
+      setNotice('Отчёт скопирован в буфер обмена.')
+    } catch {
+      const area = document.querySelector<HTMLTextAreaElement>('.diag-text')
+      area?.select()
+      setNotice('Выделите текст и нажмите Ctrl+C.')
     }
   }
 
@@ -435,6 +464,10 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               <div className="empty-state">
                 <Inbox size={30} />
                 <strong>{messages.length === 0 ? 'Папка пуста' : 'Ничего не найдено'}</strong>
+                {messages.length === 0 && (currentFolder?.total ?? 0) > 0 && <>
+                  <span>Сервер сообщает о {currentFolder?.total} письмах в этой папке, но список не получен.</span>
+                  <button className="text-button" onClick={() => { setShowSettings(true); void runDiagnostics() }}>Открыть диагностику</button>
+                </>}
                 {messages.length > 0 && <>
                   <span>Поиск и фильтры работают по загруженным письмам.</span>
                   <button className="text-button" onClick={() => { setQuery(''); setFilter('Все') }}>Сбросить фильтры</button>
@@ -527,7 +560,14 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             <span className="status-pill">Подключён</span>
           </div>
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек.</span></div>
-          <div className="settings-actions"><button className="secondary-button" onClick={() => { setShowSettings(false); onLogout() }}><LogOut size={16} /> Выйти и забыть пароль</button></div>
+          <div className="settings-actions">
+            <button className="secondary-button" disabled={diagBusy} onClick={() => void runDiagnostics()}><Stethoscope size={16} /> Диагностика</button>
+            <button className="secondary-button" onClick={() => { setShowSettings(false); onLogout() }}><LogOut size={16} /> Выйти и забыть пароль</button>
+          </div>
+          {diagText !== null && <div className="diag-block">
+            <div className="diag-head"><span>Отчёт по текущей папке (пароль не включается)</span><button className="text-button" onClick={() => void copyDiagnostics()}><Copy size={14} /> Скопировать</button></div>
+            <textarea className="diag-text" readOnly value={diagText} />
+          </div>}
         </div>
       </div>}
     </div>

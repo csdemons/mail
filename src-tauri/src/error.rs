@@ -36,7 +36,9 @@ impl From<async_imap::error::Error> for AppError {
     fn from(err: async_imap::error::Error) -> Self {
         use async_imap::error::Error as E;
         match err {
-            E::Io(_) | E::ConnectionLost => AppError::ConnectionLost,
+            // Неразобранный/неожиданный ответ означает, что поток ответов
+            // рассинхронизирован, — соединение дальше использовать нельзя.
+            E::Io(_) | E::ConnectionLost | E::Parse(_) => AppError::ConnectionLost,
             E::No(msg) | E::Bad(msg) => AppError::Imap(msg.trim().to_string()),
             other => AppError::Imap(other.to_string()),
         }
