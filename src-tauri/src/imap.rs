@@ -210,6 +210,14 @@ pub struct RawFolder {
     pub selectable: bool,
 }
 
+/// Корень пространства имён общих/чужих ящиков (Dovecot/RuPost: `shared`).
+fn is_shared_root(id: &str) -> bool {
+    matches!(
+        id.to_lowercase().as_str(),
+        "shared" | "shared folders" | "other users" | "public folders"
+    )
+}
+
 fn parent_of(id: &str, delimiter: Option<&str>) -> Option<String> {
     let d = delimiter.filter(|d| !d.is_empty())?;
     id.rfind(d).map(|pos| id[..pos].to_string()).filter(|p| !p.is_empty())
@@ -250,19 +258,32 @@ pub fn build_folder_tree(raw: Vec<RawFolder>) -> Vec<Folder> {
             Some(d) => path.rsplit(d).next().unwrap_or(&path).to_string(),
             None => path.clone(),
         };
+        let delim = f.delimiter.as_deref().unwrap_or("/");
         let in_own_root = parent.as_deref().map_or(true, |p| p.eq_ignore_ascii_case("INBOX"));
+        // Папка верхнего уровня подключённого ящика: shared/<ящик>/<папка>.
+        let in_shared_mailbox = parent
+            .as_deref()
+            .and_then(|p| parent_of(p, Some(delim)))
+            .is_some_and(|root| parent_of(&root, Some(delim)).is_none() && is_shared_root(&root));
         let role = if f.id.eq_ignore_ascii_case("INBOX") {
             FolderRole::Inbox
         } else if let Some(role) = f.special_use {
             role
-        } else if in_own_root {
+        } else if in_own_root || in_shared_mailbox {
             role_by_name(&name)
         } else {
             FolderRole::Other
         };
-        let system = in_own_root
-            && f.selectable
-            && (f.id.eq_ignore_ascii_case("INBOX") || (role != FolderRole::Other && role != FolderRole::Inbox));
+        let system = f.selectable
+            && ((in_own_root
+                && (f.id.eq_ignore_ascii_case("INBOX")
+                    || (role != FolderRole::Other && role != FolderRole::Inbox)))
+                || (in_shared_mailbox && role != FolderRole::Other));
+        let name = if parent.is_none() && !f.selectable && is_shared_root(&f.id) {
+            "Подключённые ящики".to_string()
+        } else {
+            name
+        };
         children.entry(parent.clone()).or_default().push(f.id.clone());
         nodes.insert(
             f.id.clone(),
@@ -373,7 +394,8 @@ pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
         match conn.session.status(&folder.id, "(MESSAGES UNSEEN)").await {
             Ok(mb) => {
                 folder.total = mb.exists;
-                folder.unseen = mb.unseen.unwrap_or(0);
+                // RuPost иногда отдаёт мусорный UNSEEN (например, 4141792512 при 0 писем).
+                folder.unseen = mb.unseen.unwrap_or(0).min(mb.exists);
             }
             Err(async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_)) => {}
             Err(e) => {
@@ -971,6 +993,40 @@ mod tests {
     }
 
     #[test]
+    fn labels_rupost_shared_mailboxes() {
+        let list = vec![
+            raw("INBOX", None, true),
+            raw("shared", None, false),
+            raw("shared/noc@nrcki.ru", None, false),
+            raw("shared/noc@nrcki.ru/INBOX", None, true),
+            raw("shared/noc@nrcki.ru/Sent", None, true),
+            raw("shared/noc@nrcki.ru/imap", None, true),
+            raw("shared/_soc@nrcki.ru/INBOX/MaxPatrol", None, true),
+            raw("Archives", None, false),
+            raw("Archives/Archives", Some(FolderRole::Archive), true),
+        ];
+        let tree = build_folder_tree(list);
+        let view: Vec<(usize, &str, FolderRole, bool)> =
+            tree.iter().map(|f| (f.depth, f.name.as_str(), f.role, f.system)).collect();
+        assert_eq!(
+            view,
+            vec![
+                (0, "INBOX", FolderRole::Inbox, true),
+                (0, "Archives", FolderRole::Archive, false),
+                (1, "Archives", FolderRole::Archive, false),
+                (0, "Подключённые ящики", FolderRole::Other, false),
+                (1, "_soc@nrcki.ru", FolderRole::Other, false),
+                (2, "INBOX", FolderRole::Inbox, false),
+                (3, "MaxPatrol", FolderRole::Other, false),
+                (1, "noc@nrcki.ru", FolderRole::Other, false),
+                (2, "INBOX", FolderRole::Inbox, true),
+                (2, "Sent", FolderRole::Sent, true),
+                (2, "imap", FolderRole::Other, false),
+            ]
+        );
+    }
+
+    #[test]
     fn builds_tree_with_shared_mailboxes() {
         let list = vec![
             raw("Other Users", None, false),
@@ -1001,13 +1057,13 @@ mod tests {
                 (1, "2024", false, false),
                 (2, "Astra", false, true),
                 (0, "Проекты", false, true),
-                (0, "Other Users", false, false),
+                (0, "Подключённые ящики", false, false),
                 (1, "uex2016-06", false, false),
-                (2, "INBOX", false, true),
-                (2, "Sent", false, true),
+                (2, "INBOX", true, true),
+                (2, "Sent", true, true),
             ]
         );
-        // Чужие «Sent»/«INBOX» сохраняют роль для иконки, но не подписываются как свои.
+        // Папки подключённого ящика подписываются стандартно («Входящие», «Отправленные»).
         assert_eq!(tree[11].role, FolderRole::Sent);
         assert!(tree[0].has_children && tree[4].has_children && !tree[2].has_children);
         assert_eq!(tree[1].parent.as_deref(), Some("INBOX"));

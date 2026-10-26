@@ -44,7 +44,7 @@ function loadExpanded(): Set<string> {
     const raw = localStorage.getItem(EXPANDED_KEY)
     if (raw) return new Set(JSON.parse(raw) as string[])
   } catch { /* хранилище недоступно — используем значение по умолчанию */ }
-  return new Set(['INBOX'])
+  return new Set(['INBOX', 'shared'])
 }
 
 function saveExpanded(ids: Set<string>) {
@@ -388,9 +388,9 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               return f.selectable ? (
                 <button
                   key={f.id}
-                  className={`folder-item ${folderId === f.id ? 'selected' : ''}`}
+                  className={`folder-item ${folderId === f.id ? 'selected' : ''} ${f.total === 0 ? 'folder-empty' : ''}`}
                   style={indent}
-                  title={f.path}
+                  title={`${f.path} — ${f.total} ${pluralLetters(f.total)}${f.unseen ? `, непрочитанных ${f.unseen}` : ''}`}
                   onClick={() => setFolderId(f.id)}
                 >
                   {toggle}

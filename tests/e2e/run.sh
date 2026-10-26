@@ -4,6 +4,8 @@
 # dbus-run-session -- tests/e2e/run.sh tests/e2e/e2e.py /tmp/shots
 # Xvfb + D-Bus + разблокированный GNOME Keyring + tauri-driver
 export DISPLAY=:99
+# Приложение должно проверять сертификаты по системному хранилищу, как у пользователей.
+unset SSL_CERT_FILE SSL_CERT_DIR
 Xvfb :99 -screen 0 1600x1000x24 >/dev/null 2>&1 &
 XV=$!
 sleep 1

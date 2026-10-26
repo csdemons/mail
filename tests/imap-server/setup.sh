@@ -17,7 +17,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=RRCKI Mail Test CA
 openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" -keyout srv.key -out srv.csr 2>/dev/null
 printf "subjectAltName=DNS:localhost\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n" > ext.cnf
 openssl x509 -req -in srv.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 30 -extfile ext.cnf -out srv.crt 2>/dev/null
-cp ca.crt /usr/local/share/ca-certificates/rrcki-mail-test-ca.crt && update-ca-certificates >/dev/null
+cp ca.crt /usr/local/share/ca-certificates/rrcki-mail-test-ca.crt && update-ca-certificates --fresh >/dev/null
 
 id vmail >/dev/null 2>&1 || useradd -r -M -d "$T/mail" vmail
 chown -R vmail "$T/mail"; chmod 755 "$T"
