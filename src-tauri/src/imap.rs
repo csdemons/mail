@@ -224,7 +224,7 @@ pub fn build_folder_tree(raw: Vec<RawFolder>) -> Vec<Folder> {
             Some(d) => path.rsplit(d).next().unwrap_or(&path).to_string(),
             None => path.clone(),
         };
-        let in_own_root = parent.as_deref().is_none_or(|p| p.eq_ignore_ascii_case("INBOX"));
+        let in_own_root = parent.as_deref().map_or(true, |p| p.eq_ignore_ascii_case("INBOX"));
         let role = if f.id.eq_ignore_ascii_case("INBOX") {
             FolderRole::Inbox
         } else if let Some(role) = f.special_use {
