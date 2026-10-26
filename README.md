@@ -27,8 +27,18 @@ backend: один процесс на пользователя, как Outlook �
 - **Настройки → Диагностика**: отчёт о том, что сервер отвечает по текущей папке
   (CAPABILITY, LIST, STATUS, EXAMINE, SEARCH, FETCH), без пароля — для разбора проблем.
 
-Ещё **нет**: отправки (SMTP), перемещения/удаления, локального кэша (SQLite),
-серверного поиска, отображения HTML с оформлением, Exchange (EWS). См. «План».
+- **Отправка писем** через SMTP (по умолчанию `rp.rrcki.ru:465`, SMTPS; 587 — STARTTLS)
+  тем же логином и паролем: новое письмо, ответ (In-Reply-To/References), пересылка,
+  копия, вложения до 25 МБ, копия в «Отправленные» (IMAP APPEND), подсказки адресов
+  из контактов.
+- **Контакты** (CardDAV): адресные книги с сервера, поиск, карточка, «Написать».
+- **Календарь** (CalDAV): вид «Неделя», повторяющиеся события (RRULE, EXDATE, переносы),
+  события на весь день, часовые пояса (в т.ч. имена Windows/Outlook), несколько календарей.
+  Сервер находится автоматически: `/.well-known/caldav|carddav`, путь SOGo
+  (`/SOGo/dav/<логин>/`) или адрес из настроек. Пока только чтение.
+
+Ещё **нет**: создания/изменения событий и контактов, перемещения/удаления писем,
+локального кэша (SQLite), серверного поиска, HTML с оформлением, Exchange (EWS).
 
 ## Структура
 
@@ -36,10 +46,13 @@ backend: один процесс на пользователя, как Outlook �
 frontend/          React + TypeScript (Vite)
 src-tauri/         Rust: окно приложения и почтовое ядро
   src/imap.rs      IMAP: подключение, папки, письма, флаги, вложения
+  src/smtp.rs      отправка писем (lettre)
+  src/dav.rs       CalDAV/CardDAV: обнаружение, контакты, события, RRULE
   src/settings.rs  настройки и системное хранилище паролей
   src/lib.rs       команды Tauri, вызываемые из интерфейса
   examples/smoke.rs  проверка ядра против реального сервера
 tests/imap-server/ локальный Dovecot с тестовым ящиком
+tests/servers/     тестовые SMTPS (aiosmtpd) и CalDAV/CardDAV (Radicale)
 tests/e2e/         сквозные тесты приложения (WebDriver)
 ```
 
@@ -69,6 +82,12 @@ $env:IMAP_PASSWORD = Read-Host 'IMAP password' -MaskInput
 cd src-tauri; cargo run --example smoke
 ```
 Выведет `CAPABILITY` сервера, дерево папок, первую страницу «Входящих» и время загрузки.
+
+SMTP, календарь и контакты без интерфейса:
+```powershell
+$env:SMTP_HOST = 'rp.rrcki.ru'; $env:DAV_URL = 'https://rp.nrcki.ru/'
+cargo run --example groupware_check -- you@nrcki.ru   # адрес — кому отправить тестовое письмо
+```
 
 ## Сборка установщиков
 
@@ -104,6 +123,7 @@ npm run build
 ```bash
 cd src-tauri && cargo test && cargo clippy --all-targets   # юнит-тесты и линтер
 sudo tests/imap-server/setup.sh                           # тестовый IMAPS на localhost:10993
+sudo tests/servers/start.sh                               # SMTPS :465 и CalDAV/CardDAV :5232 (Radicale)
 IMAP_HOST=localhost IMAP_PORT=10993 IMAP_USERNAME=test@rrcki.ru \
   IMAP_PASSWORD=Secret-123 cargo run --example smoke        # ядро против Dovecot
 npx tauri build --debug --no-bundle                         # затем E2E, см. tests/e2e/run.sh
@@ -114,8 +134,7 @@ npx tauri build --debug --no-bundle                         # затем E2E, с
 1. Локальный кэш SQLite (окно синхронизации ~7 дней, `CONDSTORE`/`QRESYNC`,
    `IDLE` для мгновенных новых писем), догрузка старых писем из кэша.
 2. Перемещение, архив, удаление (`MOVE`/`UIDPLUS`), серверный поиск.
-3. Отправка через SMTP RuPost, ответ/пересылка с корректными заголовками,
-   вложения, сохранение в «Отправленные».
+3. Создание и изменение событий, приглашения (iTIP), корпоративная адресная книга (GAL).
 4. Безопасный просмотр HTML (санитайзер + изолированный iframe, блок внешних картинок).
 5. Трей со счётчиком, системные уведомления, автозапуск.
 6. Exchange 2016 (EWS) как второй провайдер.

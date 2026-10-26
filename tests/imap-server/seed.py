@@ -53,6 +53,7 @@ append('INBOX', m.as_bytes())
 m = EmailMessage()
 m['Subject'] = 'Отчёт с вложением'; m['From'] = 'Юшков Дмитрий <yushkov_do@nrcki.ru>'
 m['To'] = 'test@rrcki.ru'; m['Cc'] = 'Коллега <colleague@nrcki.ru>'; m['Date'] = formatdate(localtime=True)
+m['Message-ID'] = '<report-oct@nrcki.ru>'; m['References'] = '<thread-root@nrcki.ru>'
 m.set_content('Во вложении отчёт.\n\nДмитрий')
 m.add_attachment('Содержимое отчёта\n'.encode('utf-8'), maintype='text', subtype='plain', filename='Отчёт за октябрь.txt')
 m.add_attachment(b'%PDF-1.4 fake', maintype='application', subtype='pdf', filename='../../evil.pdf')

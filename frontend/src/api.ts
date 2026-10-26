@@ -1,7 +1,19 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, Folder, LoginResult, MessageDetail, MessagePage, MessageSummary, Settings,
+  Account, ContactsResult, EventsResult, Folder, LoginResult, MessageDetail, MessagePage,
+  MessageSummary, PickedFile, SendResult, Settings,
 } from './types'
+
+export interface LoginParams {
+  host: string
+  port: number
+  username: string
+  password: string
+  remember: boolean
+  smtpHost: string
+  smtpPort: number
+  davUrl: string
+}
 
 /** Ошибки команд приходят строкой (см. AppError в src-tauri/src/error.rs). */
 export function errorText(error: unknown): string {
@@ -14,8 +26,19 @@ export const PAGE_SIZE = 50
 
 export const api = {
   getSettings: () => invoke<Settings | null>('get_settings'),
-  login: ({ host, port, username, password, remember }: Settings & { password: string; remember: boolean }) =>
-    invoke<LoginResult>('login', { host, port, username, password, remember }),
+  login: ({ host, port, username, password, remember, smtpHost, smtpPort, davUrl }: LoginParams) =>
+    invoke<LoginResult>('login', { host, port, username, password, remember, smtpHost, smtpPort, davUrl }),
+  getProfile: () => invoke<Settings | null>('get_profile'),
+  updateProfile: (p: { displayName: string; smtpHost: string; smtpPort: number; davUrl: string }) =>
+    invoke<Settings>('update_profile', { ...p }),
+  pickAttachments: () => invoke<PickedFile[]>('pick_attachments'),
+  sendMessage: (m: {
+    to: string; cc: string; subject: string; body: string
+    inReplyTo: string | null; references: string | null; attachments: string[]
+  }) => invoke<SendResult>('send_message', { ...m }),
+  listContacts: () => invoke<ContactsResult>('list_contacts'),
+  listEvents: (start: Date, end: Date) =>
+    invoke<EventsResult>('list_events', { start: start.toISOString(), end: end.toISOString() }),
   autoLogin: () => invoke<Account | null>('auto_login'),
   logout: () => invoke<void>('logout'),
   listFolders: () => invoke<Folder[]>('list_folders'),

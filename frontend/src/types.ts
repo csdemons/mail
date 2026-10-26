@@ -12,6 +12,10 @@ export interface Settings {
   host: string
   port: number
   username: string
+  smtpHost: string
+  smtpPort: number
+  davUrl: string
+  displayName: string
 }
 
 export interface LoginResult {
@@ -65,6 +69,74 @@ export interface AttachmentInfo {
 
 export interface MessageDetail extends MessageSummary {
   cc: string[]
+  messageId: string | null
+  references: string | null
+  replyTo: string | null
   bodyText: string
   attachments: AttachmentInfo[]
+}
+
+export interface PickedFile {
+  id: string
+  name: string
+  size: number
+}
+
+export interface SendResult {
+  savedTo: string | null
+  warning: string | null
+}
+
+export interface DavCollection {
+  url: string
+  name: string
+  color: string | null
+}
+
+export interface Contact {
+  id: string
+  book: string
+  fullName: string
+  emails: string[]
+  phones: string[]
+  org: string | null
+  title: string | null
+  note: string | null
+}
+
+export interface ContactsResult {
+  books: DavCollection[]
+  contacts: Contact[]
+  errors: string[]
+}
+
+export interface CalEvent {
+  id: string
+  calendar: string
+  color: string | null
+  title: string
+  location: string | null
+  description: string | null
+  organizer: string | null
+  /** ISO 8601 (UTC) или YYYY-MM-DD для событий на весь день */
+  start: string
+  end: string
+  allDay: boolean
+  recurring: boolean
+}
+
+export interface EventsResult {
+  calendars: DavCollection[]
+  events: CalEvent[]
+  errors: string[]
+}
+
+export interface Draft {
+  mode: 'new' | 'reply' | 'forward'
+  to: string
+  cc: string
+  subject: string
+  body: string
+  inReplyTo: string | null
+  references: string | null
 }

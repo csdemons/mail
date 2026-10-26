@@ -10,8 +10,11 @@ import {
   api, errorText, formatFullDate, formatListDate, formatSize, messageKey, PAGE_SIZE,
 } from './api'
 import type {
-  Account, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary,
+  Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
 } from './types'
+import Composer from './Composer'
+import ContactsView from './ContactsView'
+import CalendarView from './CalendarView'
 
 const ROLE_LABELS: Partial<Record<FolderRole, string>> = {
   inbox: 'Входящие',
@@ -103,11 +106,20 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const [diagText, setDiagText] = useState<string | null>(null)
   const [diagBusy, setDiagBusy] = useState(false)
 
-  const [composeOpen, setComposeOpen] = useState(false)
-  const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new')
-  const [recipient, setRecipient] = useState('')
-  const [subject, setSubject] = useState('')
-  const [body, setBody] = useState('')
+  const [module, setModule] = useState<'mail' | 'calendar' | 'contacts'>('mail')
+  const [draft, setDraft] = useState<Draft | null>(null)
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const contactsRequested = useRef(false)
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [profileForm, setProfileForm] = useState({ displayName: '', smtpHost: '', smtpPort: '465', davUrl: '' })
+  const [profileBusy, setProfileBusy] = useState(false)
+
+  useEffect(() => {
+    api.getProfile().then((p) => {
+      setProfile(p)
+      if (p) setProfileForm({ displayName: p.displayName, smtpHost: p.smtpHost, smtpPort: String(p.smtpPort), davUrl: p.davUrl })
+    }).catch(() => undefined)
+  }, [])
 
   // Защита от гонок: ответ на устаревший запрос игнорируется.
   const listRequest = useRef(0)
@@ -317,16 +329,64 @@ export default function App({ account, initialNotice, onLogout }: Props) {
 
   const selected = messages.find((m) => messageKey(m) === selectedKey)
 
+  function startDraft(next: Draft) {
+    setDraft(next)
+    // Контакты для подсказок адресов — один раз за сессию, ошибки не мешают письму.
+    if (!contactsRequested.current) {
+      contactsRequested.current = true
+      api.listContacts().then((r) => setContacts(r.contacts)).catch(() => undefined)
+    }
+  }
+
   function openComposer(mode: 'new' | 'reply' | 'forward') {
-    const m = detail
-    setComposeMode(mode)
-    setRecipient(mode === 'reply' && m ? m.fromAddress : '')
-    setSubject(m && mode === 'reply' ? `Re: ${m.subject}` : m && mode === 'forward' ? `Fwd: ${m.subject}` : '')
-    setBody(
-      m && mode === 'reply' ? `\n\n${formatFullDate(m.date)}, ${senderLabel(m)} пишет:\n${m.bodyText.split('\n').map((l) => `> ${l}`).join('\n')}` :
-      m && mode === 'forward' ? `\n\n---------- Пересланное сообщение ----------\nОт: ${senderLabel(m)} <${m.fromAddress}>\nДата: ${formatFullDate(m.date)}\nТема: ${m.subject}\n\n${m.bodyText}` : '',
-    )
-    setComposeOpen(true)
+    const m = mode === 'new' ? null : detail
+    const withPrefix = (prefix: string, subj: string) =>
+      new RegExp(`^${prefix}:`, 'i').test(subj.trim()) ? subj.trim() : `${prefix}: ${subj.trim()}`
+    if (!m) {
+      startDraft({ mode: 'new', to: '', cc: '', subject: '', body: '', inReplyTo: null, references: null })
+      return
+    }
+    const sender = m.fromName ? `${m.fromName} <${m.fromAddress}>` : m.fromAddress
+    const header = `${formatFullDate(m.date)}, ${senderLabel(m)} пишет:`
+    if (mode === 'reply') {
+      startDraft({
+        mode,
+        to: m.replyTo ?? sender,
+        cc: '',
+        subject: withPrefix('Re', m.subject),
+        body: `\n\n${header}\n${m.bodyText.split('\n').map((l) => `> ${l}`).join('\n')}`,
+        inReplyTo: m.messageId,
+        references: [m.references, m.messageId].filter(Boolean).join(' ') || null,
+      })
+    } else {
+      startDraft({
+        mode,
+        to: '',
+        cc: '',
+        subject: withPrefix('Fwd', m.subject),
+        body: `\n\n---------- Пересланное сообщение ----------\nОт: ${sender}\nДата: ${formatFullDate(m.date)}\nТема: ${m.subject}\nКому: ${m.to.join(', ')}\n\n${m.bodyText}`,
+        inReplyTo: null,
+        references: null,
+      })
+    }
+  }
+
+  async function saveProfile() {
+    const port = Number(profileForm.smtpPort)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setNotice('Некорректный порт SMTP')
+      return
+    }
+    setProfileBusy(true)
+    try {
+      const p = await api.updateProfile({ ...profileForm, smtpPort: port })
+      setProfile(p)
+      setNotice('Настройки сохранены.')
+    } catch (error) {
+      setNotice(`Не удалось сохранить настройки: ${errorText(error)}`)
+    } finally {
+      setProfileBusy(false)
+    }
   }
 
   const listTitle = currentFolder ? folderLabel(currentFolder) : 'Входящие'
@@ -359,14 +419,22 @@ export default function App({ account, initialNotice, onLogout }: Props) {
 
       <div className="workspace">
         <nav className="module-rail" aria-label="Модули">
-          <button className="module active"><Mail /><span>Почта</span></button>
-          <button className="module" onClick={() => setNotice('Календарь будет добавлен в следующих версиях.')}><CalendarDays /><span>Календарь</span></button>
-          <button className="module" onClick={() => setNotice('Контакты будут добавлены в следующих версиях.')}><ContactRound /><span>Контакты</span></button>
+          <button className={`module ${module === 'mail' ? 'active' : ''}`} onClick={() => setModule('mail')}><Mail /><span>Почта</span></button>
+          <button className={`module ${module === 'calendar' ? 'active' : ''}`} onClick={() => setModule('calendar')}><CalendarDays /><span>Календарь</span></button>
+          <button className={`module ${module === 'contacts' ? 'active' : ''}`} onClick={() => setModule('contacts')}><ContactRound /><span>Контакты</span></button>
           <button className="module" onClick={() => setNotice('Задачи будут добавлены в следующих версиях.')}><FileText /><span>Задачи</span></button>
           <button className="module" onClick={() => setNotice('Чат будет добавлен в следующих версиях.')}><MessageCircle /><span>Чат</span></button>
           <div className="rail-spacer" />
         </nav>
 
+        {module === 'calendar' && <CalendarView />}
+        {module === 'contacts' && (
+          <ContactsView
+            onLoaded={(list) => { setContacts(list); contactsRequested.current = true }}
+            onWrite={(address) => startDraft({ mode: 'new', to: `${address}, `, cc: '', subject: '', body: '', inReplyTo: null, references: null })}
+          />
+        )}
+        {module === 'mail' && <>
         {foldersOpen && <aside className="folder-sidebar">
           <div className="sidebar-heading"><span>Папки</span><ChevronDown size={15} /></div>
           <div className="folder-list">
@@ -536,20 +604,24 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           </div>}
         </section>}
         {!readerOpen && <button className="show-reader-button" onClick={() => setReaderOpen(true)}><PanelRightOpen size={18} /> Открыть письмо</button>}
+        </>}
       </div>
 
       {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={16} /></button></div>}
 
-      {composeOpen && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setComposeOpen(false) }}>
-        <form className="compose-modal" onSubmit={(e) => { e.preventDefault(); setNotice('Отправка через SMTP появится в следующей версии. Черновик не сохранён.') }}>
-          <div className="compose-header"><div><strong>{composeMode === 'reply' ? 'Ответить на письмо' : composeMode === 'forward' ? 'Переслать письмо' : 'Новое сообщение'}</strong><small>От: {account.username}</small></div><button type="button" className="icon-button" onClick={() => setComposeOpen(false)} aria-label="Закрыть"><X size={18} /></button></div>
-          <label className="compose-field"><span>Кому</span><input required type="email" multiple value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="user@nrcki.ru" /></label>
-          <label className="compose-field"><span>Тема</span><input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
-          <textarea className="compose-body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Напишите сообщение…" />
-          <div className="compose-footer"><span><Paperclip size={15} /> Вложения — в следующей версии</span><button className="primary-button" type="submit" disabled title="Отправка появится в следующей версии"><Send size={16} /> Отправить</button></div>
-          <p className="compose-disclaimer">Отправка писем (SMTP) ещё не подключена.</p>
-        </form>
-      </div>}
+      {draft && (
+        <Composer
+          from={profile?.displayName ? `${profile.displayName} <${account.username}>` : account.username}
+          draft={draft}
+          contacts={contacts}
+          onClose={() => setDraft(null)}
+          onSent={(text) => {
+            setDraft(null)
+            setNotice(text)
+            if (draft.mode === 'reply' && detail) patchMessage(messageKey(detail), { answered: true })
+          }}
+        />
+      )}
 
       {showSettings && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowSettings(false) }}>
         <div className="settings-modal">
@@ -559,13 +631,22 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             <div><strong>{account.username}</strong><span>IMAP · {account.host}:{account.port} · TLS</span></div>
             <span className="status-pill">Подключён</span>
           </div>
-          <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек.</span></div>
+          <div className="profile-form">
+            <label className="login-field"><span>Имя отправителя</span><input value={profileForm.displayName} onChange={(e) => setProfileForm((f) => ({ ...f, displayName: e.target.value }))} placeholder="Юшков Дмитрий" /></label>
+            <div className="login-server">
+              <label className="login-field"><span>Исходящая почта (SMTP)</span><input value={profileForm.smtpHost} onChange={(e) => setProfileForm((f) => ({ ...f, smtpHost: e.target.value }))} /></label>
+              <label className="login-field login-port"><span>Порт</span><input inputMode="numeric" value={profileForm.smtpPort} onChange={(e) => setProfileForm((f) => ({ ...f, smtpPort: e.target.value }))} /></label>
+            </div>
+            <label className="login-field"><span>Календарь и контакты (CalDAV/CardDAV)</span><input value={profileForm.davUrl} onChange={(e) => setProfileForm((f) => ({ ...f, davUrl: e.target.value }))} placeholder={`https://${account.host}/ (автоопределение)`} /></label>
+            <div className="settings-actions"><button className="primary-button" disabled={profileBusy} onClick={() => void saveProfile()}>Сохранить</button></div>
+          </div>
+          <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">
             <button className="secondary-button" disabled={diagBusy} onClick={() => void runDiagnostics()}><Stethoscope size={16} /> Диагностика</button>
             <button className="secondary-button" onClick={() => { setShowSettings(false); onLogout() }}><LogOut size={16} /> Выйти и забыть пароль</button>
           </div>
           {diagText !== null && <div className="diag-block">
-            <div className="diag-head"><span>Отчёт по текущей папке (пароль не включается)</span><button className="text-button" onClick={() => void copyDiagnostics()}><Copy size={14} /> Скопировать</button></div>
+            <div className="diag-head"><span>Отчёт: IMAP по текущей папке, SMTP, CalDAV/CardDAV (пароль не включается)</span><button className="text-button" onClick={() => void copyDiagnostics()}><Copy size={14} /> Скопировать</button></div>
             <textarea className="diag-text" readOnly value={diagText} />
           </div>}
         </div>

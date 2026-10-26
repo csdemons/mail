@@ -451,6 +451,11 @@ pub struct MessageDetail {
     #[serde(flatten)]
     pub summary: MessageSummary,
     pub cc: Vec<String>,
+    /// Message-ID и References — для заголовков ответа.
+    pub message_id: Option<String>,
+    pub references: Option<String>,
+    /// Reply-To, если отличается от отправителя.
+    pub reply_to: Option<String>,
     pub body_text: String,
     pub attachments: Vec<AttachmentInfo>,
 }
@@ -710,6 +715,26 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
     let parsed = MessageParser::default().parse(body);
     let summary = summary_from(folder, &fetch, parsed.as_ref());
 
+    let (message_id, references, reply_to) = match parsed.as_ref() {
+        Some(msg) => {
+            let ids = |h: &mail_parser::HeaderValue<'_>| -> Option<String> {
+                let list: Vec<String> = match h {
+                    mail_parser::HeaderValue::Text(t) => vec![t.to_string()],
+                    mail_parser::HeaderValue::TextList(l) => l.iter().map(|t| t.to_string()).collect(),
+                    _ => vec![],
+                };
+                let joined = list.iter().map(|id| format!("<{}>", id.trim_matches(['<', '>']))).collect::<Vec<_>>().join(" ");
+                (!joined.is_empty()).then_some(joined)
+            };
+            (
+                msg.message_id().map(|id| format!("<{}>", id.trim_matches(['<', '>']))),
+                ids(msg.references()),
+                addresses(msg.reply_to()).into_iter().next(),
+            )
+        }
+        None => (None, None, None),
+    };
+
     let (cc, body_text, attachments) = match parsed.as_ref() {
         Some(msg) => {
             let attachments: Vec<AttachmentInfo> = msg
@@ -743,6 +768,9 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
     Ok(MessageDetail {
         summary,
         cc,
+        message_id,
+        references,
+        reply_to,
         body_text: body_text.replace("\r\n", "\n"),
         attachments,
     })
@@ -760,6 +788,32 @@ pub async fn get_attachment(
     let msg = MessageParser::default().parse(body).ok_or(AppError::NotFound)?;
     let part = msg.attachments().nth(index).ok_or(AppError::NotFound)?;
     Ok((attachment_name(part, index), part.contents().to_vec()))
+}
+
+/// Кладёт отправленное письмо в папку «Отправленные» (\\Sent или по имени).
+/// Возвращает имя папки.
+pub async fn append_sent(conn: &mut Connection, raw: &[u8]) -> Result<String> {
+    let names: Vec<_> = conn
+        .session
+        .list(Some(""), Some("*"))
+        .await?
+        .try_collect()
+        .await?;
+    let by_attr = names
+        .iter()
+        .find(|n| n.attributes().iter().any(|a| matches!(a, NameAttribute::Sent)))
+        .map(|n| n.name().to_string());
+    let by_name = names
+        .iter()
+        .find(|n| parent_of(n.name(), n.delimiter()).is_none() && role_by_name(n.name()) == FolderRole::Sent)
+        .map(|n| n.name().to_string());
+    drop(names);
+    let folder = by_attr
+        .or(by_name)
+        .ok_or_else(|| AppError::Other("Папка «Отправленные» не найдена".into()))?;
+    conn.selected = None;
+    conn.session.append(&folder, Some("(\\Seen)"), None, raw).await?;
+    Ok(folder)
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]

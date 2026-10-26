@@ -10,12 +10,56 @@ use crate::error::{AppError, Result};
 
 const KEYRING_SERVICE: &str = "ru.rrcki.mail";
 
+pub const DEFAULT_SMTP_HOST: &str = "rp.rrcki.ru";
+pub const DEFAULT_SMTP_PORT: u16 = 465;
+
+fn default_smtp_host() -> String {
+    DEFAULT_SMTP_HOST.to_string()
+}
+fn default_smtp_port() -> u16 {
+    DEFAULT_SMTP_PORT
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub host: String,
     pub port: u16,
     pub username: String,
+    /// Исходящий сервер (SMTPS 465 или STARTTLS 587), тот же логин/пароль.
+    #[serde(default = "default_smtp_host")]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    /// Адрес сервера календаря/контактов (CalDAV/CardDAV). Пусто — https://<IMAP-сервер>.
+    #[serde(default)]
+    pub dav_url: String,
+    /// Имя отправителя в поле «От».
+    #[serde(default)]
+    pub display_name: String,
+}
+
+impl Settings {
+    /// Адрес отправителя: логин, если это e-mail.
+    pub fn email(&self) -> String {
+        if self.username.contains('@') {
+            self.username.clone()
+        } else {
+            let domain = self.host.split_once('.').map(|(_, d)| d).unwrap_or(&self.host);
+            format!("{}@{}", self.username, domain)
+        }
+    }
+
+    pub fn dav_base(&self) -> String {
+        let url = self.dav_url.trim();
+        if url.is_empty() {
+            format!("https://{}/", self.host)
+        } else if url.contains("://") {
+            url.to_string()
+        } else {
+            format!("https://{url}/")
+        }
+    }
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf> {
