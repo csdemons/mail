@@ -55,9 +55,11 @@ try:
     time.sleep(1)
     rows = d.find_elements(By.CSS_SELECTOR, '.message-row')
     assert len(rows) == 50, len(rows); ok('first page: 50 rows')
-    folders = [e.text.replace('\n', ' ') for e in d.find_elements(By.CSS_SELECTOR, '.folder-item')]
+    folders = [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '.folder-item')]
     print('   folders:', folders)
-    assert any('Входящие' in f for f in folders) and any('2026' in f for f in folders); ok('folders incl. Cyrillic subfolder')
+    assert any('Входящие' in f for f in folders) and any('Проекты' in f for f in folders), folders
+    assert not any('2026' in f for f in folders), 'subfolders must be collapsed by default'
+    ok('folder tree, subfolders collapsed by default')
     d.save_screenshot(f'{OUT}/02-inbox.png')
 
     # 3. догрузка
@@ -87,7 +89,9 @@ try:
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Пометить"]').click(); time.sleep(1.5)
     assert '\\Flagged' in server_flags(122); ok('\\Flagged set on server')
 
-    # 7. кириллическая папка
+    # 7. кириллическая папка: раскрыть «Проекты», открыть «2026»
+    [f for f in d.find_elements(By.CSS_SELECTOR, '.folder-node') if 'Проекты' in f.get_attribute('textContent')][0].click()
+    WebDriverWait(d, 10).until(lambda d: any('2026' in f.get_attribute('textContent') for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item')))
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if '2026' in f.get_attribute('textContent')][0].click()
     WebDriverWait(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.message-row')) == 1 and 'В проектной папке' in d.find_element(By.CSS_SELECTOR, '.message-row').get_attribute('textContent'))
     ok('Cyrillic folder opened')

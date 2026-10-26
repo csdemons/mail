@@ -24,9 +24,13 @@ export interface Folder {
   id: string
   name: string
   path: string
+  parent: string | null
   depth: number
   role: FolderRole
+  /** Служебная папка своего ящика верхнего уровня — подписывается стандартно. */
+  system: boolean
   selectable: boolean
+  hasChildren: boolean
   total: number
   unseen: number
 }

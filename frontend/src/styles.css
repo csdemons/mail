@@ -227,8 +227,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .login-error { color: #b42318; background: #fef3f2; border: 1px solid #fecdca; border-radius: 9px; padding: 10px 12px; }
 .login-submit { width: 100%; }
 .login-submit:disabled, .primary-button:disabled { opacity: .6; cursor: default; }
-.folder-node { color: var(--muted); cursor: default; }
-.folder-node:hover { background: transparent; }
+.folder-node { color: var(--muted); }
 .folder-placeholder { color: var(--muted); padding: 9px; }
 .load-more { width: 100%; padding: 14px; }
 .spin { animation: spin 1s linear infinite; }
@@ -238,3 +237,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .message-body.plain { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .message-meta .flag-mark { color: #e6a008; }
 .settings-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+.folder-item .folder-toggle { width: 16px; height: 16px; flex: 0 0 16px; display: inline-grid; place-items: center; border-radius: 4px; color: var(--muted); }
+.folder-toggle[role=button]:hover { background: var(--line); }
+.folder-item.selected .folder-toggle { color: white; }
+.folder-item span:not(.folder-toggle) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, CalendarDays, ChevronDown, ChevronLeft, Circle, ContactRound, Download,
+  Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
   Reply, Search, Send, Settings, ShieldCheck, SquarePen, Star, Sun, Trash2, Users, X,
@@ -33,11 +33,34 @@ const ROLE_ICONS: Record<FolderRole, typeof Inbox> = {
 }
 
 function folderLabel(folder: Folder): string {
-  return ROLE_LABELS[folder.role] ?? folder.name
+  if (folder.system) return ROLE_LABELS[folder.role] ?? folder.name
+  return folder.name.toUpperCase() === 'INBOX' ? 'Входящие' : folder.name
+}
+
+const EXPANDED_KEY = 'rrcki-mail.expanded-folders'
+
+function loadExpanded(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_KEY)
+    if (raw) return new Set(JSON.parse(raw) as string[])
+  } catch { /* хранилище недоступно — используем значение по умолчанию */ }
+  return new Set(['INBOX'])
+}
+
+function saveExpanded(ids: Set<string>) {
+  try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...ids])) } catch { /* не критично */ }
 }
 
 function senderLabel(m: MessageSummary): string {
   return m.fromName || m.fromAddress || '(без отправителя)'
+}
+
+function pluralLetters(n: number): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return 'письмо'
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'письма'
+  return 'писем'
 }
 
 function initials(value: string) {
@@ -60,6 +83,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
 
   const [folders, setFolders] = useState<Folder[]>([])
   const [folderId, setFolderId] = useState('INBOX')
+  const [expanded, setExpanded] = useState<Set<string>>(loadExpanded)
 
   const [messages, setMessages] = useState<MessageSummary[]>([])
   const [total, setTotal] = useState(0)
@@ -88,6 +112,26 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const searchRef = useRef<HTMLInputElement>(null)
 
   const currentFolder = folders.find((f) => f.id === folderId)
+
+  const visibleFolders = useMemo(() => {
+    const byId = new Map(folders.map((f) => [f.id, f]))
+    return folders.filter((f) => {
+      for (let p = f.parent; p; p = byId.get(p)?.parent ?? null) {
+        if (!expanded.has(p)) return false
+      }
+      return true
+    })
+  }, [folders, expanded])
+
+  function toggleExpanded(id: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      saveExpanded(next)
+      return next
+    })
+  }
 
   const loadFolders = useCallback(async () => {
     try {
@@ -298,24 +342,38 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           <div className="sidebar-heading"><span>Папки</span><ChevronDown size={15} /></div>
           <div className="folder-list">
             {folders.length === 0 && <div className="folder-placeholder">Загрузка папок…</div>}
-            {folders.map((f) => {
+            {visibleFolders.map((f) => {
               const Icon = f.role === 'other' && !f.selectable ? FolderOpen : ROLE_ICONS[f.role]
+              const isOpen = expanded.has(f.id)
+              const indent = { paddingLeft: 4 + f.depth * 14 }
+              const toggle = f.hasChildren ? (
+                <span
+                  role="button"
+                  aria-label={isOpen ? 'Свернуть' : 'Развернуть'}
+                  className="folder-toggle"
+                  onClick={(e) => { e.stopPropagation(); toggleExpanded(f.id) }}
+                >
+                  {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </span>
+              ) : <span className="folder-toggle" />
               return f.selectable ? (
                 <button
                   key={f.id}
                   className={`folder-item ${folderId === f.id ? 'selected' : ''}`}
-                  style={{ paddingLeft: 9 + f.depth * 16 }}
+                  style={indent}
                   title={f.path}
                   onClick={() => setFolderId(f.id)}
                 >
+                  {toggle}
                   <Icon size={17} />
                   <span>{folderLabel(f)}</span>
                   {f.unseen > 0 && <b className="folder-count">{f.unseen}</b>}
                 </button>
               ) : (
-                <div key={f.id} className="folder-item folder-node" style={{ paddingLeft: 9 + f.depth * 16 }} title={f.path}>
-                  <Icon size={17} /><span>{f.name}</span>
-                </div>
+                <button key={f.id} className="folder-item folder-node" style={indent} title={f.path} onClick={() => f.hasChildren && toggleExpanded(f.id)}>
+                  {toggle}
+                  <Icon size={17} /><span>{folderLabel(f)}</span>
+                </button>
               )
             })}
           </div>
@@ -344,7 +402,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               <button key={item} className={`filter-chip ${filter === item ? 'active' : ''}`} onClick={() => setFilter(item)}>{item}</button>
             ))}
           </div>
-          <div className="message-list-header"><span>{listTitle}</span><span>{total} писем</span></div>
+          <div className="message-list-header"><span>{listTitle}</span><span>{total} {pluralLetters(total)}</span></div>
           <div className="message-list">
             {loading && messages.length === 0 && <div className="empty-state"><span>Загрузка писем с сервера…</span></div>}
             {listError && (

@@ -134,27 +134,32 @@ pub enum FolderRole {
     Other,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Folder {
     /// Имя на сервере (modified UTF-7) — его передаём обратно в команды.
     pub id: String,
-    /// Отображаемое имя последнего уровня.
+    /// Отображаемое имя последнего уровня (декодированное).
     pub name: String,
     /// Полный путь для отображения.
     pub path: String,
+    /// `id` родительской папки.
+    pub parent: Option<String>,
     pub depth: usize,
+    /// Роль (для иконки). Может быть и у вложенных/чужих папок.
     pub role: FolderRole,
+    /// Служебная папка своего ящика верхнего уровня — показывается под
+    /// стандартным названием («Входящие», «Отправленные» …).
+    pub system: bool,
     /// `false` — только узел дерева (\\Noselect), открыть нельзя.
     pub selectable: bool,
+    pub has_children: bool,
     pub total: u32,
     pub unseen: u32,
 }
 
-fn role_by_name(path: &str) -> FolderRole {
-    let lower = path.to_lowercase();
-    let leaf = lower.rsplit(['/', '.']).next().unwrap_or(&lower);
-    match leaf {
+fn role_by_name(leaf: &str) -> FolderRole {
+    match leaf.to_lowercase().as_str() {
         "inbox" | "входящие" => FolderRole::Inbox,
         "drafts" | "draft" | "черновики" => FolderRole::Drafts,
         "sent" | "sent items" | "sent messages" | "отправленные" => FolderRole::Sent,
@@ -169,14 +174,126 @@ fn role_by_name(path: &str) -> FolderRole {
     }
 }
 
-pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
-    struct Raw {
-        id: String,
-        delimiter: Option<String>,
-        role: Option<FolderRole>,
-        selectable: bool,
+/// Папка из ответа LIST.
+#[derive(Debug, Clone)]
+pub struct RawFolder {
+    pub id: String,
+    pub delimiter: Option<String>,
+    /// Роль из атрибутов SPECIAL-USE (\\Sent, \\Trash …).
+    pub special_use: Option<FolderRole>,
+    pub selectable: bool,
+}
+
+fn parent_of(id: &str, delimiter: Option<&str>) -> Option<String> {
+    let d = delimiter.filter(|d| !d.is_empty())?;
+    id.rfind(d).map(|pos| id[..pos].to_string()).filter(|p| !p.is_empty())
+}
+
+/// Строит дерево папок в порядке отображения (родитель, затем его дети).
+/// Служебные папки своего ящика — сверху в привычном порядке, остальные по
+/// алфавиту; невыбираемые корни (общие папки, другие пользователи) — в конце.
+pub fn build_folder_tree(raw: Vec<RawFolder>) -> Vec<Folder> {
+    use std::collections::{BTreeMap, HashMap};
+
+    let mut by_id: BTreeMap<String, RawFolder> = BTreeMap::new();
+    for f in raw {
+        by_id.insert(f.id.clone(), f);
+    }
+    // Достраиваем отсутствующих в LIST предков как невыбираемые узлы.
+    let ids: Vec<String> = by_id.keys().cloned().collect();
+    for id in ids {
+        let delim = by_id[&id].delimiter.clone();
+        let mut cur = id;
+        while let Some(parent) = parent_of(&cur, delim.as_deref()) {
+            by_id.entry(parent.clone()).or_insert_with(|| RawFolder {
+                id: parent.clone(),
+                delimiter: delim.clone(),
+                special_use: None,
+                selectable: false,
+            });
+            cur = parent;
+        }
     }
 
+    let mut nodes: HashMap<String, Folder> = HashMap::new();
+    let mut children: HashMap<Option<String>, Vec<String>> = HashMap::new();
+    for f in by_id.values() {
+        let parent = parent_of(&f.id, f.delimiter.as_deref());
+        let path = utf7_imap::decode_utf7_imap(f.id.clone());
+        let name = match f.delimiter.as_deref().filter(|d| !d.is_empty()) {
+            Some(d) => path.rsplit(d).next().unwrap_or(&path).to_string(),
+            None => path.clone(),
+        };
+        let in_own_root = parent.as_deref().is_none_or(|p| p.eq_ignore_ascii_case("INBOX"));
+        let role = if f.id.eq_ignore_ascii_case("INBOX") {
+            FolderRole::Inbox
+        } else if let Some(role) = f.special_use {
+            role
+        } else if in_own_root {
+            role_by_name(&name)
+        } else {
+            FolderRole::Other
+        };
+        let system = in_own_root
+            && f.selectable
+            && (f.id.eq_ignore_ascii_case("INBOX") || (role != FolderRole::Other && role != FolderRole::Inbox));
+        children.entry(parent.clone()).or_default().push(f.id.clone());
+        nodes.insert(
+            f.id.clone(),
+            Folder {
+                id: f.id.clone(),
+                name,
+                path,
+                parent,
+                depth: 0,
+                role,
+                system,
+                selectable: f.selectable,
+                has_children: false,
+                total: 0,
+                unseen: 0,
+            },
+        );
+    }
+    for (parent, kids) in &children {
+        if let Some(p) = parent.as_ref().and_then(|p| nodes.get_mut(p)) {
+            p.has_children = !kids.is_empty();
+        }
+    }
+
+    let rank = |f: &Folder| -> (u8, String) {
+        let r = if f.system {
+            f.role as u8
+        } else if f.parent.is_none() && !f.selectable {
+            200
+        } else {
+            100
+        };
+        (r, f.name.to_lowercase())
+    };
+    for kids in children.values_mut() {
+        kids.sort_by_key(|id| rank(&nodes[id]));
+    }
+
+    let mut out = Vec::with_capacity(nodes.len());
+    let mut stack: Vec<(String, usize)> = children
+        .get(&None)
+        .map(|v| v.iter().rev().map(|id| (id.clone(), 0)).collect())
+        .unwrap_or_default();
+    while let Some((id, depth)) = stack.pop() {
+        if let Some(kids) = children.get(&Some(id.clone())) {
+            for kid in kids.iter().rev() {
+                stack.push((kid.clone(), depth + 1));
+            }
+        }
+        let mut node = nodes.remove(&id).expect("node exists");
+        node.depth = depth;
+        out.push(node);
+    }
+    out
+}
+
+pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
     let names: Vec<_> = conn
         .session
         .list(Some(""), Some("*"))
@@ -186,79 +303,47 @@ pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
 
     let mut raw = Vec::new();
     for name in &names {
-        let mut role = None;
+        let mut special_use = None;
         let mut selectable = true;
         for attr in name.attributes() {
             match attr {
                 NameAttribute::NoSelect => selectable = false,
-                NameAttribute::Sent => role = Some(FolderRole::Sent),
-                NameAttribute::Drafts => role = Some(FolderRole::Drafts),
-                NameAttribute::Junk => role = Some(FolderRole::Junk),
-                NameAttribute::Trash => role = Some(FolderRole::Trash),
-                NameAttribute::Archive => role = Some(FolderRole::Archive),
+                NameAttribute::Sent => special_use = Some(FolderRole::Sent),
+                NameAttribute::Drafts => special_use = Some(FolderRole::Drafts),
+                NameAttribute::Junk => special_use = Some(FolderRole::Junk),
+                NameAttribute::Trash => special_use = Some(FolderRole::Trash),
+                NameAttribute::Archive => special_use = Some(FolderRole::Archive),
                 NameAttribute::Extension(ext) if ext.eq_ignore_ascii_case("\\NonExistent") => {
                     selectable = false
                 }
                 _ => {}
             }
         }
-        raw.push(Raw {
+        raw.push(RawFolder {
             id: name.name().to_string(),
             delimiter: name.delimiter().map(str::to_string),
-            role,
+            special_use,
             selectable,
         });
     }
     drop(names);
 
-    let mut folders = Vec::with_capacity(raw.len());
-    for item in raw {
-        let path = utf7_imap::decode_utf7_imap(item.id.clone());
-        let (name, depth) = match item.delimiter.as_deref() {
-            Some(d) if !d.is_empty() => {
-                let parts: Vec<&str> = path.split(d).collect();
-                (parts.last().unwrap_or(&"").to_string(), parts.len() - 1)
-            }
-            _ => (path.clone(), 0),
-        };
-        let role = if item.id.eq_ignore_ascii_case("INBOX") {
-            FolderRole::Inbox
-        } else {
-            item.role.unwrap_or_else(|| role_by_name(&path))
-        };
+    let mut folders = build_folder_tree(raw);
+    for folder in folders.iter_mut().filter(|f| f.selectable) {
         // STATUS не должен ронять весь список, если одна папка недоступна.
-        let (total, unseen) = if !item.selectable {
-            (0, 0)
-        } else {
-            match conn.session.status(&item.id, "(MESSAGES UNSEEN)").await {
-                Ok(mb) => (mb.exists, mb.unseen.unwrap_or(0)),
-                Err(e) => {
-                    let e: AppError = e.into();
-                    if e.is_connection() {
-                        return Err(e);
-                    }
-                    (0, 0)
+        match conn.session.status(&folder.id, "(MESSAGES UNSEEN)").await {
+            Ok(mb) => {
+                folder.total = mb.exists;
+                folder.unseen = mb.unseen.unwrap_or(0);
+            }
+            Err(e) => {
+                let e: AppError = e.into();
+                if e.is_connection() {
+                    return Err(e);
                 }
             }
-        };
-        folders.push(Folder {
-            id: item.id,
-            name,
-            path,
-            depth,
-            role,
-            selectable: item.selectable,
-            total,
-            unseen,
-        });
+        }
     }
-
-    // Служебные папки сверху в привычном порядке, остальные — по алфавиту.
-    folders.sort_by(|a, b| {
-        a.role
-            .cmp(&b.role)
-            .then_with(|| a.path.to_lowercase().cmp(&b.path.to_lowercase()))
-    });
     Ok(folders)
 }
 
@@ -620,9 +705,60 @@ mod tests {
     #[test]
     fn detects_roles_by_name() {
         assert_eq!(role_by_name("Отправленные"), FolderRole::Sent);
-        assert_eq!(role_by_name("INBOX/Корзина"), FolderRole::Trash);
         assert_eq!(role_by_name("Sent Items"), FolderRole::Sent);
         assert_eq!(role_by_name("Проекты"), FolderRole::Other);
+    }
+
+    fn raw(id: &str, special: Option<FolderRole>, selectable: bool) -> RawFolder {
+        RawFolder {
+            id: utf7_imap::encode_utf7_imap(id.to_string()),
+            delimiter: Some("/".into()),
+            special_use: special,
+            selectable,
+        }
+    }
+
+    #[test]
+    fn builds_tree_with_shared_mailboxes() {
+        let list = vec![
+            raw("Other Users", None, false),
+            raw("Other Users/uex2016-06", None, false),
+            raw("Other Users/uex2016-06/INBOX", None, true),
+            raw("Other Users/uex2016-06/Sent", Some(FolderRole::Sent), true),
+            raw("Корзина/2024/Astra", None, true),
+            raw("Корзина", Some(FolderRole::Trash), true),
+            raw("Проекты", None, true),
+            raw("INBOX/Входящие отдела", None, true),
+            raw("Отправленные", Some(FolderRole::Sent), true),
+            raw("INBOX", None, true),
+            raw("Архив", None, true),
+        ];
+        let tree = build_folder_tree(list);
+        let view: Vec<(usize, &str, bool, bool)> = tree
+            .iter()
+            .map(|f| (f.depth, f.name.as_str(), f.system, f.selectable))
+            .collect();
+        assert_eq!(
+            view,
+            vec![
+                (0, "INBOX", true, true),
+                (1, "Входящие отдела", false, true),
+                (0, "Отправленные", true, true),
+                (0, "Архив", true, true),
+                (0, "Корзина", true, true),
+                (1, "2024", false, false),
+                (2, "Astra", false, true),
+                (0, "Проекты", false, true),
+                (0, "Other Users", false, false),
+                (1, "uex2016-06", false, false),
+                (2, "INBOX", false, true),
+                (2, "Sent", false, true),
+            ]
+        );
+        // Чужие «Sent»/«INBOX» сохраняют роль для иконки, но не подписываются как свои.
+        assert_eq!(tree[11].role, FolderRole::Sent);
+        assert!(tree[0].has_children && tree[4].has_children && !tree[2].has_children);
+        assert_eq!(tree[1].parent.as_deref(), Some("INBOX"));
     }
 
     #[test]
