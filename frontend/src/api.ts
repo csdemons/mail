@@ -1,0 +1,67 @@
+import { invoke } from '@tauri-apps/api/core'
+import type {
+  Account, Folder, LoginResult, MessageDetail, MessagePage, MessageSummary, Settings,
+} from './types'
+
+/** Ошибки команд приходят строкой (см. AppError в src-tauri/src/error.rs). */
+export function errorText(error: unknown): string {
+  if (typeof error === 'string') return error
+  if (error instanceof Error) return error.message
+  return 'Неизвестная ошибка'
+}
+
+export const PAGE_SIZE = 50
+
+export const api = {
+  getSettings: () => invoke<Settings | null>('get_settings'),
+  login: ({ host, port, username, password, remember }: Settings & { password: string; remember: boolean }) =>
+    invoke<LoginResult>('login', { host, port, username, password, remember }),
+  autoLogin: () => invoke<Account | null>('auto_login'),
+  logout: () => invoke<void>('logout'),
+  listFolders: () => invoke<Folder[]>('list_folders'),
+  listMessages: (folder: string, offset = 0, limit = PAGE_SIZE) =>
+    invoke<MessagePage>('list_messages', { folder, offset, limit }),
+  getMessage: (folder: string, uid: number) =>
+    invoke<MessageDetail>('get_message', { folder, uid }),
+  setFlag: (folder: string, uid: number, flag: 'seen' | 'flagged', value: boolean) =>
+    invoke<void>('set_flag', { folder, uid, flag, value }),
+  saveAttachment: (folder: string, uid: number, index: number) =>
+    invoke<string | null>('save_attachment', { folder, uid, index }),
+}
+
+export function messageKey(m: Pick<MessageSummary, 'folder' | 'uid'>): string {
+  return `${m.folder}\u0001${m.uid}`
+}
+
+export function formatListDate(value: string | null): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const now = new Date()
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  }
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (date.toDateString() === yesterday.toDateString()) return 'Вчера'
+  return date.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    ...(date.getFullYear() !== now.getFullYear() ? { year: '2-digit' } : {}),
+  })
+}
+
+export function formatFullDate(value: string | null): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString('ru-RU', {
+    day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} Б`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`
+  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`
+}
