@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CornerUpLeft, MessageCircle, Phone, RefreshCw, Search, Send, Users, X } from 'lucide-react'
+import { CornerUpLeft, FileText, MessageCircle, Paperclip, Phone, RefreshCw, Search, Send, Users, X } from 'lucide-react'
 
-import { api, errorText } from './api'
-import type { TalkMessage, TalkRoom } from './types'
+import { api, errorText, formatSize } from './api'
+import type { PickedFile, TalkMessage, TalkRoom } from './types'
 
 function initials(name: string) {
   const p = name.trim().split(/\s+/)
@@ -27,6 +27,7 @@ export default function TalkView({ onUnread }: { onUnread: (n: number) => void }
   const [replyTo, setReplyTo] = useState<TalkMessage | null>(null)
   const [query, setQuery] = useState('')
   const [sending, setSending] = useState(false)
+  const [files, setFiles] = useState<PickedFile[]>([])
   const listRef = useRef<HTMLDivElement>(null)
   // Номер «сессии» опроса: при смене беседы старый цикл останавливается.
   const pollSession = useRef(0)
@@ -53,6 +54,7 @@ export default function TalkView({ onUnread }: { onUnread: (n: number) => void }
     let lastId = 0
     setMessages([])
     setReplyTo(null)
+    setFiles((list) => { list.forEach((f) => void api.forgetAttachment(f.id)); return [] })
     setLoading(true)
     void (async () => {
       try {
@@ -95,11 +97,36 @@ export default function TalkView({ onUnread }: { onUnread: (n: number) => void }
     onUnread((rooms ?? []).filter((r) => r.token !== token).reduce((n, r) => n + r.unread, 0))
   }, [rooms, token, onUnread])
 
-  async function send() {
-    if (!token || !draft.trim()) return
-    setSending(true)
+  async function pickFiles() {
     try {
-      await api.talkSend(token, draft, replyTo?.id ?? null)
+      const picked = await api.pickAttachments()
+      setFiles((list) => [...list, ...picked])
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+
+  function dropFile(id: string) {
+    setFiles((list) => list.filter((f) => f.id !== id))
+    void api.forgetAttachment(id)
+  }
+
+  async function send() {
+    if (!token || (!draft.trim() && files.length === 0)) return
+    setSending(true)
+    setError('')
+    try {
+      if (files.length > 0) {
+        // Текст уходит подписью к первому файлу — как в веб-интерфейсе Talk.
+        let caption = draft
+        for (const f of files) {
+          await api.talkSendFile(token, f.id, caption, replyTo?.id ?? null)
+          caption = ''
+          setFiles((list) => list.filter((x) => x.id !== f.id))
+        }
+      } else {
+        await api.talkSend(token, draft, replyTo?.id ?? null)
+      }
       setDraft('')
       setReplyTo(null)
     } catch (e) {
@@ -155,7 +182,16 @@ export default function TalkView({ onUnread }: { onUnread: (n: number) => void }
                   <div className="talk-bubble">
                     {!m.own && <div className="talk-author">{m.author}</div>}
                     {m.parentText && <div className="talk-quote"><b>{m.parentAuthor}</b> {m.parentText}</div>}
-                    <div className="talk-text">{m.text}</div>
+                    {m.text && <div className="talk-text">{m.text}</div>}
+                    {m.files.length > 0 && (
+                      <div className="talk-files">
+                        {m.files.map((f) => (
+                          <button key={f.id || f.name} className="talk-file" title="Открыть в Nextcloud" onClick={() => void api.ncOpen(`f/${f.id}`)}>
+                            <FileText size={15} /><span>{f.name}</span>{f.size > 0 && <small>{formatSize(f.size)}</small>}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div className="talk-time">{timeOf(m.timestamp)}
                       {!room.readOnly && <button className="talk-reply" aria-label="Ответить" title="Ответить" onClick={() => setReplyTo(m)}><CornerUpLeft size={12} /></button>}
                     </div>
@@ -166,16 +202,26 @@ export default function TalkView({ onUnread }: { onUnread: (n: number) => void }
             </div>
             {room.readOnly ? <div className="muted talk-readonly">Беседа только для чтения</div> : (
               <form className="talk-compose" onSubmit={(e) => { e.preventDefault(); void send() }}>
+                {files.length > 0 && (
+                  <div className="talk-pending">
+                    {files.map((f) => (
+                      <span key={f.id} className="talk-file"><Paperclip size={14} /><span>{f.name}</span><small>{formatSize(f.size)}</small>
+                        {!sending && <button type="button" aria-label={`Убрать ${f.name}`} onClick={() => dropFile(f.id)}><X size={13} /></button>}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {replyTo && <div className="talk-quote replying"><b>{replyTo.author}</b> {replyTo.text.slice(0, 120)}<button type="button" aria-label="Отменить ответ" onClick={() => setReplyTo(null)}><X size={13} /></button></div>}
                 <div className="talk-input-row">
+                  <button type="button" className="icon-button soft talk-attach" aria-label="Прикрепить файл" title="Прикрепить файл" disabled={sending} onClick={() => void pickFiles()}><Paperclip size={18} /></button>
                   <textarea
                     rows={2}
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
-                    placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)"
+                    placeholder={files.length ? 'Подпись к файлу… (Enter — отправить)' : 'Сообщение… (Enter — отправить, Shift+Enter — новая строка)'}
                   />
-                  <button className="primary-button" type="submit" disabled={sending || !draft.trim()} aria-label="Отправить"><Send size={16} /></button>
+                  <button className="primary-button" type="submit" disabled={sending || (!draft.trim() && files.length === 0)} aria-label="Отправить">{sending && files.length > 0 ? 'Загрузка…' : <Send size={16} />}</button>
                 </div>
               </form>
             )}

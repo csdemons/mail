@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarClock, CheckCircle2, ExternalLink, Lock, MessageSquare, Paperclip, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 
 import { api, errorText } from './api'
@@ -36,8 +36,16 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   const [selected, setSelected] = useState<DeckCard | null>(null)
   const [adding, setAdding] = useState<number | null>(null)
   const [newTitle, setNewTitle] = useState('')
+  // Перетаскивание сделано на pointer-событиях: HTML5 drag-and-drop в WebView2
+  // (Windows) и WebKitGTK (Linux) внутри окна Tauri срабатывает ненадёжно.
   const [dragging, setDragging] = useState<DeckCard | null>(null)
   const [dropStack, setDropStack] = useState<number | null>(null)
+  const [ghost, setGhost] = useState<{ x: number; y: number; w: number; html: string } | null>(null)
+  const drag = useRef<{ card: DeckCard; el: HTMLElement; x0: number; y0: number; dx: number; dy: number; active: boolean } | null>(null)
+  const dropRef = useRef<number | null>(null)
+  const suppressClick = useRef(false)
+  const columnsRef = useRef<HTMLDivElement>(null)
+  const moveRef = useRef<(card: DeckCard, stack: number) => Promise<void>>(async () => {})
 
   const board = boards?.find((b) => b.id === boardId) ?? null
   const editable = Boolean(board?.canEdit)
@@ -114,6 +122,67 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
     }
   }
 
+  moveRef.current = move
+
+  useEffect(() => {
+    function stackAt(x: number, y: number): number | null {
+      const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-stack]')
+      return el ? Number(el.dataset.stack) : null
+    }
+    function onMove(e: PointerEvent) {
+      const d = drag.current
+      if (!d) return
+      if (!d.active) {
+        if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 6) return
+        d.active = true
+        setDragging(d.card)
+        document.body.classList.add('deck-dragging')
+        window.getSelection()?.removeAllRanges()
+      }
+      e.preventDefault()
+      setGhost({ x: e.clientX - d.dx, y: e.clientY - d.dy, w: d.el.offsetWidth, html: d.el.innerHTML })
+      const target = stackAt(e.clientX, e.clientY)
+      dropRef.current = target
+      setDropStack(target)
+      // Автопрокрутка колонок у краёв.
+      const box = columnsRef.current?.getBoundingClientRect()
+      if (box && columnsRef.current) {
+        if (e.clientX < box.left + 60) columnsRef.current.scrollLeft -= 18
+        else if (e.clientX > box.right - 60) columnsRef.current.scrollLeft += 18
+      }
+    }
+    function finish(commit: boolean) {
+      const d = drag.current
+      drag.current = null
+      if (!d?.active) return
+      suppressClick.current = true
+      setTimeout(() => { suppressClick.current = false }, 0)
+      document.body.classList.remove('deck-dragging')
+      const target = dropRef.current
+      dropRef.current = null
+      setGhost(null)
+      setDragging(null)
+      setDropStack(null)
+      if (commit && target !== null) void moveRef.current(d.card, target)
+    }
+    const up = () => finish(true)
+    const cancel = () => finish(false)
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') finish(false) }
+    window.addEventListener('pointermove', onMove, { passive: false })
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    window.addEventListener('blur', cancel)
+    window.addEventListener('keydown', key)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('blur', cancel)
+      window.removeEventListener('keydown', key)
+      document.body.classList.remove('deck-dragging')
+    }
+  }, [])
+
   const activeBoards = useMemo(() => (boards ?? []).filter((b) => !b.archived), [boards])
 
   return (
@@ -144,14 +213,12 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           {editable && <button className="secondary-button" onClick={() => void addStack()}><Plus size={15} /> Колонка</button>}
         </div>
         {error && <div className="inline-warning" role="alert">Deck: {error}</div>}
-        <div className="deck-columns">
+        <div className="deck-columns" ref={columnsRef}>
           {stacks.map((s) => (
             <section
               key={s.id}
-              className={`deck-column ${dropStack === s.id ? 'drop' : ''}`}
-              onDragOver={(e) => { if (dragging && editable) { e.preventDefault(); setDropStack(s.id) } }}
-              onDragLeave={() => setDropStack((cur) => (cur === s.id ? null : cur))}
-              onDrop={(e) => { e.preventDefault(); setDropStack(null); if (dragging) void move(dragging, s.id); setDragging(null) }}
+              data-stack={s.id}
+              className={`deck-column ${dropStack === s.id && dragging?.stackId !== s.id ? 'drop' : ''}`}
             >
               <header><strong>{s.title}</strong><span>{s.cards.length}</span></header>
               <div className="deck-cards">
@@ -160,11 +227,15 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
                   return (
                     <button
                       key={c.id}
-                      className={`deck-card ${selected?.id === c.id ? 'selected' : ''} ${c.done ? 'done' : ''}`}
-                      draggable={editable}
-                      onDragStart={(e) => { setDragging(c); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(c.id)) }}
-                      onDragEnd={() => { setDragging(null); setDropStack(null) }}
-                      onClick={() => setSelected(c)}
+                      className={`deck-card ${selected?.id === c.id ? 'selected' : ''} ${c.done ? 'done' : ''} ${dragging?.id === c.id ? 'drag-source' : ''}`}
+                      data-card={c.id}
+                      onPointerDown={(e) => {
+                        if (!editable || e.button !== 0) return
+                        const r = e.currentTarget.getBoundingClientRect()
+                        drag.current = { card: c, el: e.currentTarget, x0: e.clientX, y0: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, active: false }
+                      }}
+                      onDragStart={(e) => e.preventDefault()}
+                      onClick={() => { if (!suppressClick.current) setSelected(c) }}
                     >
                       {c.labels.length > 0 && <div className="deck-labels">{c.labels.map((l) => <span key={l.id} style={{ background: `#${l.color}` }}>{l.title}</span>)}</div>}
                       <div className="deck-card-title">{c.done && <CheckCircle2 size={14} />} {c.title}</div>
@@ -189,6 +260,7 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           ))}
           {board && stacks.length === 0 && !loading && <div className="empty-state">На доске нет колонок.</div>}
         </div>
+        {ghost && <div className="deck-card deck-ghost" style={{ left: ghost.x, top: ghost.y, width: ghost.w }} dangerouslySetInnerHTML={{ __html: ghost.html }} />}
       </main>
 
       {selected && board && (

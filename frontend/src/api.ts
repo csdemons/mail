@@ -71,6 +71,9 @@ export const api = {
   talkRooms: () => invoke<TalkRoom[]>('talk_rooms'),
   talkHistory: (token: string, before: number | null = null) => invoke<TalkMessage[]>('talk_history', { token, before }),
   talkPoll: (token: string, lastKnown: number) => invoke<TalkMessage[]>('talk_poll', { token, lastKnown }),
+  talkSendFile: (token: string, attachment: string, caption: string, replyTo: number | null = null) =>
+    invoke<void>('talk_send_file', { token, attachment, caption, replyTo }),
+  forgetAttachment: (attachment: string) => invoke<void>('forget_attachment', { attachment }),
   talkSend: (token: string, message: string, replyTo: number | null = null) =>
     invoke<void>('talk_send', { token, message, replyTo }),
   autoLogin: () => invoke<Account | null>('auto_login'),

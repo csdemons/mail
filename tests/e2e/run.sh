@@ -15,6 +15,9 @@ export XDG_CONFIG_HOME="$E2E_HOME/config" XDG_DATA_HOME="$E2E_HOME/data" XDG_CAC
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
 eval "$(echo -n 'kr-pass' | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)"
 export GNOME_KEYRING_CONTROL
+# Файл, который отладочная сборка «выберет» вместо системного диалога.
+printf 'test file for talk\n' > "$E2E_HOME/отчёт-e2e.txt"
+export RRCKI_E2E_PICK="$E2E_HOME/отчёт-e2e.txt"
 tauri-driver >/tmp/tauri-driver.log 2>&1 &
 TD=$!
 sleep 2

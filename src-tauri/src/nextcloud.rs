@@ -140,6 +140,11 @@ impl Nc {
         Ok(Self { client: http(Duration::from_secs(45))?, creds, me: me.to_string() })
     }
 
+    /// Загрузка файлов: большие файлы по медленному каналу идут долго.
+    pub fn upload(creds: NcCreds, me: &str) -> Result<Self> {
+        Ok(Self { client: http(Duration::from_secs(30 * 60))?, creds, me: me.to_string() })
+    }
+
     /// Long-poll Talk ждёт до 30 с — нужен клиент с запасом по времени.
     pub fn long_poll(creds: NcCreds, me: &str) -> Result<Self> {
         Ok(Self { client: http(Duration::from_secs(75))?, creds, me: me.to_string() })
@@ -398,11 +403,22 @@ pub struct TalkMessage {
     pub system: bool,
     pub parent_text: Option<String>,
     pub parent_author: Option<String>,
-    pub files: Vec<String>,
+    pub files: Vec<TalkFile>,
+}
+
+/// Файл, опубликованный в беседе (параметр `{file}` сообщения).
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkFile {
+    /// ID файла в Nextcloud — открывается по ссылке `/f/<id>`.
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+    pub mimetype: String,
 }
 
 /// Подставляет `{mention-user1}`, `{file}` и т.п. из messageParameters.
-pub fn render_message(v: &Value) -> (String, Vec<String>) {
+pub fn render_message(v: &Value) -> (String, Vec<TalkFile>) {
     let mut out = text(&v["message"]);
     let mut files = Vec::new();
     if let Some(params) = v["messageParameters"].as_object() {
@@ -412,15 +428,35 @@ pub fn render_message(v: &Value) -> (String, Vec<String>) {
             let shown = match ty {
                 "user" | "guest" | "call" | "user-group" | "group" => format!("@{name}"),
                 "file" => {
-                    files.push(name.to_string());
-                    format!("📎 {name}")
+                    // Файл показывается отдельной плашкой под текстом.
+                    files.push(TalkFile { id: text(&p["id"]).or_int(&p["id"]), name: name.to_string(), size: int(&p["size"]), mimetype: text(&p["mimetype"]) });
+                    String::new()
                 }
                 _ => name.to_string(),
             };
             out = out.replace(&format!("{{{key}}}"), &shown);
         }
     }
-    (out, files)
+    (out.trim().to_string(), files)
+}
+
+trait OrInt {
+    fn or_int(self, v: &Value) -> String;
+}
+impl OrInt for String {
+    /// ID приходит то строкой, то числом.
+    fn or_int(self, v: &Value) -> String {
+        if self.is_empty() { v.as_i64().map(|n| n.to_string()).unwrap_or_default() } else { self }
+    }
+}
+
+/// «отчёт.pdf» → «отчёт (2).pdf»
+pub fn numbered_name(name: &str, n: u32) -> String {
+    if n == 0 { return name.to_string(); }
+    match name.rfind('.') {
+        Some(i) if i > 0 => format!("{} ({n}){}", &name[..i], &name[i..]),
+        _ => format!("{name} ({n})"),
+    }
 }
 
 pub fn parse_message(v: &Value, me: &str) -> TalkMessage {
@@ -458,7 +494,8 @@ impl Nc {
             unread_mention: r["unreadMention"].as_bool().unwrap_or(false),
             last_activity: int(&r["lastActivity"]),
             last_message: r["lastMessage"].is_object().then(|| {
-                let (t, _) = render_message(&r["lastMessage"]);
+                let (t, f) = render_message(&r["lastMessage"]);
+                let t = match f.first() { Some(file) if t.is_empty() => format!("📎 {}", file.name), _ => t };
                 let who = text(&r["lastMessage"]["actorDisplayName"]);
                 if who.is_empty() { t } else { format!("{who}: {t}") }
             }),
@@ -498,6 +535,89 @@ impl Nc {
         self.ocs(Method::POST, &format!("{TALK_CHAT}{token}"), &[], Some(body), "Отправка сообщения").await?;
         Ok(())
     }
+
+    /// URL в WebDAV файлов пользователя: `remote.php/dav/files/<uid>/<path>`.
+    fn files_url(&self, path: &str) -> Result<Url> {
+        let mut url = self.creds.base.join("remote.php/dav/files/").map_err(|e| AppError::Other(e.to_string()))?;
+        {
+            let mut seg = url.path_segments_mut().map_err(|_| AppError::Other("Некорректный адрес Nextcloud".into()))?;
+            seg.pop_if_empty().push(&self.me);
+            for part in path.split('/').filter(|p| !p.is_empty()) {
+                seg.push(part);
+            }
+        }
+        Ok(url)
+    }
+
+    fn dav(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
+        self.client
+            .request(method, url)
+            .basic_auth(&self.creds.login, Some(&self.creds.app_password))
+            .header("OCS-APIRequest", "true")
+    }
+
+    /// Папка вложений Talk из настроек пользователя (по умолчанию «/Talk»).
+    async fn talk_attachment_folder(&self) -> String {
+        let folder = self
+            .ocs(Method::GET, "ocs/v2.php/cloud/capabilities", &[("format", "json".into())], None, "Возможности сервера")
+            .await
+            .ok()
+            .and_then(|(_, _, d)| d.pointer("/capabilities/spreed/config/attachments/folder").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+        let folder = folder.trim_matches('/');
+        if folder.is_empty() || folder.split('/').any(|p| p == ".." || p == ".") { "Talk".into() } else { folder.to_string() }
+    }
+
+    /// Отправляет файл в беседу так же, как веб-интерфейс Talk: загружает его
+    /// в папку вложений пользователя и публикует в беседе (shareType 10).
+    /// Имя не перезаписывает существующие файлы: «файл (1).pdf», «файл (2).pdf»…
+    pub async fn talk_send_file(&self, token: &str, name: &str, data: Vec<u8>, caption: &str, reply_to: Option<i64>) -> Result<String> {
+        let folder = self.talk_attachment_folder().await;
+        let mut acc = String::new();
+        for part in folder.split('/') {
+            acc.push('/');
+            acc.push_str(part);
+            let resp = self
+                .dav(Method::from_bytes(b"MKCOL").expect("MKCOL"), self.files_url(&acc)?)
+                .send()
+                .await
+                .map_err(net_error)?;
+            // 201 — создана, 405 — уже существует.
+            if !(resp.status().is_success() || resp.status() == StatusCode::METHOD_NOT_ALLOWED) {
+                return Err(status_error(resp.status(), "Папка вложений Talk"));
+            }
+        }
+        let mut stored = None;
+        for n in 0..100 {
+            let candidate = numbered_name(name, n);
+            let path = format!("{acc}/{candidate}");
+            let resp = self
+                .dav(Method::PUT, self.files_url(&path)?)
+                .header("If-None-Match", "*")
+                .header("Content-Type", mime_guess::from_path(name).first_or_octet_stream().essence_str())
+                .body(data.clone())
+                .send()
+                .await
+                .map_err(net_error)?;
+            match resp.status() {
+                s if s.is_success() => {
+                    stored = Some(path);
+                    break;
+                }
+                StatusCode::PRECONDITION_FAILED => continue,
+                StatusCode::INSUFFICIENT_STORAGE => return Err(AppError::Other("В Nextcloud закончилось место (квота)".into())),
+                StatusCode::PAYLOAD_TOO_LARGE => return Err(AppError::Other("Файл слишком большой для сервера Nextcloud".into())),
+                s => return Err(status_error(s, "Загрузка файла")),
+            }
+        }
+        let path = stored.ok_or_else(|| AppError::Other("Не удалось подобрать свободное имя файла".into()))?;
+        let mut meta = json!({ "messageType": "comment" });
+        if !caption.trim().is_empty() { meta["caption"] = json!(caption.trim()); }
+        if let Some(r) = reply_to { meta["replyTo"] = json!(r); }
+        let body = json!({ "shareType": 10, "shareWith": token, "path": path, "talkMetaData": meta.to_string() });
+        self.ocs(Method::POST, "ocs/v2.php/apps/files_sharing/api/v1/shares", &[("format", "json".into())], Some(body), "Публикация файла в беседе").await?;
+        Ok(path)
+    }
 }
 
 #[cfg(test)]
@@ -523,12 +643,23 @@ mod tests {
             "parent": { "id": 5, "actorDisplayName": "Иванов Иван", "message": "Где отчёт?", "messageParameters": [] }
         });
         let m = parse_message(&v, "yushkov_do@nrcki.ru");
-        assert_eq!(m.text, "@Иванов Иван, посмотри 📎 Отчёт.docx");
-        assert_eq!(m.files, vec!["Отчёт.docx"]);
+        assert_eq!(m.text, "@Иванов Иван, посмотри");
+        assert_eq!(m.files, vec![TalkFile { id: "42".into(), name: "Отчёт.docx".into(), size: 0, mimetype: String::new() }]);
+        // Сообщение «только файл»: текста нет, ID числом.
+        let (t, f) = render_message(&json!({"message": "{file}", "messageParameters": {"file": {"type": "file", "id": 9, "name": "a.png", "size": 5, "mimetype": "image/png"}}}));
+        assert!(t.is_empty() && f[0].id == "9" && f[0].size == 5);
         assert!(m.own && !m.system);
         assert_eq!(m.parent_text.as_deref(), Some("Где отчёт?"));
         // Пустые параметры приходят как [] — не должно падать.
         assert_eq!(render_message(&json!({"message": "Привет", "messageParameters": []})).0, "Привет");
+    }
+
+    #[test]
+    fn numbers_duplicate_names() {
+        assert_eq!(numbered_name("отчёт.pdf", 0), "отчёт.pdf");
+        assert_eq!(numbered_name("отчёт.pdf", 2), "отчёт (2).pdf");
+        assert_eq!(numbered_name(".bashrc", 1), ".bashrc (1)");
+        assert_eq!(numbered_name("README", 1), "README (1)");
     }
 
     #[test]

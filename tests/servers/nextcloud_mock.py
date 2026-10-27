@@ -8,12 +8,14 @@ python3 tests/servers/nextcloud_mock.py <cert> <key> [port=8443]
 """
 import json, ssl, sys, threading, time, base64, itertools
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import unquote, urlparse, parse_qs
 
 LOGIN, APP_PASSWORD, UID = 'test@rrcki.ru', 'app-pass-123', 'test'
 lock = threading.Condition()
 ids = itertools.count(100)
 state = {
+    'dirs': {'/'},
+    'files': {},
     'polls': 0,
     'revoked': False,
     'boards': [
@@ -125,7 +127,8 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks')} | {'messages': state['messages']})
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks')} | {'messages': state['messages'],
+                             'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:
                 state['messages'][q['token']].append({
@@ -196,6 +199,41 @@ class H(BaseHTTPRequestHandler):
                     state['cards'].remove(card)
                     return self.send(200, card)
 
+        # --- Файлы (WebDAV) и публикация в беседу
+        F = f'/remote.php/dav/files/{UID}/'
+        if p.startswith(F):
+            path = '/' + unquote(p[len(F):]).strip('/')
+            if method == 'MKCOL':
+                if path in state['dirs']:
+                    return self.send(405)
+                state['dirs'].add(path)
+                return self.send(201)
+            if method == 'PUT':
+                if path.rsplit('/', 1)[0] not in state['dirs']:
+                    return self.send(409)
+                n = int(self.headers.get('Content-Length') or 0)
+                data = self.rfile.read(n)
+                if path in state['files'] and self.headers.get('If-None-Match') == '*':
+                    return self.send(412)
+                state['files'][path] = {'id': next(ids), 'data': data}
+                return self.send(201)
+        if method == 'GET' and p == '/ocs/v2.php/cloud/capabilities':
+            return self.ocs({'capabilities': {'spreed': {'config': {'attachments': {'allowed': True, 'folder': '/Talk'}}}}})
+        if method == 'POST' and p == '/ocs/v2.php/apps/files_sharing/api/v1/shares':
+            b = self.body()
+            f = state['files'].get(b.get('path'))
+            if int(b.get('shareType', -1)) != 10 or f is None or b.get('shareWith') not in state['messages']:
+                return self.send(404, {'message': 'bad share'})
+            meta = json.loads(b.get('talkMetaData') or '{}')
+            name = b['path'].rsplit('/', 1)[1]
+            with lock:
+                m = {'id': next(ids), 'actorType': 'users', 'actorId': UID, 'actorDisplayName': 'Тестовый Пользователь',
+                     'timestamp': int(time.time()), 'message': meta.get('caption') or '{file}', 'messageType': 'comment', 'systemMessage': '',
+                     'messageParameters': {'file': {'type': 'file', 'id': str(f['id']), 'name': name, 'size': len(f['data']), 'mimetype': 'text/plain', 'path': b['path']}}}
+                state['messages'][b['shareWith']].append(m)
+                lock.notify_all()
+            return self.ocs({'id': next(ids)})
+
         # --- Talk
         if method == 'GET' and p == '/ocs/v2.php/apps/spreed/api/v4/room':
             return self.ocs([room_view(r) for r in state['rooms']])
@@ -241,6 +279,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self): self.route('POST')
     def do_PUT(self): self.route('PUT')
     def do_DELETE(self): self.route('DELETE')
+    def do_MKCOL(self): self.route('MKCOL')
 
 
 cert, key = sys.argv[1:3]

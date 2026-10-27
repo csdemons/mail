@@ -313,6 +313,18 @@ try:
     W(d, 20).until(lambda d: 'Проверить резервные копии' in d.find_elements(By.CSS_SELECTOR, '.deck-column')[0].get_attribute('textContent'))
     new = [c for c in nc_mock('GET', '/test/state')['cards'] if c['title'] == 'Проверить резервные копии'][0]
     assert new['stackId'] == 10; ok('card created')
+    # Перетаскивание мышью (pointer-события) в «В работе».
+    from selenium.webdriver.common.action_chains import ActionChains
+    src = [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'Проверить резервные копии' in c.get_attribute('textContent')][0]
+    dst = d.find_elements(By.CSS_SELECTOR, '.deck-column')[1]
+    ac = ActionChains(d).move_to_element(src).click_and_hold()
+    for i in range(1, 6):
+        ac = ac.move_to_element_with_offset(dst, 0, 0) if i == 5 else ac.move_by_offset(30 * i, 4)
+    ac.pause(0.2).release().perform()
+    W(d, 20).until(lambda d: [c for c in nc_mock('GET', '/test/state')['cards'] if c['id'] == new['id']][0]['stackId'] == 11)
+    W(d, 20).until(lambda d: 'Проверить резервные копии' in d.find_elements(By.CSS_SELECTOR, '.deck-column')[1].get_attribute('textContent'))
+    assert not d.find_elements(By.CSS_SELECTOR, '.deck-panel'), 'drag must not open the card'
+    ok('card dragged to «В работе» with the mouse')
     [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'Проверить резервные копии' in c.get_attribute('textContent')][0].click()
     panel = wait(d, '.deck-panel')
     set_value(d, panel.find_element(By.CSS_SELECTOR, 'textarea'), 'Veeam + NAS')
@@ -342,7 +354,8 @@ try:
     W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 2)
     W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.talk-msg')) == 2)
     msgs = [m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')]
-    assert '@Тестовый Пользователь' in msgs[0] and '📎 План работ.xlsx' in msgs[1], msgs
+    assert '@Тестовый Пользователь' in msgs[0] and 'План работ.xlsx' in msgs[1], msgs
+    assert [f.get_attribute('textContent') for f in d.find_elements(By.CSS_SELECTOR, '.talk-msg .talk-file span')] == ['План работ.xlsx']
     assert not any('reaction' in m for m in msgs); ok('history: mentions and files rendered, reaction events hidden')
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.rail-badge')); ok('chat badge cleared after reading')
     box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
@@ -360,6 +373,20 @@ try:
     W(d, 20).until(lambda d: any('Буду в среду' in m.get_attribute('textContent') and 'обновление в среду' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own')))
     last = nc_mock('GET', '/test/state')['messages']['abc123'][-1]
     assert last['message'] == 'Буду в среду' and last['parent']['id'] == 1, last; ok('reply with quote')
+    # Файл: скрепка → (диалог подменён RRCKI_E2E_PICK) → плашка → отправка с подписью.
+    d.find_element(By.CSS_SELECTOR, '.talk-attach').click()
+    W(d, 10).until(lambda d: 'отчёт-e2e.txt' in d.find_element(By.CSS_SELECTOR, '.talk-pending').get_attribute('textContent'))
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'); box.send_keys('Логи во вложении'); box.send_keys(Keys.ENTER)
+    W(d, 20).until(lambda d: any('Логи во вложении' in m.get_attribute('textContent') and 'отчёт-e2e.txt' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own')))
+    st = nc_mock('GET', '/test/state')
+    assert st['files'].get('/Talk/отчёт-e2e.txt') == 'test file for talk\n', st['files']
+    assert not d.find_elements(By.CSS_SELECTOR, '.talk-pending'); ok('file uploaded to /Talk and shared with caption')
+    # Второй раз то же имя → «отчёт-e2e (1).txt», без перезаписи.
+    d.find_element(By.CSS_SELECTOR, '.talk-attach').click()
+    wait(d, '.talk-pending')
+    d.find_element(By.CSS_SELECTOR, '.talk-compose button[type=submit]').click()
+    W(d, 20).until(lambda d: '/Talk/отчёт-e2e (1).txt' in nc_mock('GET', '/test/state')['files'])
+    ok('same name not overwritten: «отчёт-e2e (1).txt»')
     d.save_screenshot(f'{OUT}/11-chat.png')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise

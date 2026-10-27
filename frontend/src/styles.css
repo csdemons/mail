@@ -345,11 +345,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .deck-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
 .deck-columns { flex: 1; display: flex; gap: 12px; padding: 12px; overflow: auto; align-items: flex-start; }
 .deck-column { flex: 0 0 272px; max-height: 100%; display: flex; flex-direction: column; background: var(--hover); border-radius: 12px; padding: 8px; border: 2px dashed transparent; }
-.deck-column.drop { border-color: var(--blue); }
+.deck-column.drop { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 8%, var(--hover)); }
+.deck-card.drag-source { opacity: .35; }
+.deck-ghost { position: fixed; z-index: 1000; pointer-events: none; transform: rotate(2deg); box-shadow: 0 10px 28px #0003; cursor: grabbing; }
+body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .deck-column header { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 8px; }
 .deck-column header span { color: var(--muted); font-size: 12px; }
 .deck-cards { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 20px; }
-.deck-card { text-align: left; border: 1px solid var(--line); background: var(--surface); color: inherit; border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; cursor: grab; }
+.deck-card { user-select: none; touch-action: none; text-align: left; border: 1px solid var(--line); background: var(--surface); color: inherit; border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; cursor: grab; }
 .deck-card:hover { box-shadow: 0 2px 8px #0001; }
 .deck-card.selected { border-color: var(--blue); }
 .deck-card.done .deck-card-title { color: var(--muted); text-decoration: line-through; }
@@ -391,3 +394,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .talk-input-row textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; font: inherit; background: var(--surface); color: inherit; }
 .talk-readonly { padding: 12px; text-align: center; }
 .room-row .message-topline .folder-count { margin-left: auto; }
+
+.talk-files { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.talk-file { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border: 1px solid var(--line); background: var(--surface); color: inherit; border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.talk-file:hover { border-color: var(--blue); }
+.talk-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-file small { color: var(--muted); flex: 0 0 auto; }
+.talk-pending { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.talk-pending .talk-file { cursor: default; }
+.talk-pending .talk-file button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; display: inline-flex; }
+.talk-input-row .icon-button { flex: 0 0 auto; }

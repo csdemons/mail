@@ -236,5 +236,12 @@ export interface TalkMessage {
   system: boolean
   parentText: string | null
   parentAuthor: string | null
-  files: string[]
+  files: TalkFile[]
+}
+
+export interface TalkFile {
+  id: string
+  name: string
+  size: number
+  mimetype: string
 }

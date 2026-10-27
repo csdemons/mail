@@ -363,11 +363,22 @@ const MAX_OUTGOING_MB: u64 = 25;
 
 #[tauri::command]
 async fn pick_attachments(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<PickedFile>> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog().file().pick_files(move |paths| {
-        let _ = tx.send(paths);
-    });
-    let Some(paths) = rx.await.ok().flatten() else {
+    // E2E: системный диалог WebDriver не нажать, поэтому в отладочной сборке
+    // файлы можно подставить переменной окружения. В релизе этого кода нет.
+    #[cfg(debug_assertions)]
+    let test_paths: Option<Vec<tauri_plugin_dialog::FilePath>> = std::env::var("RRCKI_E2E_PICK")
+        .ok()
+        .map(|v| v.split(';').map(|p| tauri_plugin_dialog::FilePath::Path(PathBuf::from(p))).collect());
+    #[cfg(not(debug_assertions))]
+    let test_paths: Option<Vec<tauri_plugin_dialog::FilePath>> = None;
+    let paths = if let Some(p) = test_paths { Some(p) } else {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.dialog().file().pick_files(move |paths| {
+            let _ = tx.send(paths);
+        });
+        rx.await.ok().flatten()
+    };
+    let Some(paths) = paths else {
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
@@ -915,6 +926,37 @@ async fn talk_send(state: State<'_, AppState>, token: String, message: String, r
     nc(&state).await?.talk_send(&token, &message, reply_to).await
 }
 
+const MAX_TALK_FILE_MB: u64 = 512;
+
+/// Отправляет в беседу файл, выбранный через `pick_attachments`.
+#[tauri::command]
+async fn talk_send_file(state: State<'_, AppState>, token: String, attachment: String, caption: String, reply_to: Option<i64>) -> Result<()> {
+    let (creds, uid) = state.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
+    let path = state
+        .picked
+        .lock()
+        .await
+        .get(&attachment)
+        .cloned()
+        .ok_or_else(|| AppError::Other("Файл не найден, выберите его заново".into()))?;
+    let size = tokio::fs::metadata(&path).await?.len();
+    if size > MAX_TALK_FILE_MB * 1024 * 1024 {
+        return Err(AppError::Other(format!("Файл больше {MAX_TALK_FILE_MB} МБ — отправьте ссылку из Nextcloud")));
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+    let data = tokio::fs::read(&path).await?;
+    nextcloud::Nc::upload(creds, &uid)?.talk_send_file(&token, &name, data, &caption, reply_to).await?;
+    state.picked.lock().await.remove(&attachment);
+    Ok(())
+}
+
+/// Сбрасывает выбранный, но не отправленный файл.
+#[tauri::command]
+async fn forget_attachment(state: State<'_, AppState>, attachment: String) -> Result<()> {
+    state.picked.lock().await.remove(&attachment);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -970,6 +1012,8 @@ pub fn run() {
             talk_history,
             talk_poll,
             talk_send,
+            talk_send_file,
+            forget_attachment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RRCKI Mail");
