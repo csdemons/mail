@@ -241,10 +241,47 @@ pub struct DeckCard {
     pub done: bool,
     pub archived: bool,
     pub labels: Vec<DeckLabel>,
-    pub assigned: Vec<String>,
+    pub assigned: Vec<DeckUser>,
     pub owner: String,
     pub comments_unread: i64,
     pub attachment_count: i64,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeckUser {
+    pub uid: String,
+    pub name: String,
+}
+
+/// Метки и участники доски — для назначения на карточку.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeckBoardDetails {
+    pub labels: Vec<DeckLabel>,
+    pub users: Vec<DeckUser>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeckComment {
+    pub id: i64,
+    pub author: String,
+    pub author_id: String,
+    pub own: bool,
+    pub message: String,
+    pub created: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeckAttachment {
+    pub id: i64,
+    pub name: String,
+    pub size: i64,
+    pub mimetype: String,
+    /// ID файла в Nextcloud (открывается по `/f/<id>`), если вложение — файл.
+    pub file_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -270,6 +307,36 @@ fn user_name(v: &Value) -> String {
         .to_string()
 }
 
+fn deck_user(v: &Value) -> DeckUser {
+    let uid = v.get("uid").and_then(Value::as_str).or_else(|| v.as_str()).unwrap_or_default().to_string();
+    let name = user_name(v);
+    DeckUser { name: if name.is_empty() { uid.clone() } else { name }, uid }
+}
+
+fn parse_label(l: &Value) -> DeckLabel {
+    DeckLabel { id: int(&l["id"]), title: text(&l["title"]), color: text(&l["color"]) }
+}
+
+pub fn parse_board_details(v: &Value) -> DeckBoardDetails {
+    let mut users: Vec<DeckUser> = Vec::new();
+    let mut add = |u: DeckUser| if !u.uid.is_empty() && !users.iter().any(|x| x.uid == u.uid) { users.push(u) };
+    add(deck_user(&v["owner"]));
+    for u in v["users"].as_array().into_iter().flatten() {
+        add(deck_user(u));
+    }
+    // Участники-пользователи из списка доступа (type 0); группы не раскрываем.
+    for a in v["acl"].as_array().into_iter().flatten() {
+        if int(&a["type"]) == 0 {
+            add(deck_user(&a["participant"]));
+        }
+    }
+    users.sort_by_key(|u| u.name.to_lowercase());
+    DeckBoardDetails {
+        labels: v["labels"].as_array().map(|a| a.iter().map(parse_label).collect()).unwrap_or_default(),
+        users,
+    }
+}
+
 pub fn parse_board(v: &Value) -> DeckBoard {
     let p = &v["permissions"];
     DeckBoard {
@@ -285,10 +352,10 @@ pub fn parse_board(v: &Value) -> DeckBoard {
 
 pub fn parse_card(v: &Value) -> DeckCard {
     let labels = v["labels"].as_array().map(|a| {
-        a.iter().map(|l| DeckLabel { id: int(&l["id"]), title: text(&l["title"]), color: text(&l["color"]) }).collect()
+        a.iter().map(parse_label).collect()
     }).unwrap_or_default();
     let assigned = v["assignedUsers"].as_array().map(|a| {
-        a.iter().map(|u| user_name(u.get("participant").unwrap_or(u))).filter(|s| !s.is_empty()).collect()
+        a.iter().map(|u| deck_user(u.get("participant").unwrap_or(u))).filter(|u| !u.uid.is_empty()).collect()
     }).unwrap_or_default();
     DeckCard {
         id: int(&v["id"]),
@@ -365,6 +432,74 @@ impl Nc {
     pub async fn deck_delete_card(&self, board: i64, stack: i64, card: i64) -> Result<()> {
         self.call(Method::DELETE, &format!("{DECK}boards/{board}/stacks/{stack}/cards/{card}"), &[], None, "Удаление карточки").await?;
         Ok(())
+    }
+
+    pub async fn deck_board_details(&self, board: i64) -> Result<DeckBoardDetails> {
+        let (_, _, v) = self.call(Method::GET, &format!("{DECK}boards/{board}"), &[], None, "Доска").await?;
+        Ok(parse_board_details(&v))
+    }
+
+    /// Назначить/снять исполнителя.
+    pub async fn deck_assign(&self, board: i64, stack: i64, card: i64, uid: &str, assign: bool) -> Result<()> {
+        let action = if assign { "assignUser" } else { "unassignUser" };
+        self.call(Method::PUT, &format!("{DECK}boards/{board}/stacks/{stack}/cards/{card}/{action}"), &[],
+            Some(json!({ "userId": uid })), "Исполнитель").await?;
+        Ok(())
+    }
+
+    /// Поставить/снять метку.
+    pub async fn deck_label(&self, board: i64, stack: i64, card: i64, label: i64, add: bool) -> Result<()> {
+        let action = if add { "assignLabel" } else { "removeLabel" };
+        self.call(Method::PUT, &format!("{DECK}boards/{board}/stacks/{stack}/cards/{card}/{action}"), &[],
+            Some(json!({ "labelId": label })), "Метка").await?;
+        Ok(())
+    }
+
+    /// Комментарии карточки (OCS API Deck), от старых к новым.
+    pub async fn deck_comments(&self, card: i64) -> Result<Vec<DeckComment>> {
+        let (_, _, d) = self.ocs(Method::GET, &format!("ocs/v2.php/apps/deck/api/v1.0/cards/{card}/comments"),
+            &[("limit", "100".into()), ("offset", "0".into())], None, "Комментарии").await?;
+        let mut out: Vec<DeckComment> = d.as_array().map(|a| a.iter().map(|c| {
+            let author_id = text(&c["actorId"]);
+            DeckComment {
+                id: int(&c["id"]),
+                author: c["actorDisplayName"].as_str().filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| author_id.clone()),
+                own: author_id.eq_ignore_ascii_case(&self.me),
+                author_id,
+                message: text(&c["message"]),
+                created: text(&c["creationDateTime"]),
+            }
+        }).collect()).unwrap_or_default();
+        out.sort_by_key(|c| c.id);
+        Ok(out)
+    }
+
+    pub async fn deck_comment_add(&self, card: i64, message: &str) -> Result<()> {
+        let message = message.trim();
+        if message.is_empty() { return Ok(()); }
+        if message.chars().count() > 1000 { return Err(AppError::Other("Комментарий длиннее 1000 символов".into())); }
+        self.ocs(Method::POST, &format!("ocs/v2.php/apps/deck/api/v1.0/cards/{card}/comments"), &[],
+            Some(json!({ "message": message })), "Комментарий").await?;
+        Ok(())
+    }
+
+    pub async fn deck_comment_delete(&self, card: i64, comment: i64) -> Result<()> {
+        self.ocs(Method::DELETE, &format!("ocs/v2.php/apps/deck/api/v1.0/cards/{card}/comments/{comment}"), &[], None, "Удаление комментария").await?;
+        Ok(())
+    }
+
+    /// Вложения карточки (API 1.1 — включая файлы из Nextcloud).
+    pub async fn deck_attachments(&self, board: i64, stack: i64, card: i64) -> Result<Vec<DeckAttachment>> {
+        let (_, _, v) = self.call(Method::GET, &format!("index.php/apps/deck/api/v1.1/boards/{board}/stacks/{stack}/cards/{card}/attachments"),
+            &[], None, "Вложения").await?;
+        Ok(v.as_array().map(|a| a.iter().filter(|x| int(&x["deletedAt"]) == 0).map(|x| {
+            let ext = &x["extendedData"];
+            let name = ext.pointer("/info/filename").and_then(Value::as_str).map(|f| {
+                match ext.pointer("/info/extension").and_then(Value::as_str) { Some(e) if !e.is_empty() => format!("{f}.{e}"), _ => f.to_string() }
+            }).unwrap_or_else(|| text(&x["data"]));
+            let file_id = ext["fileid"].as_i64().or_else(|| (x["type"].as_str() == Some("file")).then(|| int(&x["id"])));
+            DeckAttachment { id: int(&x["id"]), name, size: int(&ext["filesize"]), mimetype: text(&ext["mimetype"]), file_id }
+        }).collect()).unwrap_or_default())
     }
 
     pub async fn deck_create_stack(&self, board: i64, title: &str) -> Result<()> {
@@ -862,6 +997,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_board_details() {
+        let d = parse_board_details(&json!({
+            "owner": {"uid": "admin", "displayname": "Администратор"},
+            "labels": [{"id": 1, "title": "Срочно", "color": "e9322d"}],
+            "users": [{"uid": "ivanov", "displayname": "Иванов"}],
+            "acl": [{"type": 0, "participant": {"uid": "petrova", "displayname": "Петрова"}},
+                    {"type": 1, "participant": {"uid": "staff", "displayname": "Сотрудники"}},
+                    {"type": 0, "participant": {"uid": "ivanov", "displayname": "Иванов"}}]
+        }));
+        assert_eq!(d.labels[0].title, "Срочно");
+        assert_eq!(d.users.iter().map(|u| u.uid.as_str()).collect::<Vec<_>>(), vec!["admin", "ivanov", "petrova"]);
+    }
+
+    #[test]
     fn numbers_duplicate_names() {
         assert_eq!(numbered_name("отчёт.pdf", 0), "отчёт.pdf");
         assert_eq!(numbered_name("отчёт.pdf", 2), "отчёт (2).pdf");
@@ -879,7 +1028,7 @@ mod tests {
             "owner": {"uid": "yushkov_do", "displayname": "Юшков"}, "commentsUnread": 2
         }));
         assert_eq!((c.id, c.stack_id, c.done), (12, 3, false));
-        assert_eq!(c.assigned, vec!["Иванов"]);
+        assert_eq!(c.assigned, vec![DeckUser { uid: "ivanov".into(), name: "Иванов".into() }]);
         assert_eq!(c.labels[0].title, "Срочно");
         let done = parse_card(&json!({"id": 1, "done": "2026-10-27T10:00:00+00:00", "owner": "u"}));
         assert!(done.done && done.owner == "u");

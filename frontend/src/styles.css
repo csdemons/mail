@@ -492,3 +492,45 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .talk-react-picker.popover { top: 12px; right: 6px; flex-direction: row; }
 .talk-msg.own .talk-react-picker.popover { right: auto; left: 6px; }
 .talk-big-emoji { font-size: 30px; line-height: 1.2; }
+/* Deck: карточка подробно — подзадачи, исполнители, метки, комментарии, вложения */
+.deck-panel { flex: 0 0 min(500px, 42vw); }
+.deck-card-detail { display: flex; flex-direction: column; gap: 12px; }
+.deck-title-input { font: inherit; font-size: 18px; font-weight: 600; border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; background: transparent; color: inherit; }
+.deck-title-input:hover:not(:disabled), .deck-title-input:focus { border-color: var(--line); background: var(--surface); outline: 0; }
+.deck-card-meta .all-done { color: #1f9d74; font-weight: 600; }
+.deck-people-row { display: grid; grid-template-columns: 92px 1fr; align-items: start; gap: 6px 10px; font-size: 13px; position: relative; }
+.deck-people-row > .muted { padding-top: 4px; }
+.deck-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.deck-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); color: inherit; border-radius: 14px; padding: 2px 8px 2px 3px; font: inherit; font-size: 12px; }
+.deck-chip i { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--blue); color: #fff; font-style: normal; font-size: 9px; font-weight: 700; }
+.deck-chip.add { padding: 3px 9px; cursor: pointer; color: var(--muted); }
+.deck-chip.add:hover { color: var(--blue); border-color: var(--blue); }
+.deck-chip button, .deck-label-chip button { border: 0; background: transparent; color: inherit; padding: 0; display: inline-flex; cursor: pointer; opacity: .7; }
+.deck-label-chip { display: inline-flex; align-items: center; gap: 4px; color: #fff; border-radius: 10px; padding: 2px 9px; font-size: 11px; font-weight: 600; text-shadow: 0 1px 1px #0003; }
+.deck-picker { grid-column: 2; display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--surface); box-shadow: 0 6px 20px #0001; }
+.deck-picker label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.deck-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+.deck-tabs button { display: inline-flex; align-items: center; gap: 5px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 7px 10px; cursor: pointer; }
+.deck-tabs button.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
+.deck-tasks, .deck-comments, .deck-files { display: flex; flex-direction: column; gap: 8px; }
+.deck-progress { position: relative; height: 8px; border-radius: 4px; background: var(--hover); }
+.deck-progress i { display: block; height: 100%; border-radius: 4px; background: #1f9d74; transition: width .3s; }
+.deck-progress span { position: absolute; right: 0; top: 10px; font-size: 11px; color: var(--muted); }
+.deck-checklist { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.deck-checklist li { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 8px; }
+.deck-checklist li:hover { background: var(--hover); }
+.deck-checklist li span { flex: 1; cursor: text; overflow-wrap: anywhere; }
+.deck-checklist li.done span { color: var(--muted); text-decoration: line-through; }
+.deck-checklist li button { border: 0; background: transparent; color: var(--muted); cursor: pointer; opacity: 0; display: inline-flex; }
+.deck-checklist li:hover button { opacity: 1; }
+.deck-checklist input[type=checkbox] { width: 16px; height: 16px; accent-color: #1f9d74; }
+.deck-item-edit { flex: 1; font: inherit; border: 1px solid var(--blue); border-radius: 6px; padding: 2px 6px; background: var(--surface); color: inherit; }
+.deck-add-item { display: flex; align-items: center; gap: 8px; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; }
+.deck-add-item input { flex: 1; border: 0; outline: 0; background: transparent; font: inherit; color: inherit; }
+.deck-comment { display: flex; gap: 8px; align-items: flex-start; }
+.deck-comment .sender-avatar { width: 28px; height: 28px; font-size: 10px; flex: 0 0 auto; }
+.deck-comment > div:last-child { flex: 1; background: var(--hover); border-radius: 10px; padding: 6px 10px; }
+.deck-comment-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.deck-comment-head span { color: var(--muted); font-size: 11px; }
+.deck-comment-head button { margin-left: auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; }
+.deck-comment-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; margin-top: 2px; }

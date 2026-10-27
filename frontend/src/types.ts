@@ -202,7 +202,7 @@ export interface DeckCard {
   done: boolean
   archived: boolean
   labels: DeckLabel[]
-  assigned: string[]
+  assigned: DeckUser[]
   owner: string
   commentsUnread: number
   attachmentCount: number
@@ -292,4 +292,31 @@ export interface AppInfo {
   version: string
   variant: string
   os: string
+}
+
+export interface DeckUser {
+  uid: string
+  name: string
+}
+
+export interface DeckBoardDetails {
+  labels: DeckLabel[]
+  users: DeckUser[]
+}
+
+export interface DeckComment {
+  id: number
+  author: string
+  authorId: string
+  own: boolean
+  message: string
+  created: string
+}
+
+export interface DeckAttachment {
+  id: number
+  name: string
+  size: number
+  mimetype: string
+  fileId: number | null
 }

@@ -1035,6 +1035,41 @@ pub async fn deck_delete_card(state: State<'_, AppState>, board_id: i64, stack_i
 }
 
 #[tauri::command]
+pub async fn deck_board_details(state: State<'_, AppState>, board_id: i64) -> Result<nextcloud::DeckBoardDetails> {
+    nc(&state).await?.deck_board_details(board_id).await
+}
+
+#[tauri::command]
+pub async fn deck_assign(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64, uid: String, assign: bool) -> Result<()> {
+    nc(&state).await?.deck_assign(board_id, stack_id, card_id, &uid, assign).await
+}
+
+#[tauri::command]
+pub async fn deck_label(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64, label_id: i64, add: bool) -> Result<()> {
+    nc(&state).await?.deck_label(board_id, stack_id, card_id, label_id, add).await
+}
+
+#[tauri::command]
+pub async fn deck_comments(state: State<'_, AppState>, card_id: i64) -> Result<Vec<nextcloud::DeckComment>> {
+    nc(&state).await?.deck_comments(card_id).await
+}
+
+#[tauri::command]
+pub async fn deck_comment_add(state: State<'_, AppState>, card_id: i64, message: String) -> Result<()> {
+    nc(&state).await?.deck_comment_add(card_id, &message).await
+}
+
+#[tauri::command]
+pub async fn deck_comment_delete(state: State<'_, AppState>, card_id: i64, comment_id: i64) -> Result<()> {
+    nc(&state).await?.deck_comment_delete(card_id, comment_id).await
+}
+
+#[tauri::command]
+pub async fn deck_attachments(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64) -> Result<Vec<nextcloud::DeckAttachment>> {
+    nc(&state).await?.deck_attachments(board_id, stack_id, card_id).await
+}
+
+#[tauri::command]
 pub async fn deck_create_stack(state: State<'_, AppState>, board_id: i64, title: String) -> Result<()> {
     nc(&state).await?.deck_create_stack(board_id, &title).await
 }
@@ -1270,6 +1305,13 @@ macro_rules! app_commands {
             crate::commands::deck_move_card,
             crate::commands::deck_delete_card,
             crate::commands::deck_create_stack,
+            crate::commands::deck_board_details,
+            crate::commands::deck_assign,
+            crate::commands::deck_label,
+            crate::commands::deck_comments,
+            crate::commands::deck_comment_add,
+            crate::commands::deck_comment_delete,
+            crate::commands::deck_attachments,
             crate::commands::talk_rooms,
             crate::commands::talk_history,
             crate::commands::talk_poll,

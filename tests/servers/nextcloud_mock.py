@@ -35,7 +35,7 @@ state = {
         2: [{'id': 20, 'title': 'Новости', 'boardId': 2, 'order': 0, 'deletedAt': 0}],
     },
     'cards': [
-        {'id': 1, 'stackId': 10, 'title': 'Обновить RuPost', 'description': 'Окно работ в среду', 'type': 'plain', 'order': 0,
+        {'id': 1, 'stackId': 10, 'title': 'Обновить RuPost', 'description': 'Окно работ в среду\n\n- [x] Бэкап\n- [ ] Обновить пакеты\n- [ ] Проверить почту', 'type': 'plain', 'order': 0,
          'duedate': '2026-10-30T00:00:00+00:00', 'done': None, 'archived': False, 'owner': {'uid': UID, 'displayname': 'Тестовый'},
          'labels': [{'id': 1, 'title': 'Срочно', 'color': 'e9322d', 'boardId': 1}],
          'assignedUsers': [{'participant': {'uid': 'ivanov', 'displayname': 'Иванов Иван'}}], 'commentsUnread': 1, 'attachmentCount': 0},
@@ -44,6 +44,11 @@ state = {
         {'id': 3, 'stackId': 20, 'title': 'Плановые работы 1 ноября', 'description': '', 'type': 'plain', 'order': 0,
          'duedate': None, 'done': None, 'archived': False, 'owner': 'admin', 'labels': [], 'assignedUsers': [], 'commentsUnread': 0},
     ],
+    'board_labels': {1: [{'id': 1, 'title': 'Срочно', 'color': 'e9322d', 'boardId': 1}, {'id': 2, 'title': 'Сеть', 'color': '317cc9', 'boardId': 1}]},
+    'comments': {1: [{'id': 501, 'objectId': 1, 'message': 'Согласовано с ИБ', 'actorId': 'ivanov', 'actorType': 'users',
+                      'actorDisplayName': 'Иванов Иван', 'creationDateTime': '2026-10-26T09:00:00+00:00'}]},
+    'attachments': {1: [{'id': 77, 'cardId': 1, 'type': 'file', 'data': 'regl.pdf', 'deletedAt': 0,
+                         'extendedData': {'filesize': 2048, 'mimetype': 'application/pdf', 'fileid': 9001, 'info': {'filename': 'Регламент', 'extension': 'pdf'}}}]},
     'rooms': [
         {'token': 'abc123', 'type': 2, 'name': 'uit', 'displayName': 'УИТ — общий', 'readOnly': 0},
         {'token': 'dm-ivanov', 'type': 1, 'name': 'ivanov', 'displayName': 'Иванов Иван', 'readOnly': 0},
@@ -155,7 +160,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks')} | {'messages': state['messages'],
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments')} | {'messages': state['messages'],
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:
@@ -178,7 +183,31 @@ class H(BaseHTTPRequestHandler):
         D = '/index.php/apps/deck/api/v1.0/boards'
         if p == D and method == 'GET':
             return self.send(200, state['boards'])
+        # Комментарии (OCS) и вложения (API 1.1)
+        CM = '/ocs/v2.php/apps/deck/api/v1.0/cards/'
+        if p.startswith(CM) and '/comments' in p:
+            rest = p[len(CM):].split('/')
+            card_id = int(rest[0]); lst = state['comments'].setdefault(card_id, [])
+            if method == 'GET':
+                return self.ocs(list(reversed(lst)))
+            if method == 'POST':
+                b = self.body()
+                c = {'id': next(ids), 'objectId': card_id, 'message': b['message'], 'actorId': UID, 'actorType': 'users',
+                     'actorDisplayName': 'Тестовый Пользователь', 'creationDateTime': time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime())}
+                lst.append(c); return self.ocs(c)
+            if method == 'DELETE' and len(rest) == 3:
+                state['comments'][card_id] = [c for c in lst if c['id'] != int(rest[2])]
+                return self.ocs([])
+        A = '/index.php/apps/deck/api/v1.1/boards/'
+        if p.startswith(A) and p.endswith('/attachments') and method == 'GET':
+            card_id = int(p[len(A):].split('/')[4])
+            return self.send(200, state['attachments'].get(card_id, []))
         parts = p[len(D):].strip('/').split('/') if p.startswith(D + '/') else []
+        if len(parts) == 1 and method == 'GET':
+            b = next(x for x in state['boards'] if x['id'] == int(parts[0]))
+            return self.send(200, dict(b, labels=state['board_labels'].get(b['id'], []),
+                                       users=[{'uid': 'ivanov', 'displayname': 'Иванов Иван'}],
+                                       acl=[{'type': 0, 'participant': {'uid': 'petrova', 'displayname': 'Петрова Анна'}}]))
         if parts:
             board = int(parts[0])
             perms = next(b for b in state['boards'] if b['id'] == board)['permissions']
@@ -218,6 +247,20 @@ class H(BaseHTTPRequestHandler):
                         if f not in b:
                             return self.send(400, {'message': f'{f} missing'})
                     card.update(title=b['title'], description=b['description'], duedate=b.get('duedate'), done=b.get('done'))
+                    return self.send(200, card)
+                if len(parts) == 6 and parts[5] in ('assignUser', 'unassignUser') and method == 'PUT':
+                    uid = self.body()['userId']
+                    users = card.get('assignedUsers') or []
+                    users = [u for u in users if u['participant']['uid'] != uid]
+                    if parts[5] == 'assignUser':
+                        name = {'ivanov': 'Иванов Иван', 'petrova': 'Петрова Анна', UID: 'Тестовый Пользователь'}.get(uid, uid)
+                        users.append({'participant': {'uid': uid, 'displayname': name}})
+                    card['assignedUsers'] = users
+                    return self.send(200, card)
+                if len(parts) == 6 and parts[5] in ('assignLabel', 'removeLabel') and method == 'PUT':
+                    lid = int(self.body()['labelId'])
+                    lab = next(l for l in state['board_labels'][board] if l['id'] == lid)
+                    card['labels'] = [l for l in card.get('labels', []) if l['id'] != lid] + ([lab] if parts[5] == 'assignLabel' else [])
                     return self.send(200, card)
                 if len(parts) == 6 and parts[5] == 'reorder' and method == 'PUT':
                     b = self.body()

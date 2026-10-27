@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, Contact, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
+  Account, Contact, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
 } from './types'
@@ -63,6 +63,15 @@ export const api = {
 
   deckBoards: () => invoke<DeckBoard[]>('deck_boards'),
   deckStacks: (boardId: number) => invoke<DeckStack[]>('deck_stacks', { boardId }),
+  deckBoardDetails: (boardId: number) => invoke<DeckBoardDetails>('deck_board_details', { boardId }),
+  deckAssign: (boardId: number, stackId: number, cardId: number, uid: string, assign: boolean) =>
+    invoke<void>('deck_assign', { boardId, stackId, cardId, uid, assign }),
+  deckLabel: (boardId: number, stackId: number, cardId: number, labelId: number, add: boolean) =>
+    invoke<void>('deck_label', { boardId, stackId, cardId, labelId, add }),
+  deckComments: (cardId: number) => invoke<DeckComment[]>('deck_comments', { cardId }),
+  deckCommentAdd: (cardId: number, message: string) => invoke<void>('deck_comment_add', { cardId, message }),
+  deckCommentDelete: (cardId: number, commentId: number) => invoke<void>('deck_comment_delete', { cardId, commentId }),
+  deckAttachments: (boardId: number, stackId: number, cardId: number) => invoke<DeckAttachment[]>('deck_attachments', { boardId, stackId, cardId }),
   deckCreateCard: (boardId: number, stackId: number, title: string, description = '', duedate: string | null = null) =>
     invoke<void>('deck_create_card', { boardId, stackId, title, description, duedate }),
   deckUpdateCard: (boardId: number, stackId: number, cardId: number, title: string, description: string, duedate: string | null, done: boolean) =>

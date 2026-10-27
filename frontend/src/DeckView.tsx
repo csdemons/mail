@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarClock, CheckCircle2, ExternalLink, Lock, MessageSquare, Paperclip, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { CalendarClock, CheckCircle2, ExternalLink, FileText, ListChecks, Lock, MessageSquare, Paperclip, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 
-import { api, errorText } from './api'
-import type { DeckBoard, DeckCard, DeckStack } from './types'
+import { api, errorText, formatSize } from './api'
+import { addItem, checklistProgress, parseChecklist, removeItem, renameItem, toggleItem } from './checklist'
+import type { DeckAttachment, DeckBoard, DeckBoardDetails, DeckCard, DeckComment, DeckLabel, DeckStack, DeckUser } from './types'
 
 const LAST_BOARD_KEY = 'rrcki-mail.deck-board'
 
@@ -59,8 +60,8 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
       .catch((e) => setError(errorText(e)))
   }, [])
 
-  const loadStacks = useCallback(async (id: number) => {
-    setLoading(true)
+  const loadStacks = useCallback(async (id: number, quiet = false) => {
+    if (!quiet) setLoading(true)
     setError('')
     try {
       const s = await api.deckStacks(id)
@@ -246,8 +247,9 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
                       <div className="deck-card-meta">
                         {due && <span className={due.overdue ? 'overdue' : ''}><CalendarClock size={12} /> {due.text}</span>}
                         {c.commentsUnread > 0 && <span><MessageSquare size={12} /> {c.commentsUnread}</span>}
+                        {(() => { const p = checklistProgress(c.description); return p.total > 0 && <span className={p.done === p.total ? 'all-done' : ''} title="Подзадачи"><ListChecks size={12} /> {p.done}/{p.total}</span> })()}
                         {c.attachmentCount > 0 && <span><Paperclip size={12} /> {c.attachmentCount}</span>}
-                        <span className="deck-people">{c.assigned.map((a) => <i key={a} title={a}>{initials(a)}</i>)}</span>
+                        <span className="deck-people">{c.assigned.map((a) => <i key={a.uid} title={a.name}>{initials(a.name)}</i>)}</span>
                       </div>
                     </button>
                   )
@@ -275,6 +277,7 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           stacks={stacks}
           onClose={() => setSelected(null)}
           onChanged={async (text) => { onNotice(text); await loadStacks(board.id) }}
+          onRefresh={() => loadStacks(board.id, true)}
           onMove={(target) => void move(selected, target)}
         />
       )}
@@ -282,12 +285,13 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   )
 }
 
-function CardPanel({ board, card, stacks, onClose, onChanged, onMove }: {
+function CardPanel({ board, card, stacks, onClose, onChanged, onRefresh, onMove }: {
   board: DeckBoard
   card: DeckCard
   stacks: DeckStack[]
   onClose: () => void
   onChanged: (text: string) => Promise<void>
+  onRefresh: () => Promise<void>
   onMove: (stackId: number) => void
 }) {
   const [title, setTitle] = useState(card.title)
@@ -296,20 +300,59 @@ function CardPanel({ board, card, stacks, onClose, onChanged, onMove }: {
   const [done, setDone] = useState(card.done)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [details, setDetails] = useState<DeckBoardDetails | null>(null)
+  const [assigned, setAssigned] = useState<DeckUser[]>(card.assigned)
+  const [labels, setLabels] = useState<DeckLabel[]>(card.labels)
+  const [newItem, setNewItem] = useState('')
+  const [editingItem, setEditingItem] = useState<{ line: number; text: string } | null>(null)
+  const [comments, setComments] = useState<DeckComment[] | null>(null)
+  const [comment, setComment] = useState('')
+  const [attachments, setAttachments] = useState<DeckAttachment[] | null>(null)
+  const [tab, setTab] = useState<'tasks' | 'comments' | 'files'>('tasks')
+  const [picker, setPicker] = useState<'users' | 'labels' | null>(null)
   const ro = !board.canEdit
+  const items = useMemo(() => parseChecklist(description), [description])
+  const progress = items.length ? Math.round((items.filter((i) => i.done).length / items.length) * 100) : 0
+
+  useEffect(() => {
+    api.deckBoardDetails(board.id).then(setDetails).catch(() => undefined)
+    api.deckComments(card.id).then(setComments).catch((e) => { setComments([]); setError(errorText(e)) })
+    api.deckAttachments(board.id, card.stackId, card.id).then(setAttachments).catch(() => setAttachments([]))
+  }, [board.id, card.id, card.stackId])
+
+  const dueIso = () => (due ? new Date(`${due}T12:00:00`).toISOString() : null)
 
   async function save() {
     setBusy(true)
     setError('')
     try {
-      const duedate = due ? new Date(`${due}T12:00:00`).toISOString() : null
-      await api.deckUpdateCard(board.id, card.stackId, card.id, title, description, duedate, done)
+      await api.deckUpdateCard(board.id, card.stackId, card.id, title, description, dueIso(), done)
       await onChanged('Карточка сохранена.')
     } catch (e) {
       setError(errorText(e))
     } finally {
       setBusy(false)
     }
+  }
+
+  /** Подзадачи сохраняются сразу — как галочки в веб-Deck. */
+  async function saveDescription(next: string) {
+    const prev = description
+    setDescription(next)
+    try {
+      await api.deckUpdateCard(board.id, card.stackId, card.id, title, next, dueIso(), done)
+      await onRefresh()
+    } catch (e) {
+      setDescription(prev)
+      setError(errorText(e))
+    }
+  }
+
+  async function addSubtask() {
+    if (!newItem.trim()) return
+    const text = newItem
+    setNewItem('')
+    await saveDescription(addItem(description, text))
   }
 
   async function remove() {
@@ -323,31 +366,171 @@ function CardPanel({ board, card, stacks, onClose, onChanged, onMove }: {
     }
   }
 
+  async function toggleUser(u: DeckUser) {
+    const on = assigned.some((a) => a.uid === u.uid)
+    setAssigned((list) => (on ? list.filter((a) => a.uid !== u.uid) : [...list, u]))
+    try {
+      await api.deckAssign(board.id, card.stackId, card.id, u.uid, !on)
+      await onRefresh()
+    } catch (e) {
+      setAssigned(card.assigned)
+      setError(errorText(e))
+    }
+  }
+
+  async function toggleLabel(l: DeckLabel) {
+    const on = labels.some((x) => x.id === l.id)
+    setLabels((list) => (on ? list.filter((x) => x.id !== l.id) : [...list, l]))
+    try {
+      await api.deckLabel(board.id, card.stackId, card.id, l.id, !on)
+      await onRefresh()
+    } catch (e) {
+      setLabels(card.labels)
+      setError(errorText(e))
+    }
+  }
+
+  async function sendComment() {
+    if (!comment.trim()) return
+    try {
+      await api.deckCommentAdd(card.id, comment)
+      setComment('')
+      setComments(await api.deckComments(card.id))
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+
+  async function deleteComment(c: DeckComment) {
+    if (!window.confirm('Удалить комментарий?')) return
+    try {
+      await api.deckCommentDelete(card.id, c.id)
+      setComments((list) => list?.filter((x) => x.id !== c.id) ?? list)
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+
   return (
     <section className="reader-pane deck-panel">
       <div className="reader-toolbar">
-        <button className="icon-button soft" aria-label="Открыть в Nextcloud" title="Открыть в Nextcloud (комментарии, вложения)" onClick={() => void api.ncOpen(`apps/deck/board/${board.id}/card/${card.id}`)}><ExternalLink size={17} /></button>
+        <button className="icon-button soft" aria-label="Открыть в Nextcloud" title="Открыть в Nextcloud" onClick={() => void api.ncOpen(`apps/deck/board/${board.id}/card/${card.id}`)}><ExternalLink size={17} /></button>
         <div className="reader-toolbar-spacer" />
         <button className="icon-button soft" aria-label="Закрыть" onClick={onClose}><X size={18} /></button>
       </div>
-      <div className="reader-content editor-modal">
-        <label className="login-field"><span>Название</span><input value={title} disabled={ro} onChange={(e) => setTitle(e.target.value)} /></label>
-        <label className="login-field"><span>Колонка</span>
-          <select value={card.stackId} disabled={ro} onChange={(e) => onMove(Number(e.target.value))}>
-            {stacks.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
-          </select>
-        </label>
+      <div className="reader-content editor-modal deck-card-detail">
+        <input className="deck-title-input" value={title} disabled={ro} onChange={(e) => setTitle(e.target.value)} aria-label="Название" />
         <div className="editor-row">
+          <label className="login-field"><span>Колонка</span>
+            <select value={card.stackId} disabled={ro} onChange={(e) => onMove(Number(e.target.value))}>
+              {stacks.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+            </select>
+          </label>
           <label className="login-field"><span>Срок</span><input type="date" value={due} disabled={ro} onChange={(e) => setDue(e.target.value)} /></label>
           <label className="login-remember deck-done"><input type="checkbox" checked={done} disabled={ro} onChange={(e) => setDone(e.target.checked)} /><span>Выполнено</span></label>
         </div>
-        <label className="login-field"><span>Описание</span><textarea rows={8} value={description} disabled={ro} onChange={(e) => setDescription(e.target.value)} placeholder="Поддерживается Markdown" /></label>
-        {(card.assigned.length > 0 || card.labels.length > 0) && (
-          <div className="deck-card-info">
-            {card.assigned.length > 0 && <div><span className="muted">Исполнители:</span> {card.assigned.join(', ')}</div>}
-            {card.labels.length > 0 && <div className="deck-labels">{card.labels.map((l) => <span key={l.id} style={{ background: `#${l.color}` }}>{l.title}</span>)}</div>}
+
+        <div className="deck-people-row">
+          <span className="muted">Исполнители</span>
+          <div className="deck-chips">
+            {assigned.map((u) => <span key={u.uid} className="deck-chip"><i>{initials(u.name)}</i>{u.name}{!ro && <button aria-label={`Снять ${u.name}`} onClick={() => void toggleUser(u)}><X size={11} /></button>}</span>)}
+            {!ro && <button className="deck-chip add" onClick={() => setPicker(picker === 'users' ? null : 'users')}><Plus size={12} /> {assigned.length ? '' : 'Назначить'}</button>}
+          </div>
+          {picker === 'users' && details && (
+            <div className="deck-picker">
+              {details.users.map((u) => (
+                <label key={u.uid}><input type="checkbox" checked={assigned.some((a) => a.uid === u.uid)} onChange={() => void toggleUser(u)} /> {u.name}</label>
+              ))}
+              {details.users.length === 0 && <span className="muted">Нет участников доски</span>}
+            </div>
+          )}
+        </div>
+        <div className="deck-people-row">
+          <span className="muted">Метки</span>
+          <div className="deck-chips">
+            {labels.map((l) => <span key={l.id} className="deck-label-chip" style={{ background: `#${l.color}` }}>{l.title}{!ro && <button aria-label={`Снять ${l.title}`} onClick={() => void toggleLabel(l)}><X size={11} /></button>}</span>)}
+            {!ro && <button className="deck-chip add" onClick={() => setPicker(picker === 'labels' ? null : 'labels')}><Plus size={12} /> {labels.length ? '' : 'Метка'}</button>}
+          </div>
+          {picker === 'labels' && details && (
+            <div className="deck-picker">
+              {details.labels.map((l) => (
+                <label key={l.id}><input type="checkbox" checked={labels.some((x) => x.id === l.id)} onChange={() => void toggleLabel(l)} /> <span className="deck-label-chip" style={{ background: `#${l.color}` }}>{l.title}</span></label>
+              ))}
+              {details.labels.length === 0 && <span className="muted">На доске нет меток</span>}
+            </div>
+          )}
+        </div>
+
+        <div className="deck-tabs" role="tablist">
+          <button role="tab" className={tab === 'tasks' ? 'active' : ''} onClick={() => setTab('tasks')}><ListChecks size={14} /> Подзадачи{items.length ? ` ${items.filter((i) => i.done).length}/${items.length}` : ''}</button>
+          <button role="tab" className={tab === 'comments' ? 'active' : ''} onClick={() => setTab('comments')}><MessageSquare size={14} /> Комментарии{comments?.length ? ` ${comments.length}` : ''}</button>
+          <button role="tab" className={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}><Paperclip size={14} /> Вложения{attachments?.length ? ` ${attachments.length}` : ''}</button>
+        </div>
+
+        {tab === 'tasks' && (
+          <div className="deck-tasks">
+            {items.length > 0 && <div className="deck-progress"><i style={{ width: `${progress}%` }} /><span>{progress}%</span></div>}
+            <ul className="deck-checklist">
+              {items.map((it) => (
+                <li key={it.line} className={it.done ? 'done' : ''}>
+                  <input type="checkbox" checked={it.done} disabled={ro} aria-label={it.text} onChange={() => void saveDescription(toggleItem(description, it.line))} />
+                  {editingItem?.line === it.line ? (
+                    <input autoFocus className="deck-item-edit" value={editingItem.text}
+                      onChange={(e) => setEditingItem({ line: it.line, text: e.target.value })}
+                      onBlur={() => { const t = editingItem.text.trim(); setEditingItem(null); if (t && t !== it.text) void saveDescription(renameItem(description, it.line, t)) }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingItem(null) }} />
+                  ) : (
+                    <span onDoubleClick={() => !ro && setEditingItem({ line: it.line, text: it.text })}>{it.text}</span>
+                  )}
+                  {!ro && <button aria-label={`Удалить подзадачу ${it.text}`} title="Удалить" onClick={() => void saveDescription(removeItem(description, it.line))}><X size={13} /></button>}
+                </li>
+              ))}
+            </ul>
+            {!ro && (
+              <form className="deck-add-item" onSubmit={(e) => { e.preventDefault(); void addSubtask() }}>
+                <Plus size={15} />
+                <input value={newItem} onChange={(e) => setNewItem(e.target.value)} placeholder="Новая подзадача — Enter, чтобы добавить" />
+              </form>
+            )}
+            {items.length === 0 && ro && <div className="muted">Подзадач нет.</div>}
+            <label className="login-field"><span>Описание</span><textarea rows={6} value={description} disabled={ro} onChange={(e) => setDescription(e.target.value)} placeholder="Поддерживается Markdown; подзадачи — строки «- [ ] …»" /></label>
           </div>
         )}
+
+        {tab === 'comments' && (
+          <div className="deck-comments">
+            {comments === null && <div className="muted">Загрузка…</div>}
+            {comments?.length === 0 && <div className="muted">Комментариев пока нет.</div>}
+            {comments?.map((c) => (
+              <div key={c.id} className={`deck-comment ${c.own ? 'own' : ''}`}>
+                <div className="sender-avatar">{initials(c.author)}</div>
+                <div>
+                  <div className="deck-comment-head"><b>{c.author}</b><span>{c.created ? new Date(c.created).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                    {c.own && <button aria-label="Удалить комментарий" title="Удалить" onClick={() => void deleteComment(c)}><Trash2 size={12} /></button>}</div>
+                  <div className="deck-comment-text">{c.message}</div>
+                </div>
+              </div>
+            ))}
+            <form className="deck-add-item" onSubmit={(e) => { e.preventDefault(); void sendComment() }}>
+              <MessageSquare size={15} />
+              <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Комментарий — Enter, чтобы отправить" />
+            </form>
+          </div>
+        )}
+
+        {tab === 'files' && (
+          <div className="deck-files">
+            {attachments === null && <div className="muted">Загрузка…</div>}
+            {attachments?.length === 0 && <div className="muted">Вложений нет. Добавить файл можно в Nextcloud.</div>}
+            {attachments?.map((a) => (
+              <button key={a.id} className="talk-file" title="Открыть в Nextcloud"
+                onClick={() => void api.ncOpen(a.fileId ? `f/${a.fileId}` : `apps/deck/board/${board.id}/card/${card.id}`)}>
+                <FileText size={15} /><span>{a.name}</span>{a.size > 0 && <small>{formatSize(a.size)}</small>}
+              </button>
+            ))}
+          </div>
+        )}
+
         {error && <div className="login-error" role="alert">{error}</div>}
         {!ro && (
           <div className="reader-actions">
