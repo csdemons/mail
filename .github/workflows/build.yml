@@ -81,7 +81,8 @@ jobs:
   bundle-win8:
     name: Bundle (windows 8/8.1)
     needs: check
-    runs-on: windows-latest
+    # Кросс-сборка MinGW на Linux — тот же путь, что проверен локально.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -89,24 +90,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rust-src }
       - uses: Swatinem/rust-cache@v2
-        with: { workspaces: src-tauri, key: win7 }
+        with: { workspaces: src-tauri, key: win7-gnu }
+      - name: Cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 nsis
       - run: npm ci
       - run: npm --prefix frontend run build
-      - name: Build (win7 target, std from source)
+      - name: Build (x86_64-win7-windows-gnu, std from source)
         working-directory: src-tauri
         env: { RUSTC_BOOTSTRAP: '1' }
-        run: cargo build --release -Zbuild-std=std,panic_abort --target x86_64-win7-windows-msvc --features tauri/custom-protocol
-      - run: npx tauri bundle --target x86_64-win7-windows-msvc --bundles nsis
-      - name: Rename installer
-        shell: bash
         run: |
-          cd src-tauri/target/x86_64-win7-windows-msvc/release/bundle/nsis
+          set -o pipefail
+          cargo build --release -Zbuild-std=std,panic_abort --target x86_64-win7-windows-gnu --features tauri/custom-protocol 2>&1 | tee build.log \
+            || { grep -E '^error' -A12 build.log | head -60 | sed 's/^/::error::/'; exit 1; }
+      - run: npx tauri bundle --target x86_64-win7-windows-gnu --bundles nsis
+      - name: Rename installer
+        run: |
+          cd src-tauri/target/x86_64-win7-windows-gnu/release/bundle/nsis
           for f in *-setup.exe; do mv "$f" "$(echo "$f" | sed 's/^RRCKI Mail/rrcki-mail/; s/ /-/g; s/-setup\.exe$/-setup-windows8.exe/')"; done
           ls -la
       - uses: actions/upload-artifact@v4
         with:
           name: rrcki-mail-windows8
-          path: src-tauri/target/x86_64-win7-windows-msvc/release/bundle/nsis/*-windows8.exe
+          path: src-tauri/target/x86_64-win7-windows-gnu/release/bundle/nsis/*-windows8.exe
           if-no-files-found: error
 
   # Релиз создаётся автоматически: пуш в main с новой версией в tauri.conf.json,
