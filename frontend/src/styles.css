@@ -322,3 +322,72 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .secondary-button.danger { color: #c0392b; }
 .create-event { padding: 7px 12px; }
 .reader-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* --- Nextcloud --- */
+.nc-gate { align-items: center; justify-content: center; background: var(--panel); }
+.nc-connect.card { width: min(460px, 92%); display: flex; flex-direction: column; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 24px; }
+.nc-connect.compact { display: flex; flex-direction: column; gap: 10px; }
+.nc-connect.connected { display: flex; align-items: center; gap: 12px; padding: 10px 0; flex-wrap: wrap; }
+.nc-connect.connected > div { flex: 1; display: flex; flex-direction: column; }
+.nc-connect.connected span { color: var(--muted); font-size: 12px; }
+.nc-head { display: flex; gap: 12px; align-items: center; color: var(--blue); }
+.nc-head div { display: flex; flex-direction: column; gap: 4px; color: inherit; }
+.nc-head span { color: var(--muted); }
+.nc-head strong { color: var(--fg, inherit); font-size: 16px; }
+.nc-waiting { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--blue) 8%, transparent); }
+.nc-waiting > svg { color: var(--blue); }
+.nc-manual { display: flex; flex-direction: column; gap: 10px; }
+.settings-section { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--line); }
+.module { position: relative; }
+.rail-badge { position: absolute; top: 2px; right: 4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #e5484d; color: white; font-size: 10px; line-height: 16px; text-align: center; }
+.folder-count.mention { background: #e5484d; color: white; }
+
+.deck-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
+.deck-columns { flex: 1; display: flex; gap: 12px; padding: 12px; overflow: auto; align-items: flex-start; }
+.deck-column { flex: 0 0 272px; max-height: 100%; display: flex; flex-direction: column; background: var(--hover); border-radius: 12px; padding: 8px; border: 2px dashed transparent; }
+.deck-column.drop { border-color: var(--blue); }
+.deck-column header { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 8px; }
+.deck-column header span { color: var(--muted); font-size: 12px; }
+.deck-cards { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 20px; }
+.deck-card { text-align: left; border: 1px solid var(--line); background: var(--surface); color: inherit; border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; cursor: grab; }
+.deck-card:hover { box-shadow: 0 2px 8px #0001; }
+.deck-card.selected { border-color: var(--blue); }
+.deck-card.done .deck-card-title { color: var(--muted); text-decoration: line-through; }
+.deck-card-title { font-weight: 500; display: flex; gap: 5px; align-items: flex-start; }
+.deck-card-title svg { color: #1f9d74; flex: 0 0 auto; margin-top: 2px; }
+.deck-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.deck-labels span { color: white; font-size: 10px; padding: 2px 6px; border-radius: 4px; }
+.deck-card-meta { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.deck-card-meta span { display: inline-flex; align-items: center; gap: 3px; }
+.deck-card-meta .overdue { color: #e5484d; font-weight: 600; }
+.deck-people { margin-left: auto; }
+.deck-people i { font-style: normal; display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: #dbe8ff; color: #1757d5; font-size: 9px; margin-left: -4px; border: 1px solid var(--surface); }
+.deck-add input { width: 100%; border: 1px solid var(--blue); border-radius: 8px; padding: 8px; margin-top: 6px; background: var(--surface); color: inherit; }
+.deck-add-button { justify-content: flex-start; margin-top: 4px; }
+.folder-item .board-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 10px; min-width: 10px; }
+.deck-panel { flex: 0 0 360px; }
+.deck-done { align-self: flex-end; padding-bottom: 10px; }
+.deck-card-info { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+
+.talk-rooms { flex: 0 0 300px; }
+.talk-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--surface); }
+.talk-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; background: var(--panel); }
+.talk-msg { display: flex; gap: 8px; align-items: flex-end; max-width: 75%; }
+.talk-msg.own { align-self: flex-end; flex-direction: row-reverse; }
+.talk-bubble { background: var(--surface); border: 1px solid var(--line); border-radius: 12px 12px 12px 4px; padding: 7px 10px; display: flex; flex-direction: column; gap: 3px; min-width: 80px; }
+.talk-msg.own .talk-bubble { background: #e3eeff; border-color: #c9dcff; border-radius: 12px 12px 4px 12px; }
+.theme-dark .talk-msg.own .talk-bubble { background: #233a5c; border-color: #2f4c75; }
+.talk-author { font-size: 11px; font-weight: 600; color: var(--blue); }
+.talk-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.talk-time { font-size: 10px; color: var(--muted); align-self: flex-end; display: flex; align-items: center; gap: 4px; }
+.talk-reply { border: 0; background: transparent; color: var(--muted); padding: 0; display: inline-grid; opacity: 0; }
+.talk-bubble:hover .talk-reply { opacity: 1; }
+.talk-quote { border-left: 3px solid var(--blue); padding: 2px 8px; font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--blue) 6%, transparent); border-radius: 0 6px 6px 0; }
+.talk-quote.replying { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.talk-quote.replying button { margin-left: auto; border: 0; background: transparent; color: var(--muted); }
+.talk-system { align-self: center; font-size: 11px; color: var(--muted); }
+.talk-compose { border-top: 1px solid var(--line); padding: 10px 12px; }
+.talk-input-row { display: flex; gap: 8px; align-items: flex-end; }
+.talk-input-row textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; font: inherit; background: var(--surface); color: inherit; }
+.talk-readonly { padding: 12px; text-align: center; }
+.room-row .message-topline .folder-count { margin-left: auto; }

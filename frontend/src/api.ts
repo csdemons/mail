@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, ContactInput, ContactsResult, EventInput, EventsResult, Folder, LoginResult, MessageDetail, MessagePage,
+  Account, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
+  TalkMessage, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings,
 } from './types'
 
@@ -46,6 +47,32 @@ export const api = {
   createContact: (bookUrl: string, input: ContactInput) => invoke<void>('create_contact', { bookUrl, input }),
   updateContact: (href: string, input: ContactInput) => invoke<void>('update_contact', { href, input }),
   deleteContact: (href: string, etag: string | null) => invoke<void>('delete_contact', { href, etag }),
+
+  ncStatus: () => invoke<NcStatus>('nc_status'),
+  ncConnectStart: (url: string) => invoke<string>('nc_connect_start', { url }),
+  ncConnectPoll: () => invoke<NcStatus | null>('nc_connect_poll'),
+  ncConnectManual: (url: string, login: string, appPassword: string) =>
+    invoke<NcStatus>('nc_connect_manual', { url, login, appPassword }),
+  ncDisconnect: () => invoke<NcStatus>('nc_disconnect'),
+  ncOpen: (path: string) => invoke<void>('nc_open', { path }),
+
+  deckBoards: () => invoke<DeckBoard[]>('deck_boards'),
+  deckStacks: (boardId: number) => invoke<DeckStack[]>('deck_stacks', { boardId }),
+  deckCreateCard: (boardId: number, stackId: number, title: string, description = '', duedate: string | null = null) =>
+    invoke<void>('deck_create_card', { boardId, stackId, title, description, duedate }),
+  deckUpdateCard: (boardId: number, stackId: number, cardId: number, title: string, description: string, duedate: string | null, done: boolean) =>
+    invoke<void>('deck_update_card', { boardId, stackId, cardId, title, description, duedate, done }),
+  deckMoveCard: (boardId: number, stackId: number, cardId: number, targetStackId: number, order: number) =>
+    invoke<void>('deck_move_card', { boardId, stackId, cardId, targetStackId, order }),
+  deckDeleteCard: (boardId: number, stackId: number, cardId: number) =>
+    invoke<void>('deck_delete_card', { boardId, stackId, cardId }),
+  deckCreateStack: (boardId: number, title: string) => invoke<void>('deck_create_stack', { boardId, title }),
+
+  talkRooms: () => invoke<TalkRoom[]>('talk_rooms'),
+  talkHistory: (token: string, before: number | null = null) => invoke<TalkMessage[]>('talk_history', { token, before }),
+  talkPoll: (token: string, lastKnown: number) => invoke<TalkMessage[]>('talk_poll', { token, lastKnown }),
+  talkSend: (token: string, message: string, replyTo: number | null = null) =>
+    invoke<void>('talk_send', { token, message, replyTo }),
   autoLogin: () => invoke<Account | null>('auto_login'),
   logout: () => invoke<void>('logout'),
   listFolders: () => invoke<Folder[]>('list_folders'),

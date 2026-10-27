@@ -52,6 +52,13 @@ def dav_get(path):
         'Authorization': 'Basic ' + base64.b64encode(b'test@rrcki.ru:Secret-123').decode(), 'Depth': '1'})
     return urllib.request.urlopen(r, context=ctx).read().decode()
 
+def nc_mock(method, path):
+    import urllib.request
+    ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    r = urllib.request.Request('https://localhost:8443' + path, method=method, data=b'' if method == 'POST' else None)
+    import json as _j
+    return _j.loads(urllib.request.urlopen(r, context=ctx).read() or b'{}')
+
 def W(d, t):
     # Список перерисовывается после каждого действия — устаревшие элементы не ошибка.
     return WebDriverWait(d, t, ignored_exceptions=(StaleElementReferenceException,))
@@ -283,6 +290,77 @@ try:
     accept_confirm(d)
     W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.contact-row')) == 3)
     ok('contact deleted')
+
+    # 17. Nextcloud: подключение через Login Flow v2
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Задачи']]").click()
+    card = wait(d, '.nc-connect.card')
+    set_value(d, card.find_element(By.CSS_SELECTOR, 'input'), 'https://localhost:8443/')
+    d.find_element(By.CSS_SELECTOR, '.nc-start').click()
+    W(d, 40).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item')) == 2)
+    assert nc_mock('GET', '/test/state')['polls'] >= 3; ok('Nextcloud connected via login flow (browser approval simulated)')
+
+    # 18. Deck
+    boards = [b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item')]
+    assert boards == ['Объявления', 'УИТ — задачи'], boards
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item') if 'УИТ' in b.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: [c.find_element(By.TAG_NAME, 'strong').text for c in d.find_elements(By.CSS_SELECTOR, '.deck-column')] == ['К выполнению', 'В работе', 'Готово'])
+    first = d.find_elements(By.CSS_SELECTOR, '.deck-column')[0]
+    txt = first.get_attribute('textContent')
+    assert 'Обновить RuPost' in txt and 'Срочно' in txt, txt; ok('board columns, card labels')
+    first.find_element(By.CSS_SELECTOR, '.deck-add-button').click()
+    inp = W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.deck-add input'))
+    inp.send_keys('Проверить резервные копии'); inp.send_keys(Keys.ENTER)
+    W(d, 20).until(lambda d: 'Проверить резервные копии' in d.find_elements(By.CSS_SELECTOR, '.deck-column')[0].get_attribute('textContent'))
+    new = [c for c in nc_mock('GET', '/test/state')['cards'] if c['title'] == 'Проверить резервные копии'][0]
+    assert new['stackId'] == 10; ok('card created')
+    [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'Проверить резервные копии' in c.get_attribute('textContent')][0].click()
+    panel = wait(d, '.deck-panel')
+    set_value(d, panel.find_element(By.CSS_SELECTOR, 'textarea'), 'Veeam + NAS')
+    set_value(d, panel.find_element(By.CSS_SELECTOR, 'input[type=date]'), '2026-11-05')
+    panel.find_element(By.CSS_SELECTOR, '.deck-done input').click()
+    [b for b in panel.find_elements(By.TAG_NAME, 'button') if 'Сохранить' in b.text][0].click()
+    W(d, 20).until(lambda d: [c for c in nc_mock('GET', '/test/state')['cards'] if c['id'] == new['id']][0]['description'] == 'Veeam + NAS')
+    saved = [c for c in nc_mock('GET', '/test/state')['cards'] if c['id'] == new['id']][0]
+    assert saved['done'] and saved['duedate'].startswith('2026-11-05'), saved; ok('card edited: description, due date, done')
+    from selenium.webdriver.support.ui import Select
+    Select(wait(d, '.deck-panel select')).select_by_visible_text('Готово')
+    W(d, 20).until(lambda d: [c for c in nc_mock('GET', '/test/state')['cards'] if c['id'] == new['id']][0]['stackId'] == 12)
+    W(d, 20).until(lambda d: 'Проверить резервные копии' in d.find_elements(By.CSS_SELECTOR, '.deck-column')[2].get_attribute('textContent'))
+    ok('card moved to «Готово»')
+    d.save_screenshot(f'{OUT}/10-deck.png')
+    [b for b in wait(d, '.deck-panel').find_elements(By.TAG_NAME, 'button') if 'Удалить' in b.text][0].click()
+    accept_confirm(d)
+    W(d, 20).until(lambda d: not any(c['id'] == new['id'] for c in nc_mock('GET', '/test/state')['cards']))
+    ok('card deleted')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item') if 'Объявления' in b.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: 'Новости' in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('textContent'))
+    assert not d.find_elements(By.CSS_SELECTOR, '.deck-add-button') and 'только чтение' in d.find_element(By.CSS_SELECTOR, '.deck-main').get_attribute('textContent')
+    ok('read-only board: no editing controls')
+
+    # 19. Talk
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
+    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 2)
+    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.talk-msg')) == 2)
+    msgs = [m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')]
+    assert '@Тестовый Пользователь' in msgs[0] and '📎 План работ.xlsx' in msgs[1], msgs
+    assert not any('reaction' in m for m in msgs); ok('history: mentions and files rendered, reaction events hidden')
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.rail-badge')); ok('chat badge cleared after reading')
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
+    box.send_keys('Добрый день, принято'); box.send_keys(Keys.ENTER)
+    W(d, 20).until(lambda d: any('Добрый день, принято' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own')))
+    ok('message sent, shown as own')
+    t0 = time.time()
+    nc_mock('POST', '/test/inject?token=abc123&text=' + __import__('urllib.parse').parse.quote('Срочно: проверьте почту'))
+    W(d, 15).until(lambda d: any('Срочно: проверьте почту' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg:not(.own)')))
+    ok(f'incoming message via long-poll in {time.time() - t0:.1f}s')
+    target = [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'обновление в среду' in m.get_attribute('textContent')][0]
+    d.execute_script("arguments[0].click()", target.find_element(By.CSS_SELECTOR, '.talk-reply'))
+    wait(d, '.talk-quote.replying')
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'); box.send_keys('Буду в среду'); box.send_keys(Keys.ENTER)
+    W(d, 20).until(lambda d: any('Буду в среду' in m.get_attribute('textContent') and 'обновление в среду' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own')))
+    last = nc_mock('GET', '/test/state')['messages']['abc123'][-1]
+    assert last['message'] == 'Буду в среду' and last['parent']['id'] == 1, last; ok('reply with quote')
+    d.save_screenshot(f'{OUT}/11-chat.png')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:
@@ -292,6 +370,9 @@ finally:
 d = session()
 try:
     wait(d, '.message-row', 30); ok('auto-login from keyring after restart')
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
+    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 2 and not d.find_elements(By.CSS_SELECTOR, '.nc-connect.card'))
+    ok('Nextcloud still connected after restart (app password from keyring)')
     d.find_element(By.CSS_SELECTOR, '.account-switch').click()
     [b for b in d.find_elements(By.CSS_SELECTOR, '.account-menu button') if 'Выйти' in b.text][0].click()
     wait(d, '.login-card'); ok('logout -> login screen')

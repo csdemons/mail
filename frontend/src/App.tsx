@@ -13,6 +13,10 @@ import type {
   Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
 } from './types'
 import Composer from './Composer'
+import DeckView from './DeckView'
+import TalkView from './TalkView'
+import NcConnect from './NcConnect'
+import type { NcStatus } from './types'
 import ContactsView from './ContactsView'
 import CalendarView from './CalendarView'
 
@@ -106,13 +110,35 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const [diagText, setDiagText] = useState<string | null>(null)
   const [diagBusy, setDiagBusy] = useState(false)
 
-  const [module, setModule] = useState<'mail' | 'calendar' | 'contacts'>('mail')
+  const [module, setModule] = useState<'mail' | 'calendar' | 'contacts' | 'deck' | 'chat'>('mail')
+  const [ncStatus, setNcStatus] = useState<NcStatus | null>(null)
+  const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [contacts, setContacts] = useState<Contact[]>([])
   const contactsRequested = useRef(false)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [profileForm, setProfileForm] = useState({ displayName: '', smtpHost: '', smtpPort: '465', davUrl: '' })
   const [profileBusy, setProfileBusy] = useState(false)
+
+  useEffect(() => {
+    api.ncStatus().then(setNcStatus).catch(() => undefined)
+  }, [])
+
+  // Уведомления исчезают сами, чтобы не закрывать поле ввода.
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(''), 6000)
+    return () => clearTimeout(t)
+  }, [notice])
+
+  // Счётчик непрочитанного в чате, пока открыт другой раздел.
+  useEffect(() => {
+    if (!ncStatus?.connected || module === 'chat') return
+    const tick = () => api.talkRooms().then((r) => setChatUnread(r.reduce((n, x) => n + x.unread, 0))).catch(() => undefined)
+    void tick()
+    const t = setInterval(tick, 60000)
+    return () => clearInterval(t)
+  }, [ncStatus?.connected, module])
 
   useEffect(() => {
     api.getProfile().then((p) => {
@@ -422,12 +448,17 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           <button className={`module ${module === 'mail' ? 'active' : ''}`} onClick={() => setModule('mail')}><Mail /><span>Почта</span></button>
           <button className={`module ${module === 'calendar' ? 'active' : ''}`} onClick={() => setModule('calendar')}><CalendarDays /><span>Календарь</span></button>
           <button className={`module ${module === 'contacts' ? 'active' : ''}`} onClick={() => setModule('contacts')}><ContactRound /><span>Контакты</span></button>
-          <button className="module" onClick={() => setNotice('Задачи будут добавлены в следующих версиях.')}><FileText /><span>Задачи</span></button>
-          <button className="module" onClick={() => setNotice('Чат будет добавлен в следующих версиях.')}><MessageCircle /><span>Чат</span></button>
+          <button className={`module ${module === 'deck' ? 'active' : ''}`} onClick={() => setModule('deck')}><FileText /><span>Задачи</span></button>
+          <button className={`module ${module === 'chat' ? 'active' : ''}`} onClick={() => setModule('chat')}><MessageCircle /><span>Чат</span>{chatUnread > 0 && <b className="rail-badge">{chatUnread}</b>}</button>
           <div className="rail-spacer" />
         </nav>
 
         {module === 'calendar' && <CalendarView onNotice={setNotice} />}
+        {(module === 'deck' || module === 'chat') && ncStatus && !ncStatus.connected && (
+          <div className="module-view nc-gate"><NcConnect status={ncStatus} onChange={setNcStatus} /></div>
+        )}
+        {module === 'deck' && ncStatus?.connected && <DeckView onNotice={setNotice} />}
+        {module === 'chat' && ncStatus?.connected && <TalkView onUnread={setChatUnread} />}
         {module === 'contacts' && (
           <ContactsView
             onLoaded={(list) => { setContacts(list); contactsRequested.current = true }}
@@ -641,6 +672,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             <label className="login-field"><span>Календарь и контакты (CalDAV/CardDAV)</span><input value={profileForm.davUrl} onChange={(e) => setProfileForm((f) => ({ ...f, davUrl: e.target.value }))} placeholder={`https://${account.host}/ (автоопределение)`} /></label>
             <div className="settings-actions"><button className="primary-button" disabled={profileBusy} onClick={() => void saveProfile()}>Сохранить</button></div>
           </div>
+          {ncStatus && <div className="settings-section"><strong>Nextcloud (Deck, Talk)</strong><NcConnect status={ncStatus} onChange={setNcStatus} compact /></div>}
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">
             <button className="secondary-button" disabled={diagBusy} onClick={() => void runDiagnostics()}><Stethoscope size={16} /> Диагностика</button>

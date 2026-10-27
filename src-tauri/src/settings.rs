@@ -39,6 +39,19 @@ pub struct Settings {
     /// Имя отправителя в поле «От».
     #[serde(default)]
     pub display_name: String,
+    /// Nextcloud (Deck, Talk): адрес, логин и ID пользователя; пароль приложения — в keyring.
+    #[serde(default = "default_nextcloud_url")]
+    pub nextcloud_url: String,
+    #[serde(default)]
+    pub nextcloud_login: String,
+    #[serde(default)]
+    pub nextcloud_uid: String,
+}
+
+pub const DEFAULT_NEXTCLOUD_URL: &str = "https://next.nrcki.ru/";
+
+fn default_nextcloud_url() -> String {
+    DEFAULT_NEXTCLOUD_URL.to_string()
 }
 
 impl Settings {
@@ -114,6 +127,27 @@ pub fn store_password(settings: &Settings, password: &str) -> std::result::Resul
 
 pub fn forget_password(settings: &Settings) {
     if let Ok(e) = entry(settings) {
+        let _ = e.delete_credential();
+    }
+}
+
+const NC_KEYRING_SERVICE: &str = "ru.rrcki.mail.nextcloud";
+
+fn nc_entry(base: &str, login: &str) -> keyring::Result<keyring::Entry> {
+    let host = url::Url::parse(base).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    keyring::Entry::new(NC_KEYRING_SERVICE, &format!("{login}@{host}"))
+}
+
+pub fn nc_load_password(base: &str, login: &str) -> Option<String> {
+    nc_entry(base, login).ok()?.get_password().ok()
+}
+
+pub fn nc_store_password(base: &str, login: &str, password: &str) -> std::result::Result<(), String> {
+    nc_entry(base, login).and_then(|e| e.set_password(password)).map_err(|e| e.to_string())
+}
+
+pub fn nc_forget_password(base: &str, login: &str) {
+    if let Ok(e) = nc_entry(base, login) {
         let _ = e.delete_credential();
     }
 }

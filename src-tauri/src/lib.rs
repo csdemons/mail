@@ -2,6 +2,8 @@
 pub mod dav;
 mod error;
 #[doc(hidden)]
+pub mod nextcloud;
+#[doc(hidden)]
 pub mod imap;
 mod settings;
 #[doc(hidden)]
@@ -38,6 +40,10 @@ struct AppState {
     /// Найденные календари и адресные книги (автообнаружение один раз за сессию).
     calendars: Mutex<Option<Vec<dav::Collection>>>,
     books: Mutex<Option<Vec<dav::Collection>>>,
+    /// Подключение к Nextcloud: учётные данные и ID пользователя.
+    nc: Mutex<Option<(nextcloud::NcCreds, String)>>,
+    /// Незавершённый вход через браузер (Login Flow v2).
+    nc_flow: Mutex<Option<(url::Url, nextcloud::LoginFlow)>>,
 }
 
 /// Выполняет операцию на открытом соединении. Если соединение оборвалось
@@ -95,10 +101,21 @@ async fn start_session(state: &AppState, creds: Credentials, profile: Settings) 
         old.logout().await;
     }
     *state.creds.lock().await = Some(creds);
+    *state.nc.lock().await = load_nc(&profile);
     *state.profile.lock().await = Some(profile);
     *state.calendars.lock().await = None;
     *state.books.lock().await = None;
     Ok(())
+}
+
+fn load_nc(p: &Settings) -> Option<(nextcloud::NcCreds, String)> {
+    if p.nextcloud_login.is_empty() {
+        return None;
+    }
+    let base = nextcloud::normalize_base(&p.nextcloud_url).ok()?;
+    let password = settings::nc_load_password(base.as_str(), &p.nextcloud_login)?;
+    let uid = if p.nextcloud_uid.is_empty() { p.nextcloud_login.clone() } else { p.nextcloud_uid.clone() };
+    Some((nextcloud::NcCreds { base, login: p.nextcloud_login.clone(), app_password: password }, uid))
 }
 
 fn account_of(s: &Settings) -> Account {
@@ -151,7 +168,13 @@ async fn login(
             .map(|u| u.trim().to_string())
             .or_else(|| previous.as_ref().map(|p| p.dav_url.clone()))
             .unwrap_or_default(),
-        display_name: previous.map(|p| p.display_name).unwrap_or_default(),
+        display_name: previous.as_ref().map(|p| p.display_name.clone()).unwrap_or_default(),
+        nextcloud_url: previous
+            .as_ref()
+            .map(|p| p.nextcloud_url.clone())
+            .unwrap_or_else(|| settings::DEFAULT_NEXTCLOUD_URL.to_string()),
+        nextcloud_login: previous.as_ref().map(|p| p.nextcloud_login.clone()).unwrap_or_default(),
+        nextcloud_uid: previous.as_ref().map(|p| p.nextcloud_uid.clone()).unwrap_or_default(),
     };
 
     let creds = Credentials {
@@ -217,6 +240,7 @@ async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
         settings::forget_password(&s);
     }
     *state.creds.lock().await = None;
+    *state.nc.lock().await = None;
     *state.profile.lock().await = None;
     *state.calendars.lock().await = None;
     *state.books.lock().await = None;
@@ -675,10 +699,227 @@ async fn save_attachment(
     Ok(Some(path.display().to_string()))
 }
 
+// ---------------------------------------------------------------- Nextcloud
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NcStatus {
+    url: String,
+    connected: bool,
+    login: String,
+}
+
+async fn nc_status_of(state: &AppState) -> NcStatus {
+    let profile = state.profile.lock().await.clone();
+    let nc = state.nc.lock().await.clone();
+    NcStatus {
+        url: profile.as_ref().map(|p| p.nextcloud_url.clone()).unwrap_or_else(|| settings::DEFAULT_NEXTCLOUD_URL.into()),
+        connected: nc.is_some(),
+        login: nc.map(|(c, _)| c.login).unwrap_or_default(),
+    }
+}
+
+async fn nc(state: &AppState) -> Result<nextcloud::Nc> {
+    let (creds, uid) = state
+        .nc
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| AppError::Other("Nextcloud не подключён — подключите его в Настройках".into()))?;
+    nextcloud::Nc::new(creds, &uid)
+}
+
+/// Сохраняет подключение: проверяет пароль приложения и узнаёт ID пользователя.
+async fn nc_save(app: &AppHandle, state: &AppState, creds: nextcloud::NcCreds) -> Result<NcStatus> {
+    let probe = nextcloud::Nc::new(creds.clone(), &creds.login)?;
+    let (uid, _name) = probe.user_info().await?;
+    let mut guard = state.profile.lock().await;
+    let mut p = guard.clone().ok_or(AppError::NotLoggedIn)?;
+    p.nextcloud_url = creds.base.to_string();
+    p.nextcloud_login = creds.login.clone();
+    p.nextcloud_uid = uid.clone();
+    settings::save(app, &p)?;
+    *guard = Some(p);
+    drop(guard);
+    if let Err(e) = settings::nc_store_password(creds.base.as_str(), &creds.login, &creds.app_password) {
+        log::warn!("nextcloud keyring: {e}");
+    }
+    *state.nc.lock().await = Some((creds, uid));
+    Ok(nc_status_of(state).await)
+}
+
+#[tauri::command]
+async fn nc_status(state: State<'_, AppState>) -> Result<NcStatus> {
+    Ok(nc_status_of(&state).await)
+}
+
+/// Начинает вход: открывает страницу входа Nextcloud в браузере и возвращает её
+/// адрес (на случай, если браузер не открылся).
+#[tauri::command]
+async fn nc_connect_start(app: AppHandle, state: State<'_, AppState>, url: String) -> Result<String> {
+    use tauri_plugin_opener::OpenerExt;
+    let base = nextcloud::normalize_base(&url)?;
+    let flow = nextcloud::login_flow_start(&base).await?;
+    let login_url = flow.login_url.clone();
+    *state.nc_flow.lock().await = Some((base, flow));
+    if let Err(e) = app.opener().open_url(&login_url, None::<&str>) {
+        log::warn!("browser not opened: {e}");
+    }
+    Ok(login_url)
+}
+
+/// `None` — вход в браузере ещё не подтверждён.
+#[tauri::command]
+async fn nc_connect_poll(app: AppHandle, state: State<'_, AppState>) -> Result<Option<NcStatus>> {
+    let Some((base, flow)) = state.nc_flow.lock().await.clone() else {
+        return Err(AppError::Other("Вход в Nextcloud не начат".into()));
+    };
+    match nextcloud::login_flow_poll(&base, &flow).await? {
+        None => Ok(None),
+        Some(creds) => {
+            *state.nc_flow.lock().await = None;
+            Ok(Some(nc_save(&app, &state, creds).await?))
+        }
+    }
+}
+
+#[tauri::command]
+async fn nc_connect_manual(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+    login: String,
+    app_password: String,
+) -> Result<NcStatus> {
+    let creds = nextcloud::NcCreds {
+        base: nextcloud::normalize_base(&url)?,
+        login: login.trim().to_string(),
+        app_password: app_password.trim().to_string(),
+    };
+    if creds.login.is_empty() || creds.app_password.is_empty() {
+        return Err(AppError::Other("Укажите логин и пароль приложения".into()));
+    }
+    nc_save(&app, &state, creds).await
+}
+
+#[tauri::command]
+async fn nc_disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<NcStatus> {
+    *state.nc_flow.lock().await = None;
+    if let Some((creds, uid)) = state.nc.lock().await.take() {
+        if let Ok(client) = nextcloud::Nc::new(creds.clone(), &uid) {
+            client.revoke().await;
+        }
+        settings::nc_forget_password(creds.base.as_str(), &creds.login);
+    }
+    let mut guard = state.profile.lock().await;
+    if let Some(p) = guard.as_mut() {
+        p.nextcloud_login.clear();
+        p.nextcloud_uid.clear();
+        let _ = settings::save(&app, p);
+    }
+    drop(guard);
+    Ok(nc_status_of(&state).await)
+}
+
+/// Открывает страницу Nextcloud (звонок, доска) в браузере — только на своём сервере.
+#[tauri::command]
+async fn nc_open(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let client = nc(&state).await?;
+    let target = client.creds.base.join(path.trim_start_matches('/')).map_err(|e| AppError::Other(e.to_string()))?;
+    if target.origin() != client.creds.base.origin() {
+        return Err(AppError::Other("Можно открывать только страницы своего Nextcloud".into()));
+    }
+    app.opener()
+        .open_url(target.as_str(), None::<&str>)
+        .map_err(|e| AppError::Other(format!("Не удалось открыть браузер: {e}")))
+}
+
+#[tauri::command]
+async fn deck_boards(state: State<'_, AppState>) -> Result<Vec<nextcloud::DeckBoard>> {
+    nc(&state).await?.deck_boards().await
+}
+
+#[tauri::command]
+async fn deck_stacks(state: State<'_, AppState>, board_id: i64) -> Result<Vec<nextcloud::DeckStack>> {
+    nc(&state).await?.deck_stacks(board_id).await
+}
+
+#[tauri::command]
+async fn deck_create_card(
+    state: State<'_, AppState>,
+    board_id: i64,
+    stack_id: i64,
+    title: String,
+    description: String,
+    duedate: Option<String>,
+) -> Result<()> {
+    nc(&state).await?.deck_create_card(board_id, stack_id, &title, &description, duedate.as_deref()).await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn deck_update_card(
+    state: State<'_, AppState>,
+    board_id: i64,
+    stack_id: i64,
+    card_id: i64,
+    title: String,
+    description: String,
+    duedate: Option<String>,
+    done: bool,
+) -> Result<()> {
+    nc(&state).await?.deck_update_card(board_id, stack_id, card_id, &title, &description, duedate.as_deref(), done).await
+}
+
+#[tauri::command]
+async fn deck_move_card(
+    state: State<'_, AppState>,
+    board_id: i64,
+    stack_id: i64,
+    card_id: i64,
+    target_stack_id: i64,
+    order: i64,
+) -> Result<()> {
+    nc(&state).await?.deck_move_card(board_id, stack_id, card_id, target_stack_id, order).await
+}
+
+#[tauri::command]
+async fn deck_delete_card(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64) -> Result<()> {
+    nc(&state).await?.deck_delete_card(board_id, stack_id, card_id).await
+}
+
+#[tauri::command]
+async fn deck_create_stack(state: State<'_, AppState>, board_id: i64, title: String) -> Result<()> {
+    nc(&state).await?.deck_create_stack(board_id, &title).await
+}
+
+#[tauri::command]
+async fn talk_rooms(state: State<'_, AppState>) -> Result<Vec<nextcloud::TalkRoom>> {
+    nc(&state).await?.talk_rooms().await
+}
+
+#[tauri::command]
+async fn talk_history(state: State<'_, AppState>, token: String, before: Option<i64>) -> Result<Vec<nextcloud::TalkMessage>> {
+    nc(&state).await?.talk_history(&token, before).await
+}
+
+#[tauri::command]
+async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i64) -> Result<Vec<nextcloud::TalkMessage>> {
+    let (creds, uid) = state.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
+    nextcloud::Nc::long_poll(creds, &uid)?.talk_poll(&token, last_known).await
+}
+
+#[tauri::command]
+async fn talk_send(state: State<'_, AppState>, token: String, message: String, reply_to: Option<i64>) -> Result<()> {
+    nc(&state).await?.talk_send(&token, &message, reply_to).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(if cfg!(debug_assertions) {
@@ -712,6 +953,23 @@ pub fn run() {
             create_contact,
             update_contact,
             delete_contact,
+            nc_status,
+            nc_connect_start,
+            nc_connect_poll,
+            nc_connect_manual,
+            nc_disconnect,
+            nc_open,
+            deck_boards,
+            deck_stacks,
+            deck_create_card,
+            deck_update_card,
+            deck_move_card,
+            deck_delete_card,
+            deck_create_stack,
+            talk_rooms,
+            talk_history,
+            talk_poll,
+            talk_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RRCKI Mail");

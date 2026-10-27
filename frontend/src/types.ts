@@ -169,3 +169,72 @@ export interface ContactInput {
   title: string | null
   note: string | null
 }
+
+export interface NcStatus {
+  url: string
+  connected: boolean
+  login: string
+}
+
+export interface DeckBoard {
+  id: number
+  title: string
+  color: string
+  archived: boolean
+  canEdit: boolean
+  canManage: boolean
+  owner: string
+}
+
+export interface DeckLabel {
+  id: number
+  title: string
+  color: string
+}
+
+export interface DeckCard {
+  id: number
+  stackId: number
+  title: string
+  description: string
+  order: number
+  duedate: string | null
+  done: boolean
+  archived: boolean
+  labels: DeckLabel[]
+  assigned: string[]
+  owner: string
+  commentsUnread: number
+  attachmentCount: number
+}
+
+export interface DeckStack {
+  id: number
+  title: string
+  order: number
+  cards: DeckCard[]
+}
+
+export interface TalkRoom {
+  token: string
+  name: string
+  kind: number
+  unread: number
+  unreadMention: boolean
+  lastActivity: number
+  lastMessage: string | null
+  readOnly: boolean
+}
+
+export interface TalkMessage {
+  id: number
+  author: string
+  authorId: string
+  own: boolean
+  timestamp: number
+  text: string
+  system: boolean
+  parentText: string | null
+  parentAuthor: string | null
+  files: string[]
+}
