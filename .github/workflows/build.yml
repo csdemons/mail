@@ -75,12 +75,46 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
 
+  # Windows 8/8.1: стандартные цели Rust требуют Windows 10, поэтому отдельная
+  # сборка под x86_64-win7-windows-msvc (std собирается из исходников).
+  # WebView2 на этих системах — последняя поддерживаемая версия 109.
+  bundle-win8:
+    name: Bundle (windows 8/8.1)
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: '**/package-lock.json' }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rust-src }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, key: win7 }
+      - run: npm ci
+      - run: npm --prefix frontend run build
+      - name: Build (win7 target, std from source)
+        working-directory: src-tauri
+        env: { RUSTC_BOOTSTRAP: '1' }
+        run: cargo build --release -Zbuild-std=std,panic_abort --target x86_64-win7-windows-msvc --features tauri/custom-protocol
+      - run: npx tauri bundle --target x86_64-win7-windows-msvc --bundles nsis
+      - name: Rename installer
+        shell: bash
+        run: |
+          cd src-tauri/target/x86_64-win7-windows-msvc/release/bundle/nsis
+          for f in *-setup.exe; do mv "$f" "$(echo "$f" | sed 's/^RRCKI Mail/rrcki-mail/; s/ /-/g; s/-setup\.exe$/-setup-windows8.exe/')"; done
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rrcki-mail-windows8
+          path: src-tauri/target/x86_64-win7-windows-msvc/release/bundle/nsis/*-windows8.exe
+          if-no-files-found: error
+
   # Релиз создаётся автоматически: пуш в main с новой версией в tauri.conf.json,
   # для которой ещё нет релиза → пакеты прикрепляются к релизу v<версия>.
   release:
     name: GitHub Release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: bundle
+    needs: [bundle, bundle-win8]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -117,6 +151,7 @@ jobs:
 
           ### Установка
           - **Windows 10/11:** `rrcki-mail_*_x64-setup.exe` (или `.msi` для GPO). Ставится поверх предыдущей версии, настройки и пароли сохраняются.
+          - **Windows 8/8.1:** `rrcki-mail_*_x64-setup-windows8.exe` (нужен WebView2 Runtime 109 — последняя версия для этих систем).
           - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+:** `sudo apt install ./rrcki-mail_*_amd64.deb`
           - **RED OS / ALT / Fedora:** `.rpm`; любой дистрибутив — `.AppImage` (`chmod +x` и запустить).
           TXT
