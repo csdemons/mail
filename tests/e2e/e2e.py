@@ -105,6 +105,9 @@ try:
     login(d, 'wrong')
     err = wait(d, '.login-error').text
     assert 'Неверный логин или пароль' in err, err; ok(f'wrong password -> «{err}»')
+    ver = __import__('json').load(open(os.path.join(os.path.dirname(__file__), '../../src-tauri/tauri.conf.json')))['version']
+    W(d, 10).until(lambda d: f'RRCKI Mail {ver}' in d.find_element(By.CSS_SELECTOR, '.login-version').get_attribute('textContent'))
+    ok(f'login screen shows version {ver}')
     d.save_screenshot(f'{OUT}/01-login-error.png')
 
     # 2. вход
@@ -128,6 +131,13 @@ try:
     ok('update downloaded, SHA-256 verified, manual install hint shown')
     d.find_element(By.CSS_SELECTOR, '.update-card button[aria-label="Закрыть"]').click()
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.update-card'))
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    about = W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.about-block'))
+    W(d, 10).until(lambda d: f'RRCKI Mail {ver}' in d.find_element(By.CSS_SELECTOR, '.about-block').get_attribute('textContent'))
+    t = about.get_attribute('textContent')
+    assert 'НИЦ «Курчатовский институт»' in t and 'Юшков Дмитрий Олегович' in t, t; ok('settings: version and «О программе»')
+    d.save_screenshot(f'{OUT}/12-about.png')
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
     folders = [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '.folder-item')]
     print('   folders:', folders)
     assert any('Входящие' in f for f in folders) and any('Проекты' in f for f in folders), folders

@@ -1091,6 +1091,26 @@ pub async fn forget_attachment(state: State<'_, AppState>, attachment: String) -
     Ok(())
 }
 
+// ---------------------------------------------------------------- о программе
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    version: String,
+    /// Сборка: win, win8, deb, astra17, rpm, appimage, unknown.
+    variant: String,
+    os: String,
+}
+
+#[tauri::command]
+pub fn app_info(app: AppHandle) -> AppInfo {
+    AppInfo {
+        version: app.package_info().version.to_string(),
+        variant: updater::detect_variant(host::VARIANT),
+        os: std::env::consts::OS.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------- обновления
 
 /// Есть ли новая версия для этой сборки. `None` — обновлений нет или проверка
@@ -1212,6 +1232,7 @@ macro_rules! app_commands {
             crate::commands::talk_poll,
             crate::commands::talk_send,
             crate::commands::talk_send_file,
+            crate::commands::app_info,
             crate::commands::check_update,
             crate::commands::update_progress,
             crate::commands::install_update,

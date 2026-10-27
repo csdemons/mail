@@ -259,3 +259,9 @@ export interface InstallResult {
   restarting: boolean
   manual: string | null
 }
+
+export interface AppInfo {
+  version: string
+  variant: string
+  os: string
+}

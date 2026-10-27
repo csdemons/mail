@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { LockKeyhole, Mail, ServerCog } from 'lucide-react'
 
 import { api, errorText } from './api'
@@ -16,6 +16,8 @@ interface Props {
 }
 
 export default function Login({ initial, initialError, onLoggedIn }: Props) {
+  const [version, setVersion] = useState('')
+  useEffect(() => { api.appInfo().then((i) => setVersion(i.version)).catch(() => undefined) }, [])
   const [host, setHost] = useState(initial?.host ?? DEFAULT_HOST)
   const [port, setPort] = useState(String(initial?.port ?? DEFAULT_PORT))
   const [smtpHost, setSmtpHost] = useState(initial?.smtpHost ?? DEFAULT_SMTP_HOST)
@@ -116,6 +118,7 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
           <LockKeyhole size={16} /> {busy ? 'Подключение…' : 'Войти'}
         </button>
         <p className="login-note">Соединение защищено TLS. Пароль не передаётся никуда, кроме почтового сервера.</p>
+        <p className="login-version">RRCKI Mail{version ? ` ${version}` : ''} · НИЦ «Курчатовский институт»</p>
       </form>
     </div>
   )

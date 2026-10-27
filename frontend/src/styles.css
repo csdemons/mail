@@ -440,3 +440,11 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .update-bar { height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; }
 .update-bar i { display: block; height: 100%; background: var(--blue); transition: width .3s; }
 .update-cmd { display: block; padding: 8px 10px; border-radius: 8px; background: var(--hover); font-size: 12px; overflow-wrap: anywhere; user-select: all; }
+
+/* О программе */
+.about-block p { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.about-block .about-author { color: inherit; }
+.about-head { display: flex; align-items: center; gap: 12px; }
+.about-head > div:last-child { display: flex; flex-direction: column; gap: 2px; }
+.about-head span { color: var(--muted); font-size: 12px; }
+.login-version { margin: 4px 0 0; text-align: center; color: var(--muted); font-size: 11px; }

@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type {
   Account, Contact, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   TalkMessage, TalkRoom, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult,
+  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
 } from './types'
 
 export interface LoginParams {
@@ -38,6 +38,7 @@ export const api = {
     inReplyTo: string | null; references: string | null; attachments: string[]
   }) => invoke<SendResult>('send_message', { ...m }),
   listContacts: () => invoke<ContactsResult>('list_contacts'),
+  appInfo: () => invoke<AppInfo>('app_info'),
   checkUpdate: () => invoke<UpdateInfo | null>('check_update'),
   updateProgress: () => invoke<{ done: number; total: number }>('update_progress'),
   installUpdate: () => invoke<InstallResult>('install_update'),
@@ -130,4 +131,15 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} Б`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`
   return `${(bytes / 1024 / 1024).toFixed(1)} МБ`
+}
+
+/** Название сборки для «О программе». */
+export const VARIANT_LABEL: Record<string, string> = {
+  win: 'Windows 10/11',
+  win8: 'Windows 8/8.1',
+  deb: 'Linux (.deb, Astra 1.8 / Debian 12)',
+  astra17: 'Astra Linux SE 1.7',
+  rpm: 'Linux (.rpm)',
+  appimage: 'Linux (AppImage)',
+  unknown: 'сборка разработчика',
 }

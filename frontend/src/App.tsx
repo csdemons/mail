@@ -12,6 +12,7 @@ import {
 import type {
   Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
 } from './types'
+import About from './About'
 import Composer from './Composer'
 import { CHECK_UPDATE_EVENT } from './UpdateNotice'
 import DeckView from './DeckView'
@@ -680,6 +681,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             <button className="secondary-button" onClick={() => window.dispatchEvent(new Event(CHECK_UPDATE_EVENT))}><Download size={16} /> Проверить обновления</button>
             <button className="secondary-button" onClick={() => { setShowSettings(false); onLogout() }}><LogOut size={16} /> Выйти и забыть пароль</button>
           </div>
+          <About />
           {diagText !== null && <div className="diag-block">
             <div className="diag-head"><span>Отчёт: IMAP по текущей папке, SMTP, CalDAV/CardDAV (пароль не включается)</span><button className="text-button" onClick={() => void copyDiagnostics()}><Copy size={14} /> Скопировать</button></div>
             <textarea className="diag-text" readOnly value={diagText} />
