@@ -237,6 +237,34 @@ export interface TalkMessage {
   parentText: string | null
   parentAuthor: string | null
   files: TalkFile[]
+  reactions: TalkReaction[]
+  edited: boolean
+  deleted: boolean
+  editText: string | null
+  update: boolean
+}
+
+export interface TalkReaction {
+  emoji: string
+  count: number
+  own: boolean
+}
+
+export interface TalkChunk {
+  messages: TalkMessage[]
+  lastId: number
+}
+
+export interface TalkMention {
+  insert: string
+  label: string
+  source: string
+}
+
+export interface NcUser {
+  id: string
+  label: string
+  sub: string
 }
 
 export interface TalkFile {

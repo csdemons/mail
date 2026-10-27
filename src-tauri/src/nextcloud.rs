@@ -407,6 +407,48 @@ pub struct TalkMessage {
     pub parent_text: Option<String>,
     pub parent_author: Option<String>,
     pub files: Vec<TalkFile>,
+    /// Реакции: эмодзи, сколько и поставил ли я.
+    pub reactions: Vec<TalkReaction>,
+    pub edited: bool,
+    pub deleted: bool,
+    /// Текст для правки: упоминания в виде `@"id"`, как их понимает Talk.
+    pub edit_text: Option<String>,
+    /// Это обновление уже показанного сообщения (реакция, правка, удаление).
+    pub update: bool,
+}
+
+/// Порция сообщений и наибольший id, пришедший с сервера (включая служебные),
+/// — от него продолжается опрос.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkChunk {
+    pub messages: Vec<TalkMessage>,
+    pub last_id: i64,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkReaction {
+    pub emoji: String,
+    pub count: i64,
+    pub own: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkMention {
+    /// Что вставить в сообщение: `@"id"`.
+    pub insert: String,
+    pub label: String,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NcUser {
+    pub id: String,
+    pub label: String,
+    pub sub: String,
 }
 
 /// Файл, опубликованный в беседе (параметр `{file}` сообщения).
@@ -462,22 +504,93 @@ pub fn numbered_name(name: &str, n: u32) -> String {
     }
 }
 
+/// Текст для правки: `{mention-user1}` → `@"id"`.
+fn edit_text(v: &Value) -> String {
+    let mut out = text(&v["message"]);
+    if let Some(params) = v["messageParameters"].as_object() {
+        for (key, p) in params {
+            let ty = p["type"].as_str().unwrap_or_default();
+            let id = p.get("mention-id").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| text(&p["id"]).or_int(&p["id"]));
+            let shown = match ty {
+                "user" | "guest" | "user-group" | "group" => format!("@\"{id}\""),
+                "call" => "@all".to_string(),
+                _ => p["name"].as_str().unwrap_or_default().to_string(),
+            };
+            out = out.replace(&format!("{{{key}}}"), &shown);
+        }
+    }
+    out
+}
+
+fn reactions(v: &Value) -> Vec<TalkReaction> {
+    let own: Vec<String> = v["reactionsSelf"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let mut out: Vec<TalkReaction> = v["reactions"]
+        .as_object()
+        .map(|m| m.iter().map(|(e, n)| TalkReaction { emoji: e.clone(), count: int(n), own: own.contains(e) }).filter(|r| r.count > 0).collect())
+        .unwrap_or_default();
+    out.sort_by_key(|r| std::cmp::Reverse(r.count));
+    out
+}
+
 pub fn parse_message(v: &Value, me: &str) -> TalkMessage {
     let (text_out, files) = render_message(v);
     let parent = v.get("parent").filter(|p| p.is_object());
     let actor_id = text(&v["actorId"]);
+    let deleted = v["messageType"].as_str() == Some("comment_deleted");
+    let system = !deleted && (v["messageType"].as_str() == Some("system") || !v["systemMessage"].as_str().unwrap_or_default().is_empty());
+    let own = actor_id.eq_ignore_ascii_case(me) && v["actorType"].as_str() == Some("users");
     TalkMessage {
         id: int(&v["id"]),
         author: text(&v["actorDisplayName"]),
-        own: actor_id.eq_ignore_ascii_case(me) && v["actorType"].as_str() == Some("users"),
+        own,
         author_id: actor_id,
         timestamp: int(&v["timestamp"]),
-        system: v["messageType"].as_str() == Some("system") || !v["systemMessage"].as_str().unwrap_or_default().is_empty(),
-        text: text_out,
+        system,
+        text: if deleted { "Сообщение удалено".into() } else { text_out },
         parent_text: parent.map(|p| render_message(p).0),
         parent_author: parent.map(|p| text(&p["actorDisplayName"])),
+        edit_text: (own && !system && !deleted && files.is_empty()).then(|| edit_text(v)),
         files,
+        reactions: if deleted { Vec::new() } else { reactions(v) },
+        edited: int(&v["lastEditTime"]) > 0,
+        deleted,
+        update: false,
     }
+}
+
+/// Служебные сообщения о реакции/правке/удалении несут изменённое сообщение
+/// в `parent` — превращаем их в обновление этого сообщения.
+fn as_update(v: &Value, me: &str) -> Option<TalkMessage> {
+    let kind = v["systemMessage"].as_str().unwrap_or_default();
+    if !matches!(kind, "reaction" | "reaction_deleted" | "reaction_revoked" | "message_deleted" | "message_edited") {
+        return None;
+    }
+    let parent = v.get("parent").filter(|p| p.is_object())?;
+    let mut m = parse_message(parent, me);
+    m.update = true;
+    Some(m)
+}
+
+fn max_id(d: &Value) -> i64 {
+    d.as_array().map(|a| a.iter().map(|m| int(&m["id"])).max().unwrap_or(0)).unwrap_or(0)
+}
+
+fn parse_chat(d: &Value, me: &str) -> Vec<TalkMessage> {
+    // Ключ сортировки: обычные сообщения по id, обновления — после них, в порядке
+    // служебных сообщений (последняя правка одного сообщения побеждает).
+    let mut keyed: Vec<((bool, i64), TalkMessage)> = d
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| {
+            if hidden_system(m) {
+                as_update(m, me).map(|u| ((true, int(&m["id"])), u))
+            } else {
+                let p = parse_message(m, me);
+                Some(((false, p.id), p))
+            }
+        }).collect())
+        .unwrap_or_default();
+    keyed.sort_by_key(|(k, _)| *k);
+    keyed.into_iter().map(|(_, m)| m).collect()
 }
 
 fn hidden_system(v: &Value) -> bool {
@@ -509,25 +622,21 @@ impl Nc {
     }
 
     /// История: последние сообщения (или более старые, чем `before`). Помечает беседу прочитанной.
-    pub async fn talk_history(&self, token: &str, before: Option<i64>) -> Result<Vec<TalkMessage>> {
+    pub async fn talk_history(&self, token: &str, before: Option<i64>) -> Result<TalkChunk> {
         let mut q = vec![("lookIntoFuture", "0".to_string()), ("limit", "100".to_string()), ("setReadMarker", "1".to_string())];
         if let Some(b) = before { q.push(("lastKnownMessageId", b.to_string())); }
         let (status, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{token}"), &q, None, "Сообщения").await?;
-        if status == StatusCode::NOT_MODIFIED { return Ok(Vec::new()); }
-        let mut msgs: Vec<TalkMessage> = d.as_array().map(|a| a.iter().filter(|m| !hidden_system(m)).map(|m| parse_message(m, &self.me)).collect()).unwrap_or_default();
-        msgs.sort_by_key(|m| m.id);
-        Ok(msgs)
+        if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0 }); }
+        Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d) })
     }
 
     /// Ждёт новые сообщения до 30 с (long-poll). Пусто — новых нет.
-    pub async fn talk_poll(&self, token: &str, last_known: i64) -> Result<Vec<TalkMessage>> {
+    pub async fn talk_poll(&self, token: &str, last_known: i64) -> Result<TalkChunk> {
         let q = vec![("lookIntoFuture", "1".to_string()), ("lastKnownMessageId", last_known.to_string()),
             ("timeout", "30".to_string()), ("limit", "100".to_string()), ("setReadMarker", "1".to_string())];
         let (status, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{token}"), &q, None, "Новые сообщения").await?;
-        if status == StatusCode::NOT_MODIFIED { return Ok(Vec::new()); }
-        let mut msgs: Vec<TalkMessage> = d.as_array().map(|a| a.iter().filter(|m| !hidden_system(m)).map(|m| parse_message(m, &self.me)).collect()).unwrap_or_default();
-        msgs.sort_by_key(|m| m.id);
-        Ok(msgs)
+        if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0 }); }
+        Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d) })
     }
 
     pub async fn talk_send(&self, token: &str, message: &str, reply_to: Option<i64>) -> Result<()> {
@@ -537,6 +646,76 @@ impl Nc {
         if let Some(r) = reply_to { body["replyTo"] = json!(r); }
         self.ocs(Method::POST, &format!("{TALK_CHAT}{token}"), &[], Some(body), "Отправка сообщения").await?;
         Ok(())
+    }
+
+    pub async fn talk_react(&self, token: &str, message_id: i64, emoji: &str, add: bool) -> Result<()> {
+        let path = format!("ocs/v2.php/apps/spreed/api/v1/reaction/{token}/{message_id}");
+        if add {
+            self.ocs(Method::POST, &path, &[], Some(json!({ "reaction": emoji })), "Реакция").await?;
+        } else {
+            self.ocs(Method::DELETE, &path, &[("reaction", emoji.to_string())], None, "Реакция").await?;
+        }
+        Ok(())
+    }
+
+    pub async fn talk_edit(&self, token: &str, message_id: i64, message: &str) -> Result<()> {
+        let message = message.trim();
+        if message.is_empty() { return Err(AppError::Other("Сообщение не может быть пустым".into())); }
+        self.ocs(Method::PUT, &format!("{TALK_CHAT}{token}/{message_id}"), &[], Some(json!({ "message": message })), "Правка сообщения").await?;
+        Ok(())
+    }
+
+    pub async fn talk_delete(&self, token: &str, message_id: i64) -> Result<()> {
+        self.ocs(Method::DELETE, &format!("{TALK_CHAT}{token}/{message_id}"), &[], None, "Удаление сообщения").await?;
+        Ok(())
+    }
+
+    /// Кого можно упомянуть в беседе (подсказка после «@»).
+    pub async fn talk_mentions(&self, token: &str, search: &str) -> Result<Vec<TalkMention>> {
+        let q = [("search", search.to_string()), ("limit", "8".to_string()), ("includeStatus", "false".to_string())];
+        let (_, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{token}/mentions"), &q, None, "Упоминания").await?;
+        Ok(d.as_array().map(|a| a.iter().map(|m| {
+            let source = text(&m["source"]);
+            let id = m.get("mentionId").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| text(&m["id"]));
+            TalkMention {
+                insert: if source == "calls" { "@all".into() } else { format!("@\"{id}\"") },
+                label: text(&m["label"]),
+                source,
+            }
+        }).collect()).unwrap_or_default())
+    }
+
+    /// Поиск сотрудников Nextcloud (для новой беседы).
+    pub async fn search_users(&self, search: &str) -> Result<Vec<NcUser>> {
+        let q = [("search", search.to_string()), ("itemType", "call".to_string()), ("itemId", "new".to_string()),
+            ("shareTypes[]", "0".to_string()), ("limit", "10".to_string())];
+        let (_, _, d) = self.ocs(Method::GET, "ocs/v2.php/core/autocomplete/get", &q, None, "Поиск пользователей").await?;
+        Ok(d.as_array().map(|a| a.iter().map(|u| NcUser {
+            id: text(&u["id"]),
+            label: text(&u["label"]),
+            sub: text(&u["subline"]),
+        }).filter(|u| !u.id.is_empty() && !u.id.eq_ignore_ascii_case(&self.me)).collect()).unwrap_or_default())
+    }
+
+    /// Личная беседа с пользователем (Talk вернёт существующую, если она есть) или
+    /// групповая с названием и участниками. Возвращает token.
+    pub async fn talk_create(&self, users: &[String], name: Option<&str>) -> Result<String> {
+        if users.is_empty() { return Err(AppError::Other("Выберите собеседника".into())); }
+        let group = name.is_some_and(|n| !n.trim().is_empty()) || users.len() > 1;
+        let body = if group {
+            json!({ "roomType": 2, "roomName": name.unwrap_or("Беседа").trim() })
+        } else {
+            json!({ "roomType": 1, "invite": users[0] })
+        };
+        let (_, _, d) = self.ocs(Method::POST, TALK_ROOM, &[], Some(body), "Новая беседа").await?;
+        let token = text(&d["token"]);
+        if token.is_empty() { return Err(AppError::Other("Talk не вернул беседу".into())); }
+        if group {
+            for u in users {
+                self.ocs(Method::POST, &format!("{TALK_ROOM}/{token}/participants"), &[], Some(json!({ "newParticipant": u, "source": "users" })), "Участник беседы").await?;
+            }
+        }
+        Ok(token)
     }
 
     /// URL в WebDAV файлов пользователя: `remote.php/dav/files/<uid>/<path>`.
@@ -655,6 +834,31 @@ mod tests {
         assert_eq!(m.parent_text.as_deref(), Some("Где отчёт?"));
         // Пустые параметры приходят как [] — не должно падать.
         assert_eq!(render_message(&json!({"message": "Привет", "messageParameters": []})).0, "Привет");
+    }
+
+    #[test]
+    fn talk_updates_reactions_and_edits() {
+        let me = "test";
+        let chat = json!([
+            {"id": 10, "actorType": "users", "actorId": "test", "actorDisplayName": "Я", "timestamp": 1, "message": "Привет, {mention-user1}",
+             "messageType": "comment", "systemMessage": "", "lastEditTime": 0,
+             "messageParameters": {"mention-user1": {"type": "user", "id": "ivanov@nrcki.ru", "name": "Иванов", "mention-id": "ivanov@nrcki.ru"}},
+             "reactions": {"👍": 2, "🎉": 1}, "reactionsSelf": ["👍"]},
+            {"id": 11, "actorType": "users", "actorId": "ivanov", "actorDisplayName": "Иванов", "timestamp": 2, "message": "{actor} reacted",
+             "messageType": "system", "systemMessage": "reaction",
+             "parent": {"id": 10, "actorType": "users", "actorId": "test", "actorDisplayName": "Я", "timestamp": 1, "message": "Привет", "messageType": "comment",
+                        "systemMessage": "", "lastEditTime": 5, "messageParameters": [], "reactions": {"👍": 3}, "reactionsSelf": ["👍"]}},
+            {"id": 12, "actorType": "users", "actorId": "test", "actorDisplayName": "Я", "timestamp": 3, "message": "x", "messageType": "system", "systemMessage": "message_deleted",
+             "parent": {"id": 9, "actorType": "users", "actorId": "test", "actorDisplayName": "Я", "timestamp": 0, "message": "Message deleted by you", "messageType": "comment_deleted", "systemMessage": "", "messageParameters": []}},
+            {"id": 13, "actorType": "users", "actorId": "x", "message": "{actor} joined", "messageType": "system", "systemMessage": "user_added", "messageParameters": []}
+        ]);
+        let m = parse_chat(&chat, me);
+        assert_eq!(m.iter().map(|x| (x.id, x.update)).collect::<Vec<_>>(), vec![(10, false), (13, false), (10, true), (9, true)]);
+        assert_eq!(m[0].reactions, vec![TalkReaction { emoji: "👍".into(), count: 2, own: true }, TalkReaction { emoji: "🎉".into(), count: 1, own: false }]);
+        assert_eq!(m[0].edit_text.as_deref(), Some("Привет, @\"ivanov@nrcki.ru\""));
+        assert!(m[2].edited && m[2].reactions[0].count == 3);
+        assert!(m[3].deleted && m[3].text == "Сообщение удалено" && m[3].edit_text.is_none());
+        assert!(m[1].system);
     }
 
     #[test]

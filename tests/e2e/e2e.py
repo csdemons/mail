@@ -436,7 +436,7 @@ try:
     W(d, 15).until(lambda d: any('Срочно: проверьте почту' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg:not(.own)')))
     ok(f'incoming message via long-poll in {time.time() - t0:.1f}s')
     target = [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'обновление в среду' in m.get_attribute('textContent')][0]
-    d.execute_script("arguments[0].click()", target.find_element(By.CSS_SELECTOR, '.talk-reply'))
+    d.execute_script("arguments[0].click()", target.find_element(By.CSS_SELECTOR, '.talk-actions button[aria-label="Ответить"]'))
     wait(d, '.talk-quote.replying')
     box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'); box.send_keys('Буду в среду'); box.send_keys(Keys.ENTER)
     W(d, 20).until(lambda d: any('Буду в среду' in m.get_attribute('textContent') and 'обновление в среду' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own')))
@@ -456,7 +456,78 @@ try:
     d.find_element(By.CSS_SELECTOR, '.talk-compose button[type=submit]').click()
     W(d, 20).until(lambda d: '/Talk/отчёт-e2e (1).txt' in nc_mock('GET', '/test/state')['files'])
     ok('same name not overwritten: «отчёт-e2e (1).txt»')
+
+    def talk_msg(text):
+        return [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if text in m.get_attribute('textContent')][0]
+    def action(msg, label):
+        d.execute_script("arguments[0].click()", msg.find_element(By.CSS_SELECTOR, f'.talk-actions button[aria-label="{label}"]'))
+    def msg_state(mid):
+        return next(m for m in nc_mock('GET', '/test/state')['messages']['abc123'] if m['id'] == mid)
+
+    # Реакция: поставить 👍 и снять.
+    action(talk_msg('обновление в среду'), 'Реакция')
+    d.execute_script("arguments[0].click()", wait(d, '.talk-react-picker button[aria-label="Реакция 👍"]'))
+    W(d, 10).until(lambda d: '👍' in msg_state(1).get('reactionsSelf', []))
+    W(d, 10).until(lambda d: talk_msg('обновление в среду').find_elements(By.CSS_SELECTOR, '.talk-reaction.own'))
+    chip = talk_msg('обновление в среду').find_element(By.CSS_SELECTOR, '.talk-reaction.own')
+    assert '👍' in chip.text and '1' in chip.text, chip.text
+    chip.click()
+    W(d, 10).until(lambda d: not msg_state(1).get('reactionsSelf') and not talk_msg('обновление в среду').find_elements(By.CSS_SELECTOR, '.talk-reaction'))
+    ok('reaction added and removed')
+
+    # Правка своего сообщения: обновление приходит через long-poll (служебное сообщение с parent).
+    action(talk_msg('Добрый день, принято'), 'Изменить')
+    wait(d, '.talk-quote.editing')
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
+    assert box.get_attribute('value') == 'Добрый день, принято', box.get_attribute('value')
+    box.send_keys(' — исправлено'); box.send_keys(Keys.ENTER)
+    W(d, 15).until(lambda d: 'исправлено' in talk_msg('Добрый день, принято').get_attribute('textContent') and 'изменено' in talk_msg('Добрый день, принято').get_attribute('textContent'))
+    ok('own message edited, update arrived via long-poll')
+
+    # Удаление своего сообщения.
+    action(talk_msg('Буду в среду'), 'Удалить'); accept_confirm(d)
+    W(d, 15).until(lambda d: not [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'Буду в среду' in m.get_attribute('textContent')]
+                   and d.find_elements(By.CSS_SELECTOR, '.talk-msg.deleted'))
+    ok('own message deleted')
+
+    # Упоминание: «@Петр» → подсказка → «@Петрова Анна», в Talk уходит @"petrova".
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
+    box.send_keys('@Петр')
+    W(d, 10).until(lambda d: any('Петрова Анна' in b.text for b in d.find_elements(By.CSS_SELECTOR, '.talk-mentions button')))
+    box.send_keys(Keys.ENTER)
+    W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == '@Петрова Анна ')
+    box.send_keys('посмотри **срочно** https://nrcki.ru/doc'); box.send_keys(Keys.ENTER)
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw') == '@"petrova" посмотри **срочно** https://nrcki.ru/doc')
+    mm = W(d, 15).until(lambda d: talk_msg('посмотри'))
+    W(d, 10).until(lambda d: talk_msg('посмотри').find_elements(By.CSS_SELECTOR, '.talk-mention'))
+    assert talk_msg('посмотри').find_element(By.CSS_SELECTOR, 'b').text == 'срочно'
+    assert talk_msg('посмотри').find_element(By.CSS_SELECTOR, 'a').get_attribute('href') == 'https://nrcki.ru/doc'
+    ok('mention autocomplete (@"id"), bold and link rendered')
+
+    # Эмодзи из панели.
+    d.find_element(By.CSS_SELECTOR, '.talk-emoji').click()
+    d.find_element(By.CSS_SELECTOR, '.emoji-grid button[aria-label="😀"]').click()
+    W(d, 5).until(lambda d: '😀' in d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value'))
+    d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').send_keys(Keys.ENTER)
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw') == '😀')
+    ok('emoji picker inserts and sends')
     d.save_screenshot(f'{OUT}/11-chat.png')
+
+    # Карточка Deck из сообщения.
+    action(talk_msg('обновление в среду'), 'Карточка Deck')
+    modal = wait(d, '.talk-card-modal')
+    W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.talk-card-modal select option')) >= 2)
+    [b for b in modal.find_elements(By.TAG_NAME, 'button') if 'Создать карточку' in b.text][0].click()
+    W(d, 15).until(lambda d: any(c['title'].startswith('Коллеги') and 'call/abc123#message_1' in c['description'] for c in nc_mock('GET', '/test/state')['cards']))
+    ok('Deck card created from message (text, author, link)')
+
+    # Новая личная беседа.
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Новая беседа"]').click()
+    wait(d, '.talk-new-modal input').send_keys('Сидор')
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-user-list .message-row'))[0].click()
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-new-modal button') if b.text == 'Написать'][0].click()
+    W(d, 15).until(lambda d: 'Сидоров Олег' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').text)
+    ok('new 1:1 conversation created and opened')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:
@@ -467,7 +538,7 @@ d = session()
 try:
     wait(d, '.message-row', 30); ok('auto-login from keyring after restart')
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
-    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 2 and not d.find_elements(By.CSS_SELECTOR, '.nc-connect.card'))
+    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 3 and not d.find_elements(By.CSS_SELECTOR, '.nc-connect.card'))
     ok('Nextcloud still connected after restart (app password from keyring)')
     d.find_element(By.CSS_SELECTOR, '.account-switch').click()
     [b for b in d.find_elements(By.CSS_SELECTOR, '.account-menu button') if 'Выйти' in b.text][0].click()

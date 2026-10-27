@@ -65,8 +65,23 @@ state = {
 }
 
 
+def push_update(token, kind, msg):
+    """Как Talk: изменение сообщения приходит служебным сообщением с parent."""
+    with lock:
+        state['messages'][token].append({
+            'id': next(ids), 'actorType': 'users', 'actorId': UID, 'actorDisplayName': 'Тестовый Пользователь',
+            'timestamp': int(time.time()), 'message': kind, 'messageType': 'system', 'systemMessage': kind,
+            'messageParameters': [], 'parent': dict(msg)})
+        lock.notify_all()
+
+
+USERS = [{'id': 'ivanov', 'label': 'Иванов Иван', 'subline': 'ivanov@nrcki.ru'},
+         {'id': 'petrova', 'label': 'Петрова Анна', 'subline': 'petrova@nrcki.ru'},
+         {'id': 'sidorov', 'label': 'Сидоров Олег', 'subline': 'sidorov@nrcki.ru'}]
+
+
 def room_view(r):
-    msgs = [m for m in state['messages'][r['token']] if m['systemMessage'] != 'reaction']
+    msgs = [m for m in state['messages'][r['token']] if m['messageType'] != 'system']
     last = msgs[-1] if msgs else None
     unread = sum(1 for m in msgs if m['id'] > state['read'][r['token']] and m['actorId'] != UID)
     return dict(r, unreadMessages=unread, unreadMention=False,
@@ -251,7 +266,68 @@ class H(BaseHTTPRequestHandler):
         # --- Talk
         if method == 'GET' and p == '/ocs/v2.php/apps/spreed/api/v4/room':
             return self.ocs([room_view(r) for r in state['rooms']])
+        if method == 'POST' and p == '/ocs/v2.php/apps/spreed/api/v4/room':
+            b = self.body()
+            if int(b.get('roomType', 0)) == 1:
+                u = next((x for x in USERS if x['id'] == b.get('invite')), None)
+                if not u:
+                    return self.send(404, {})
+                r = next((x for x in state['rooms'] if x['type'] == 1 and x['name'] == u['id']), None)
+                if not r:
+                    r = {'token': f"dm-{u['id']}", 'type': 1, 'name': u['id'], 'displayName': u['label'], 'readOnly': 0}
+                    state['rooms'].append(r); state['messages'][r['token']] = []; state['read'][r['token']] = 0
+            else:
+                tok = f'grp{next(ids)}'
+                r = {'token': tok, 'type': 2, 'name': b['roomName'], 'displayName': b['roomName'], 'readOnly': 0, 'participants': []}
+                state['rooms'].append(r); state['messages'][tok] = []; state['read'][tok] = 0
+            return self.ocs(room_view(r), 201)
+        if method == 'POST' and p.startswith('/ocs/v2.php/apps/spreed/api/v4/room/') and p.endswith('/participants'):
+            tok = p.split('/')[-2]
+            r = next(x for x in state['rooms'] if x['token'] == tok)
+            r.setdefault('participants', []).append(self.body()['newParticipant'])
+            return self.ocs({})
+        if method == 'GET' and p == '/ocs/v2.php/core/autocomplete/get':
+            sq = q.get('search', '').lower()
+            return self.ocs([u for u in USERS if sq in (u['label'] + u['id']).lower()])
+        R = '/ocs/v2.php/apps/spreed/api/v1/reaction/'
+        if p.startswith(R):
+            token, mid = p[len(R):].split('/')
+            msg = next(m for m in state['messages'][token] if m['id'] == int(mid))
+            emoji = self.body().get('reaction') if method == 'POST' else unquote(q.get('reaction', ''))
+            reactions = msg.setdefault('reactions', {}); mine = msg.setdefault('reactionsSelf', [])
+            if method == 'POST' and emoji not in mine:
+                reactions[emoji] = reactions.get(emoji, 0) + 1; mine.append(emoji)
+            elif method == 'DELETE' and emoji in mine:
+                reactions[emoji] -= 1; mine.remove(emoji)
+                if reactions[emoji] <= 0: del reactions[emoji]
+            push_update(token, 'reaction' if method == 'POST' else 'reaction_revoked', msg)
+            return self.ocs(reactions, 201 if method == 'POST' else 200)
         T = '/ocs/v2.php/apps/spreed/api/v1/chat/'
+        if p.startswith(T) and p.endswith('/mentions'):
+            sq = q.get('search', '').lower()
+            out = [{'id': 'all', 'label': 'УИТ — общий', 'source': 'calls', 'mentionId': 'all'}] if 'all'.startswith(sq) or not sq else []
+            out += [{'id': u['id'], 'label': u['label'], 'source': 'users', 'mentionId': u['id']} for u in USERS if sq in u['label'].lower() or sq in u['id']]
+            return self.ocs(out)
+        if p.startswith(T) and p[len(T):].count('/') == 1 and method in ('PUT', 'DELETE'):
+            token, mid = p[len(T):].split('/')
+            msg = next(m for m in state['messages'][token] if m['id'] == int(mid))
+            if msg['actorId'] != UID:
+                return self.send(403, {})
+            if method == 'PUT':
+                b = self.body()
+                text, params = b['message'], {}
+                import re as _re
+                for i, mm in enumerate(_re.findall(r'@"([^"]+)"', text)):
+                    u = next((x for x in USERS if x['id'] == mm), None)
+                    if u:
+                        params[f'mention-user{i}'] = {'type': 'user', 'id': u['id'], 'name': u['label'], 'mention-id': u['id']}
+                        text = text.replace(f'@"{mm}"', '{' + f'mention-user{i}' + '}', 1)
+                msg.update(message=text, messageParameters=params or [], lastEditTime=int(time.time()))
+                push_update(token, 'message_edited', msg)
+            else:
+                msg.update(message='Message deleted by you', messageType='comment_deleted', messageParameters=[], reactions={}, reactionsSelf=[])
+                push_update(token, 'message_deleted', msg)
+            return self.ocs(msg)
         if p.startswith(T):
             token = p[len(T):]
             if token not in state['messages']:
@@ -259,9 +335,16 @@ class H(BaseHTTPRequestHandler):
             if method == 'POST':
                 b = self.body()
                 with lock:
+                    import re as _re
+                    text, params = b['message'], {}
+                    for i, mm in enumerate(_re.findall(r'@"([^"]+)"', text)):
+                        u = next((x for x in USERS if x['id'] == mm), None)
+                        if u:
+                            params[f'mention-user{i}'] = {'type': 'user', 'id': u['id'], 'name': u['label'], 'mention-id': u['id']}
+                            text = text.replace(f'@"{mm}"', '{' + f'mention-user{i}' + '}', 1)
                     m = {'id': next(ids), 'actorType': 'users', 'actorId': UID, 'actorDisplayName': 'Тестовый Пользователь',
-                         'timestamp': int(time.time()), 'message': b['message'], 'messageType': 'comment', 'systemMessage': '',
-                         'messageParameters': []}
+                         'timestamp': int(time.time()), 'message': text, 'messageType': 'comment', 'systemMessage': '',
+                         'messageParameters': params or [], 'raw': b['message']}
                     if b.get('replyTo'):
                         parent = next(x for x in state['messages'][token] if x['id'] == int(b['replyTo']))
                         m['parent'] = parent

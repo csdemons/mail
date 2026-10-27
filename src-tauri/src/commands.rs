@@ -1045,12 +1045,12 @@ pub async fn talk_rooms(state: State<'_, AppState>) -> Result<Vec<nextcloud::Tal
 }
 
 #[tauri::command]
-pub async fn talk_history(state: State<'_, AppState>, token: String, before: Option<i64>) -> Result<Vec<nextcloud::TalkMessage>> {
+pub async fn talk_history(state: State<'_, AppState>, token: String, before: Option<i64>) -> Result<nextcloud::TalkChunk> {
     nc(&state).await?.talk_history(&token, before).await
 }
 
 #[tauri::command]
-pub async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i64) -> Result<Vec<nextcloud::TalkMessage>> {
+pub async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i64) -> Result<nextcloud::TalkChunk> {
     let (creds, uid) = state.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
     nextcloud::Nc::long_poll(creds, &uid)?.talk_poll(&token, last_known).await
 }
@@ -1058,6 +1058,49 @@ pub async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i6
 #[tauri::command]
 pub async fn talk_send(state: State<'_, AppState>, token: String, message: String, reply_to: Option<i64>) -> Result<()> {
     nc(&state).await?.talk_send(&token, &message, reply_to).await
+}
+
+#[tauri::command]
+pub async fn talk_react(state: State<'_, AppState>, token: String, message_id: i64, emoji: String, add: bool) -> Result<()> {
+    nc(&state).await?.talk_react(&token, message_id, &emoji, add).await
+}
+
+#[tauri::command]
+pub async fn talk_edit(state: State<'_, AppState>, token: String, message_id: i64, message: String) -> Result<()> {
+    nc(&state).await?.talk_edit(&token, message_id, &message).await
+}
+
+#[tauri::command]
+pub async fn talk_delete(state: State<'_, AppState>, token: String, message_id: i64) -> Result<()> {
+    nc(&state).await?.talk_delete(&token, message_id).await
+}
+
+#[tauri::command]
+pub async fn talk_mentions(state: State<'_, AppState>, token: String, search: String) -> Result<Vec<nextcloud::TalkMention>> {
+    nc(&state).await?.talk_mentions(&token, &search).await
+}
+
+#[tauri::command]
+pub async fn nc_search_users(state: State<'_, AppState>, search: String) -> Result<Vec<nextcloud::NcUser>> {
+    if search.trim().chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    nc(&state).await?.search_users(search.trim()).await
+}
+
+#[tauri::command]
+pub async fn talk_create(state: State<'_, AppState>, users: Vec<String>, name: Option<String>) -> Result<String> {
+    nc(&state).await?.talk_create(&users, name.as_deref()).await
+}
+
+/// Открывает ссылку из сообщения во внешнем браузере (только http/https/mailto).
+#[tauri::command]
+pub async fn open_link(app: AppHandle, url: String) -> Result<()> {
+    let parsed = url::Url::parse(url.trim()).map_err(|_| AppError::Other("Некорректная ссылка".into()))?;
+    if !matches!(parsed.scheme(), "http" | "https" | "mailto") {
+        return Err(AppError::Other("Можно открывать только ссылки http, https и mailto".into()));
+    }
+    host::open_url(&app, parsed.as_str())
 }
 
 const MAX_TALK_FILE_MB: u64 = 512;
@@ -1232,6 +1275,13 @@ macro_rules! app_commands {
             crate::commands::talk_poll,
             crate::commands::talk_send,
             crate::commands::talk_send_file,
+            crate::commands::talk_react,
+            crate::commands::talk_edit,
+            crate::commands::talk_delete,
+            crate::commands::talk_mentions,
+            crate::commands::nc_search_users,
+            crate::commands::talk_create,
+            crate::commands::open_link,
             crate::commands::app_info,
             crate::commands::check_update,
             crate::commands::update_progress,

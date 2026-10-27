@@ -460,7 +460,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           <div className="module-view nc-gate"><NcConnect status={ncStatus} onChange={setNcStatus} /></div>
         )}
         {module === 'deck' && ncStatus?.connected && <DeckView onNotice={setNotice} />}
-        {module === 'chat' && ncStatus?.connected && <TalkView onUnread={setChatUnread} />}
+        {module === 'chat' && ncStatus?.connected && <TalkView onUnread={setChatUnread} onNotice={setNotice} />}
         {module === 'contacts' && (
           <ContactsView
             onLoaded={(list) => { setContacts(list); contactsRequested.current = true }}

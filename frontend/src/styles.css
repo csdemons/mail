@@ -377,14 +377,12 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .talk-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; background: var(--panel); }
 .talk-msg { display: flex; gap: 8px; align-items: flex-end; max-width: 75%; }
 .talk-msg.own { align-self: flex-end; flex-direction: row-reverse; }
-.talk-bubble { background: var(--surface); border: 1px solid var(--line); border-radius: 12px 12px 12px 4px; padding: 7px 10px; display: flex; flex-direction: column; gap: 3px; min-width: 80px; }
+.talk-bubble { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 12px 12px 12px 4px; padding: 7px 10px; display: flex; flex-direction: column; gap: 3px; min-width: 80px; }
 .talk-msg.own .talk-bubble { background: #e3eeff; border-color: #c9dcff; border-radius: 12px 12px 4px 12px; }
 .theme-dark .talk-msg.own .talk-bubble { background: #233a5c; border-color: #2f4c75; }
 .talk-author { font-size: 11px; font-weight: 600; color: var(--blue); }
 .talk-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .talk-time { font-size: 10px; color: var(--muted); align-self: flex-end; display: flex; align-items: center; gap: 4px; }
-.talk-reply { border: 0; background: transparent; color: var(--muted); padding: 0; display: inline-grid; opacity: 0; }
-.talk-bubble:hover .talk-reply { opacity: 1; }
 .talk-quote { border-left: 3px solid var(--blue); padding: 2px 8px; font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--blue) 6%, transparent); border-radius: 0 6px 6px 0; }
 .talk-quote.replying { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
 .talk-quote.replying button { margin-left: auto; border: 0; background: transparent; color: var(--muted); }
@@ -448,3 +446,49 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .about-head > div:last-child { display: flex; flex-direction: column; gap: 2px; }
 .about-head span { color: var(--muted); font-size: 12px; }
 .login-version { margin: 4px 0 0; text-align: center; color: var(--muted); font-size: 11px; }
+
+/* Talk: реакции, действия, упоминания, эмодзи */
+.talk-actions { position: absolute; top: -14px; right: 6px; display: none; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 2px 8px #0002; }
+.talk-msg.own .talk-actions { right: auto; left: 6px; }
+.talk-bubble:hover .talk-actions, .talk-bubble:focus-within .talk-actions { display: flex; }
+.talk-actions button { border: 0; background: transparent; color: var(--muted); width: 24px; height: 22px; border-radius: 6px; display: grid; place-items: center; cursor: pointer; }
+.talk-actions button:hover { background: var(--hover); color: var(--blue); }
+.talk-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.talk-reaction { border: 1px solid var(--line); background: var(--surface); color: inherit; border-radius: 12px; padding: 1px 8px; font: inherit; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.talk-reaction span { font-size: 11px; color: var(--muted); }
+.talk-reaction.own { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, var(--surface)); }
+.talk-reaction.own span { color: var(--blue); }
+.talk-react-picker { position: absolute; top: 12px; right: 6px; z-index: 20; display: flex; gap: 2px; padding: 4px; }
+.talk-msg.own .talk-react-picker { right: auto; left: 6px; }
+.talk-react-picker button, .emoji-grid button { border: 0; background: transparent; font-size: 20px; width: 34px; height: 34px; border-radius: 8px; cursor: pointer; }
+.talk-react-picker button:hover, .emoji-grid button:hover { background: var(--hover); }
+.talk-edited { font-style: italic; margin-right: 4px; }
+.talk-deleted { font-style: italic; color: var(--muted); }
+.talk-msg.deleted .talk-bubble { opacity: .75; }
+.talk-mention { color: var(--blue); font-weight: 600; }
+.talk-text a { color: var(--blue); text-decoration: underline; cursor: pointer; overflow-wrap: anywhere; }
+.talk-text code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--hover); border-radius: 4px; padding: 0 4px; }
+.talk-code { margin: 4px 0; padding: 8px 10px; background: var(--hover); border-radius: 8px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; white-space: pre-wrap; overflow-x: auto; }
+.talk-input-wrap { position: relative; flex: 1; display: flex; }
+.talk-input-wrap textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; font: inherit; background: var(--surface); color: inherit; }
+.talk-mentions { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 30; min-width: 260px; max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; padding: 4px; }
+.talk-mentions button { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; color: inherit; text-align: left; padding: 6px 8px; border-radius: 6px; font: inherit; cursor: pointer; }
+.talk-mentions button.active, .talk-mentions button:hover { background: var(--hover); }
+.talk-mentions .sender-avatar { width: 24px; height: 24px; font-size: 10px; }
+.emoji-picker { position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 30; width: 330px; padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.emoji-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.emoji-tabs button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 6px; cursor: pointer; }
+.emoji-tabs button.active { background: var(--hover); color: inherit; font-weight: 600; }
+.emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); max-height: 220px; overflow-y: auto; }
+.talk-emoji.active { color: var(--blue); }
+.talk-quote.editing { color: var(--blue); }
+.talk-card-modal, .talk-new-modal { display: flex; flex-direction: column; gap: 10px; width: min(520px, 100%); }
+.talk-user-list { display: flex; flex-direction: column; max-height: 280px; overflow-y: auto; }
+.talk-user-list .message-row { border-radius: 8px; }
+/* Свои всплывающие панели Talk — без позиции общего .popover */
+.talk-mentions.popover, .emoji-picker.popover, .talk-react-picker.popover { top: auto; left: auto; min-width: 0; gap: 2px; padding: 4px; }
+.talk-mentions.popover { left: 0; }
+.emoji-picker.popover { right: 0; gap: 6px; padding: 6px; }
+.talk-react-picker.popover { top: 12px; right: 6px; flex-direction: row; }
+.talk-msg.own .talk-react-picker.popover { right: auto; left: 6px; }
+.talk-big-emoji { font-size: 30px; line-height: 1.2; }

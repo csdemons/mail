@@ -47,17 +47,18 @@ async fn main() {
         println!("беседа «{}» [{}] непрочитано {} — {:?}", r.name, r.token, r.unread, r.last_message);
     }
     if let Some(r) = rooms.first() {
-        let hist = client.talk_history(&r.token, None).await.expect("history");
-        for m in &hist {
+        let chunk = client.talk_history(&r.token, None).await.expect("history");
+        let hist = &chunk.messages;
+        for m in hist {
             println!("  #{} {}{}: {}", m.id, m.author, if m.own { " (я)" } else { "" }, m.text);
         }
-        let last = hist.last().map(|m| m.id).unwrap_or(0);
+        let last = chunk.last_id;
         if std::env::var("NC_WRITE").is_ok() {
             client.talk_send(&r.token, "Привет из RRCKI Mail", hist.first().map(|m| m.id)).await.expect("send");
             let poller = nc::Nc::long_poll(creds.clone(), &uid).unwrap();
             let t = std::time::Instant::now();
             let new = poller.talk_poll(&r.token, last).await.expect("poll");
-            println!("  новое ({:?}): {:?}", t.elapsed(), new.iter().map(|m| (m.own, m.text.clone(), m.parent_text.clone())).collect::<Vec<_>>());
+            println!("  новое ({:?}): {:?}", t.elapsed(), new.messages.iter().map(|m| (m.own, m.text.clone(), m.parent_text.clone())).collect::<Vec<_>>());
         }
     }
 }

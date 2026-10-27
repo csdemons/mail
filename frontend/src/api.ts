@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   Account, Contact, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
-  TalkMessage, TalkRoom, LoginResult, MessageDetail, MessagePage,
+  TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
 } from './types'
 
@@ -74,8 +74,15 @@ export const api = {
   deckCreateStack: (boardId: number, title: string) => invoke<void>('deck_create_stack', { boardId, title }),
 
   talkRooms: () => invoke<TalkRoom[]>('talk_rooms'),
-  talkHistory: (token: string, before: number | null = null) => invoke<TalkMessage[]>('talk_history', { token, before }),
-  talkPoll: (token: string, lastKnown: number) => invoke<TalkMessage[]>('talk_poll', { token, lastKnown }),
+  talkHistory: (token: string, before: number | null = null) => invoke<TalkChunk>('talk_history', { token, before }),
+  talkPoll: (token: string, lastKnown: number) => invoke<TalkChunk>('talk_poll', { token, lastKnown }),
+  talkReact: (token: string, messageId: number, emoji: string, add: boolean) => invoke<void>('talk_react', { token, messageId, emoji, add }),
+  talkEdit: (token: string, messageId: number, message: string) => invoke<void>('talk_edit', { token, messageId, message }),
+  talkDelete: (token: string, messageId: number) => invoke<void>('talk_delete', { token, messageId }),
+  talkMentions: (token: string, search: string) => invoke<TalkMention[]>('talk_mentions', { token, search }),
+  ncSearchUsers: (search: string) => invoke<NcUser[]>('nc_search_users', { search }),
+  talkCreate: (users: string[], name: string | null) => invoke<string>('talk_create', { users, name }),
+  openLink: (url: string) => invoke<void>('open_link', { url }),
   talkSendFile: (token: string, attachment: string, caption: string, replyTo: number | null = null) =>
     invoke<void>('talk_send_file', { token, attachment, caption, replyTo }),
   forgetAttachment: (attachment: string) => invoke<void>('forget_attachment', { attachment }),
