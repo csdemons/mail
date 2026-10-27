@@ -25,6 +25,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
       - name: System deps
+        timeout-minutes: 20
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libsecret-1-dev
@@ -60,6 +61,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
       - name: System deps (Linux)
+        timeout-minutes: 20
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -95,7 +97,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri, key: win7-gnu }
       - name: Cross toolchain
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: sudo apt-get update && sudo apt-get install -y mingw-w64 nsis
       - run: npm ci
       - run: npm --prefix frontend run build
@@ -128,6 +130,7 @@ jobs:
     container: debian:10
     steps:
       - name: Debian 10 packages (archive)
+        timeout-minutes: 20
         run: |
           printf 'deb http://archive.debian.org/debian buster main\ndeb http://archive.debian.org/debian-security buster/updates main\n' > /etc/apt/sources.list
           apt-get -o Acquire::Check-Valid-Until=false update
