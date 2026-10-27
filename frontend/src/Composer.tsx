@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Paperclip, Send, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
@@ -39,20 +39,43 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
   autoFocus?: boolean
 }) {
   const [focused, setFocused] = useState(false)
+  const [remote, setRemote] = useState<{ q: string; list: Contact[] }>({ q: '', list: [] })
+  const [searching, setSearching] = useState(false)
   const token = currentToken(value).toLowerCase()
+
+  // Поиск на сервере (корпоративная книга не отдаёт список целиком), с паузой после ввода.
+  useEffect(() => {
+    if (!focused || token.length < 2 || token.includes('@') && token.includes('>')) return
+    let cancelled = false
+    const t = setTimeout(() => {
+      setSearching(true)
+      api.searchContacts(token)
+        .then((list) => { if (!cancelled) setRemote({ q: token, list }) })
+        .catch(() => { if (!cancelled) setRemote({ q: token, list: [] }) })
+        .finally(() => { if (!cancelled) setSearching(false) })
+    }, 300)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [token, focused])
+
   const suggestions = useMemo(() => {
     if (token.length < 2) return []
-    const out: { label: string; value: string }[] = []
-    for (const c of contacts) {
+    const out: { label: string; value: string; hint: string }[] = []
+    const seen = new Set<string>()
+    const pool = [...contacts, ...(remote.q && token.startsWith(remote.q) || remote.q === token ? remote.list : [])]
+    for (const c of pool) {
       for (const email of c.emails) {
-        if (c.fullName.toLowerCase().includes(token) || email.toLowerCase().includes(token)) {
-          out.push({ label: `${c.fullName} <${email}>`, value: `${c.fullName} <${email}>` })
-        }
+        const key = email.toLowerCase()
+        if (seen.has(key)) continue
+        const hay = [c.fullName, email, c.org ?? '', c.title ?? ''].join(' ').toLowerCase()
+        if (!hay.includes(token)) continue
+        seen.add(key)
+        const name = c.fullName && c.fullName !== email ? c.fullName : ''
+        out.push({ label: name ? `${name} <${email}>` : email, value: name ? `${name} <${email}>` : email, hint: [c.title, c.org].filter(Boolean).join(' · ') })
+        if (out.length >= 10) return out
       }
-      if (out.length >= 8) break
     }
     return out
-  }, [contacts, token])
+  }, [contacts, remote, token])
 
   return (
     <label className="compose-field recipient-field">
@@ -65,13 +88,14 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
         onBlur={() => setTimeout(() => setFocused(false), 150)}
         placeholder="user@nrcki.ru, Иванов Иван <ivanov@nrcki.ru>"
       />
-      {focused && suggestions.length > 0 && (
+      {focused && token.length >= 2 && (suggestions.length > 0 || searching) && (
         <div className="suggestions popover">
           {suggestions.map((s) => (
             <button type="button" key={s.label} onMouseDown={(e) => { e.preventDefault(); onChange(replaceToken(value, s.value)) }}>
-              {s.label}
+              <span>{s.label}</span>{s.hint && <small>{s.hint}</small>}
             </button>
           ))}
+          {searching && <div className="suggestions-status">Поиск в адресных книгах…</div>}
         </div>
       )}
     </label>

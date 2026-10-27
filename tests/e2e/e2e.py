@@ -52,6 +52,20 @@ def dav_get(path):
         'Authorization': 'Basic ' + base64.b64encode(b'test@rrcki.ru:Secret-123').decode(), 'Depth': '1'})
     return urllib.request.urlopen(r, context=ctx).read().decode()
 
+def dav_delete(path):
+    import base64, urllib.request
+    ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    r = urllib.request.Request('https://localhost:5232' + path, method='DELETE', headers={
+        'Authorization': 'Basic ' + base64.b64encode(b'test@rrcki.ru:Secret-123').decode()})
+    return urllib.request.urlopen(r, context=ctx).status
+
+def dav_put(path, body):
+    import base64, urllib.request
+    ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    r = urllib.request.Request('https://localhost:5232' + path, data=body.encode(), method='PUT', headers={
+        'Authorization': 'Basic ' + base64.b64encode(b'test@rrcki.ru:Secret-123').decode(), 'Content-Type': 'text/vcard; charset=utf-8'})
+    return urllib.request.urlopen(r, context=ctx).status
+
 def nc_mock(method, path):
     import urllib.request
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
@@ -157,6 +171,12 @@ try:
     [r for r in d.find_elements(By.CSS_SELECTOR, '.contact-row') if 'Иванов' in r.get_attribute('textContent')][0].click()
     card = wait(d, '.contact-card').get_attribute('textContent')
     assert 'ivanov@nrcki.ru' in card and 'Ведущий инженер' in card and 'НИЦ КИ, УИТ' in card, card; ok('contact card')
+    assert dav_put('/test@rrcki.ru/contacts/kuznetsova.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:kuznetsova\r\nFN:Кузнецова Мария\r\nEMAIL:kuznetsova@nrcki.ru\r\nEND:VCARD\r\n') in (200, 201, 204)
+    search = d.find_element(By.CSS_SELECTOR, '.contacts-view .search-box input') if d.find_elements(By.CSS_SELECTOR, '.contacts-view .search-box input') else d.find_element(By.CSS_SELECTOR, 'input[placeholder="Имя, e-mail, телефон, отдел"]')
+    search.send_keys('кузнец')
+    W(d, 10).until(lambda d: any('Кузнецова Мария' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.contact-row')))
+    ok('contacts search finds entries on the server')
+    clear(search); dav_delete('/test@rrcki.ru/contacts/kuznetsova.vcf')
     d.save_screenshot(f'{OUT}/06-contacts.png')
 
     # 9. письмо из карточки контакта (SMTP + копия в «Отправленные»)
@@ -205,7 +225,14 @@ try:
     assert 'yushkov_do@nrcki.ru' in fields[0].get_attribute('value'); 
     assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Re: Отчёт с вложением'
     d.find_element(By.CSS_SELECTOR, '.add-cc').click()
-    cc = d.find_elements(By.CSS_SELECTOR, '.recipient-field input')[1]; cc.send_keys('Петр')
+    # Запись «как в корпоративной книге»: появилась на сервере после загрузки списка,
+    # клиент о ней не знает — найти её можно только поиском на сервере.
+    assert dav_put('/test@rrcki.ru/contacts/sidorov.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:sidorov\r\nFN:Сидоров Олег\r\nN:Сидоров;Олег;;;\r\nEMAIL:sidorov@nrcki.ru\r\nORG:НИЦ КИ\\, ОИБ\r\nTITLE:Аналитик\r\nEND:VCARD\r\n') in (200, 201, 204)
+    cc = d.find_elements(By.CSS_SELECTOR, '.recipient-field input')[1]; cc.send_keys('Сидор')
+    sug = W(d, 10).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.suggestions button') if 'sidorov@nrcki.ru' in b.get_attribute('textContent')])
+    assert 'Аналитик' in sug[0].get_attribute('textContent'); ok('recipient found by server-side address book search (GAL-like)')
+    clear(cc); dav_delete('/test@rrcki.ru/contacts/sidorov.vcf')
+    cc.send_keys('Петр')
     sug = W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.suggestions button'))
     labels = [b.get_attribute('textContent') for b in sug]
     assert any('petrova@nrcki.ru' in l for l in labels), labels

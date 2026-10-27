@@ -423,3 +423,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .rt-content a { color: var(--blue); }
 .rt-content ul, .rt-content ol { padding-left: 26px; margin: 4px 0; }
 .compose-modal { width: min(840px, 100%); }
+
+.suggestions button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.suggestions button small { color: var(--muted); font-size: 11px; }
+.suggestions-status { padding: 8px 12px; color: var(--muted); font-size: 12px; }

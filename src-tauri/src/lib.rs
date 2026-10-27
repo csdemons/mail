@@ -304,8 +304,20 @@ async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> Resu
                     }
                     match res {
                         Ok(cols) => {
+                            // Пробный поиск: корпоративная книга (LDAP) отвечает только на поиск.
+                            let probe: String = creds.username.split('@').next().unwrap_or_default().split(['_', '.']).next().unwrap_or_default().chars().take(6).collect();
                             for c in cols {
                                 extra.push_str(&format!("коллекция: {} — {}\n", c.name, c.url));
+                                if matches!(kind, dav::Kind::Contacts) && probe.chars().count() >= 2 {
+                                    match client.contacts(&c).await {
+                                        Ok(all) => extra.push_str(&format!("  весь список: {} записей\n", all.len())),
+                                        Err(e) => extra.push_str(&format!("  весь список: ошибка: {e}\n")),
+                                    }
+                                    match client.search_contacts(&c, &probe, 25).await {
+                                        Ok(found) => extra.push_str(&format!("  поиск «{probe}»: {} записей\n", found.len())),
+                                        Err(e) => extra.push_str(&format!("  поиск «{probe}»: ошибка: {e}\n")),
+                                    }
+                                }
                             }
                         }
                         Err(e) => extra.push_str(&format!("ошибка: {e}\n")),
@@ -519,6 +531,48 @@ async fn list_contacts(state: State<'_, AppState>) -> Result<ContactsResult> {
     }
     contacts.sort_by_key(|c| c.full_name.to_lowercase());
     Ok(ContactsResult { books, contacts, errors })
+}
+
+/// Поиск контактов на сервере во всех адресных книгах (в т.ч. корпоративной).
+#[tauri::command]
+async fn search_contacts(state: State<'_, AppState>, query: String) -> Result<Vec<dav::Contact>> {
+    let query = query.trim().to_string();
+    if query.chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    let (mut client, base) = dav_client(&state).await?;
+    let cached = state.books.lock().await.clone();
+    let books = match cached {
+        Some(b) => b,
+        None => {
+            let found = client.discover(&base, dav::Kind::Contacts).await?;
+            *state.books.lock().await = Some(found.clone());
+            found
+        }
+    };
+    let mut out: Vec<dav::Contact> = Vec::new();
+    let mut last_error = None;
+    for book in &books {
+        match client.search_contacts(book, &query, 25).await {
+            Ok(list) => {
+                for c in list {
+                    if !out.iter().any(|o| o.href == c.href) {
+                        out.push(c);
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("поиск в «{}»: {e}", book.name);
+                last_error = Some(e);
+            }
+        }
+    }
+    if out.is_empty() {
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+    }
+    Ok(out)
 }
 
 /// Проверяет, что адрес записи лежит внутри найденной коллекции: frontend не
@@ -990,6 +1044,7 @@ pub fn run() {
             pick_attachments,
             send_message,
             list_contacts,
+            search_contacts,
             list_events,
             create_event,
             update_event,

@@ -24,6 +24,29 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
   const [book, setBook] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [editing, setEditing] = useState<Contact | 'new' | null>(null)
+  // Результаты поиска на сервере: корпоративная книга (LDAP) целиком не загружается.
+  const [remote, setRemote] = useState<Contact[]>([])
+  const [searching, setSearching] = useState(false)
+
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 2) { setRemote([]); return }
+    let cancelled = false
+    const t = setTimeout(() => {
+      setSearching(true)
+      api.searchContacts(q)
+        .then((list) => { if (!cancelled) setRemote(list) })
+        .catch(() => { if (!cancelled) setRemote([]) })
+        .finally(() => { if (!cancelled) setSearching(false) })
+    }, 350)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [query])
+
+  const all = useMemo(() => {
+    const local = data?.contacts ?? []
+    const known = new Set(local.map((c) => c.href))
+    return [...local, ...remote.filter((c) => !known.has(c.href))]
+  }, [data, remote])
 
   async function load() {
     setLoading(true)
@@ -44,12 +67,12 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return (data?.contacts ?? []).filter((c) =>
+    return all.filter((c) =>
       (!book || c.book === book) &&
       (!q || [c.fullName, c.org ?? '', c.title ?? '', ...c.emails, ...c.phones].join(' ').toLowerCase().includes(q)))
-  }, [data, query, book])
+  }, [all, query, book])
 
-  const selected = data?.contacts.find((c) => c.id === selectedId)
+  const selected = all.find((c) => c.id === selectedId)
   const canCreate = Boolean(data?.books.some((b) => b.writable))
 
   async function remove(c: Contact) {
@@ -106,7 +129,8 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
               </div>
             </button>
           ))}
-          {data && !loading && visible.length === 0 && <div className="empty-state"><BookUser size={30} /><strong>Контакты не найдены</strong></div>}
+          {searching && <div className="folder-placeholder">Поиск в корпоративной книге…</div>}
+          {data && !loading && !searching && visible.length === 0 && <div className="empty-state"><BookUser size={30} /><strong>Контакты не найдены</strong>{query.trim().length < 2 && <span>Корпоративная книга ищется по имени или e-mail — начните вводить.</span>}</div>}
         </div>
         <div className="list-footer"><span>{visible.length} из {data?.contacts.length ?? 0}</span><span>CardDAV</span></div>
       </main>

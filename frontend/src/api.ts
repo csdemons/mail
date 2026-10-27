@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
+  Account, Contact, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   TalkMessage, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings,
 } from './types'
@@ -38,6 +38,7 @@ export const api = {
     inReplyTo: string | null; references: string | null; attachments: string[]
   }) => invoke<SendResult>('send_message', { ...m }),
   listContacts: () => invoke<ContactsResult>('list_contacts'),
+  searchContacts: (query: string) => invoke<Contact[]>('search_contacts', { query }),
   listEvents: (start: Date, end: Date) =>
     invoke<EventsResult>('list_events', { start: start.toISOString(), end: end.toISOString() }),
   createEvent: (calendarUrl: string, input: EventInput) => invoke<void>('create_event', { calendarUrl, input }),

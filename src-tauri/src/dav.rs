@@ -368,6 +368,37 @@ impl DavClient {
         Ok(out)
     }
 
+    /// Поиск в адресной книге на сервере. Нужен для корпоративной книги SOGo
+    /// (LDAP): на запрос «все записи» она отвечает пустым списком и ищет
+    /// только по строке. Ищем по имени, e-mail, фамилии и организации.
+    pub async fn search_contacts(&mut self, book: &Collection, query: &str, limit: usize) -> Result<Vec<Contact>> {
+        let url = Url::parse(&book.url).map_err(|e| AppError::Other(e.to_string()))?;
+        let q = xml_escape(query.trim());
+        let filters: String = ["FN", "EMAIL", "N", "ORG"]
+            .iter()
+            .map(|p| format!(r#"<cr:prop-filter name="{p}"><cr:text-match collation="i;unicode-casemap" match-type="contains">{q}</cr:text-match></cr:prop-filter>"#))
+            .collect();
+        let body = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><cr:addressbook-query xmlns:d="DAV:" xmlns:cr="{NS_CARD}"><d:prop><d:getetag/><cr:address-data/></d:prop><cr:filter test="anyof">{filters}</cr:filter><cr:limit><cr:nresults>{limit}</cr:nresults></cr:limit></cr:addressbook-query>"#
+        );
+        let Some(resps) = self.report(&url, &body).await? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for r in resps {
+            if let Some(data) = r.text(NS_CARD, "address-data") {
+                let origin = Origin {
+                    href: url.join(&r.href).map(|u| u.to_string()).unwrap_or_else(|_| r.href.clone()),
+                    etag: r.text(NS_DAV, "getetag").map(|e| e.trim().to_string()),
+                    editable: book.writable,
+                };
+                out.extend(parse_vcards(data, &book.name, &origin));
+            }
+        }
+        out.truncate(limit);
+        Ok(out)
+    }
+
     pub async fn events(
         &mut self,
         cal: &Collection,
