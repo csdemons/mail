@@ -91,11 +91,15 @@ export interface DavCollection {
   url: string
   name: string
   color: string | null
+  writable: boolean
 }
 
 export interface Contact {
   id: string
   book: string
+  href: string
+  etag: string | null
+  editable: boolean
   fullName: string
   emails: string[]
   phones: string[]
@@ -112,6 +116,11 @@ export interface ContactsResult {
 
 export interface CalEvent {
   id: string
+  uid: string
+  href: string
+  etag: string | null
+  editable: boolean
+  calendarUrl: string
   calendar: string
   color: string | null
   title: string
@@ -139,4 +148,24 @@ export interface Draft {
   body: string
   inReplyTo: string | null
   references: string | null
+}
+
+export interface EventInput {
+  title: string
+  location: string | null
+  description: string | null
+  /** ISO 8601 или YYYY-MM-DD для «весь день» */
+  start: string
+  /** Для «весь день» — день после последнего */
+  end: string
+  allDay: boolean
+}
+
+export interface ContactInput {
+  fullName: string
+  emails: string[]
+  phones: string[]
+  org: string | null
+  title: string | null
+  note: string | null
 }

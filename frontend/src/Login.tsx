@@ -6,7 +6,7 @@ import type { LoginResult, Settings } from './types'
 
 const DEFAULT_HOST = 'rp.nrcki.ru'
 const DEFAULT_PORT = 993
-const DEFAULT_SMTP_HOST = 'rp.rrcki.ru'
+const DEFAULT_SMTP_HOST = 'rp.nrcki.ru'
 const DEFAULT_SMTP_PORT = 465
 
 interface Props {

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BookUser, Building2, Mail, Phone, RefreshCw, Search, StickyNote } from 'lucide-react'
+import { BookUser, Building2, Mail, Pencil, Phone, Plus, RefreshCw, Search, StickyNote, Trash2 } from 'lucide-react'
 
 import { api, errorText } from './api'
 import type { Contact, ContactsResult } from './types'
+import ContactEditor from './ContactEditor'
 
 interface Props {
   onWrite: (address: string) => void
   onLoaded: (contacts: Contact[]) => void
+  onNotice: (text: string) => void
 }
 
 function initials(name: string) {
@@ -14,13 +16,14 @@ function initials(name: string) {
   return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || '?'
 }
 
-export default function ContactsView({ onWrite, onLoaded }: Props) {
+export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
   const [data, setData] = useState<ContactsResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [book, setBook] = useState('')
   const [selectedId, setSelectedId] = useState('')
+  const [editing, setEditing] = useState<Contact | 'new' | null>(null)
 
   async function load() {
     setLoading(true)
@@ -47,6 +50,19 @@ export default function ContactsView({ onWrite, onLoaded }: Props) {
   }, [data, query, book])
 
   const selected = data?.contacts.find((c) => c.id === selectedId)
+  const canCreate = Boolean(data?.books.some((b) => b.writable))
+
+  async function remove(c: Contact) {
+    if (!window.confirm(`Удалить контакт «${c.fullName}»?`)) return
+    try {
+      await api.deleteContact(c.href, c.etag)
+      setSelectedId('')
+      onNotice('Контакт удалён.')
+      await load()
+    } catch (err) {
+      onNotice(`Не удалось удалить: ${errorText(err)}`)
+    }
+  }
 
   return (
     <div className="module-view contacts-view">
@@ -68,6 +84,7 @@ export default function ContactsView({ onWrite, onLoaded }: Props) {
         <div className="list-toolbar">
           <label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя, e-mail, телефон, отдел" /></label>
           <button className="icon-button soft" aria-label="Обновить" disabled={loading} onClick={() => void load()}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button>
+          <button className="icon-button soft" aria-label="Новый контакт" title={canCreate ? 'Новый контакт' : 'Нет адресной книги с правом записи'} disabled={!canCreate} onClick={() => setEditing('new')}><Plus size={18} /></button>
         </div>
         <div className="message-list">
           {loading && !data && <div className="empty-state"><span>Загрузка контактов…</span></div>}
@@ -111,11 +128,26 @@ export default function ContactsView({ onWrite, onLoaded }: Props) {
             {selected.phones.map((p) => <div key={p} className="contact-line"><Phone size={16} /><span>{p}</span></div>)}
             {selected.org && <div className="contact-line"><Building2 size={16} /><span>{selected.org}</span></div>}
             {selected.note && <div className="contact-line"><StickyNote size={16} /><span className="contact-note">{selected.note}</span></div>}
+            {selected.editable
+              ? <div className="reader-actions">
+                  <button className="secondary-button" onClick={() => setEditing(selected)}><Pencil size={15} /> Изменить</button>
+                  <button className="secondary-button danger" onClick={() => void remove(selected)}><Trash2 size={15} /> Удалить</button>
+                </div>
+              : <div className="muted editor-note">«{selected.book}» — только для чтения.</div>}
           </div>
         ) : (
           <div className="empty-reader"><BookUser size={42} /><strong>Выберите контакт</strong></div>
         )}
       </section>
+      {editing && data && (
+        <ContactEditor
+          contact={editing === 'new' ? null : editing}
+          books={data.books}
+          defaultBook={book}
+          onClose={() => setEditing(null)}
+          onSaved={(text) => { setEditing(null); onNotice(text); void load() }}
+        />
+      )}
     </div>
   )
 }

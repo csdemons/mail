@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, MapPin, Repeat, User, X } from 'lucide-react'
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, MapPin, Pencil, Plus, Repeat, Trash2, User, X } from 'lucide-react'
 
 import { api, errorText } from './api'
 import type { CalEvent, EventsResult } from './types'
+import EventEditor, { type EditorTarget } from './EventEditor'
 
 const HOUR_PX = 48
 const DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
@@ -77,7 +78,7 @@ function layoutDay(events: CalEvent[], day: Date): Placed[] {
   return placed
 }
 
-export default function CalendarView() {
+export default function CalendarView({ onNotice }: { onNotice: (text: string) => void }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()))
   const [data, setData] = useState<EventsResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -85,6 +86,8 @@ export default function CalendarView() {
   const [hidden, setHidden] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<CalEvent | null>(null)
   const [now, setNow] = useState(new Date())
+  const [editor, setEditor] = useState<EditorTarget | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const gridRef = useRef<HTMLDivElement>(null)
   const request = useRef(0)
 
@@ -99,7 +102,28 @@ export default function CalendarView() {
       .then((r) => { if (request.current === id) setData(r) })
       .catch((e) => { if (request.current === id) setError(errorText(e)) })
       .finally(() => { if (request.current === id) setLoading(false) })
-  }, [weekStart])
+  }, [weekStart, reloadKey])
+
+  const canCreate = Boolean(data?.calendars.some((c) => c.writable))
+
+  function newAt(day: Date, hour: number) {
+    const start = new Date(day)
+    start.setHours(hour, 0, 0, 0)
+    setEditor({ kind: 'new', start })
+  }
+
+  async function removeEvent(ev: CalEvent) {
+    const what = ev.recurring ? `всю серию «${ev.title}»` : `«${ev.title}»`
+    if (!window.confirm(`Удалить ${what}?`)) return
+    try {
+      await api.deleteEvent(ev.href, ev.etag)
+      setSelected(null)
+      setReloadKey((k) => k + 1)
+      onNotice('Событие удалено.')
+    } catch (err) {
+      onNotice(`Не удалось удалить: ${errorText(err)}`)
+    }
+  }
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60000)
@@ -163,6 +187,13 @@ export default function CalendarView() {
           <button className="icon-button soft" aria-label="Следующая неделя" onClick={() => setWeekStart((w) => addDays(w, 7))}><ChevronRight size={18} /></button>
           <strong className="calendar-title">{title}</strong>
           {loading && <span className="muted">Загрузка…</span>}
+          <div className="reader-toolbar-spacer" />
+          <button
+            className="primary-button create-event"
+            disabled={!canCreate}
+            title={canCreate ? 'Новое событие (или двойной щелчок по сетке)' : 'Нет календаря с правом записи'}
+            onClick={() => { const s = new Date(); s.setMinutes(0, 0, 0); s.setHours(s.getHours() + 1); setEditor({ kind: 'new', start: s }) }}
+          ><Plus size={16} /> Событие</button>
         </div>
         {error && <div className="inline-warning" role="alert">Не удалось загрузить календарь: {error}. Адрес сервера — в Настройках, подробности — в Диагностике.</div>}
         {data?.errors.map((e) => <div key={e} className="inline-warning">{e}</div>)}
@@ -190,7 +221,16 @@ export default function CalendarView() {
             {Array.from({ length: 24 }, (_, h) => <div key={h} className="hour-label" style={{ height: HOUR_PX }}>{h > 0 ? `${String(h).padStart(2, '0')}:00` : ''}</div>)}
           </div>
           {days.map((d, i) => (
-            <div key={i} className={`day-column ${sameDay(d, now) ? 'today' : ''}`} style={{ height: 24 * HOUR_PX }}>
+            <div
+              key={i}
+              className={`day-column ${sameDay(d, now) ? 'today' : ''}`}
+              style={{ height: 24 * HOUR_PX }}
+              onDoubleClick={(e) => {
+                if (!canCreate || e.target !== e.currentTarget) return
+                const y = e.nativeEvent.offsetY
+                newAt(d, Math.min(23, Math.max(0, Math.floor(y / HOUR_PX))))
+              }}
+            >
               {Array.from({ length: 24 }, (_, h) => <div key={h} className="hour-line" style={{ top: h * HOUR_PX }} />)}
               {sameDay(d, now) && <div className="now-line" style={{ top: ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_PX }} />}
               {layoutDay(timed, d).map((p) => (
@@ -221,6 +261,15 @@ export default function CalendarView() {
         </div>
       </main>
 
+      {editor && data && (
+        <EventEditor
+          target={editor}
+          calendars={data.calendars}
+          onClose={() => setEditor(null)}
+          onSaved={(text) => { setEditor(null); setSelected(null); setReloadKey((k) => k + 1); onNotice(text) }}
+        />
+      )}
+
       {selected && (
         <section className="reader-pane event-details">
           <div className="reader-toolbar"><div className="reader-toolbar-spacer" /><button className="icon-button soft" aria-label="Закрыть" onClick={() => setSelected(null)}><X size={18} /></button></div>
@@ -232,6 +281,12 @@ export default function CalendarView() {
             {selected.organizer && <div className="contact-line"><User size={16} /><span>Организатор: {selected.organizer}</span></div>}
             <div className="contact-line"><CalendarDays size={16} /><span>{selected.calendar}</span></div>
             {selected.description && <article className="message-body plain">{selected.description}</article>}
+            {selected.editable
+              ? <div className="reader-actions">
+                  <button className="secondary-button" onClick={() => setEditor({ kind: 'edit', event: selected })}><Pencil size={15} /> Изменить</button>
+                  <button className="secondary-button danger" onClick={() => void removeEvent(selected)}><Trash2 size={15} /> Удалить</button>
+                </div>
+              : <div className="muted editor-note">Календарь доступен только для чтения.</div>}
           </div>
         </section>
       )}

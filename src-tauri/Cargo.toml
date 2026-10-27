@@ -1,6 +1,6 @@
 [package]
 name = "rrcki-mail"
-version = "0.2.0"
+version = "0.2.1"
 description = "RRCKI Mail — корпоративный почтовый клиент"
 authors = ["RRCKI"]
 license = ""
@@ -41,6 +41,7 @@ rrule = "0.13"
 chrono-tz = "0.9"
 mime_guess = "2"
 url = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 codegen-units = 1

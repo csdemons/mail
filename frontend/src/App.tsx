@@ -427,10 +427,11 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           <div className="rail-spacer" />
         </nav>
 
-        {module === 'calendar' && <CalendarView />}
+        {module === 'calendar' && <CalendarView onNotice={setNotice} />}
         {module === 'contacts' && (
           <ContactsView
             onLoaded={(list) => { setContacts(list); contactsRequested.current = true }}
+            onNotice={setNotice}
             onWrite={(address) => startDraft({ mode: 'new', to: `${address}, `, cc: '', subject: '', body: '', inReplyTo: null, references: null })}
           />
         )}

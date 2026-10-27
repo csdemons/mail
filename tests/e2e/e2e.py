@@ -23,6 +23,35 @@ def session():
     d.set_window_size(1400, 900)
     return d
 
+def set_value(d, el, value):
+    # Поля date/time и controlled-инпуты React: ставим значение через нативный сеттер.
+    d.execute_script("""
+      const el = arguments[0], v = arguments[1];
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    """, el, value)
+
+def field(d, label):
+    for f in d.find_elements(By.CSS_SELECTOR, '.editor-modal .login-field'):
+        if f.find_element(By.TAG_NAME, 'span').get_attribute('textContent').strip() == label:
+            return f.find_element(By.CSS_SELECTOR, 'input, textarea, select')
+    raise AssertionError(f'no field {label}')
+
+def accept_confirm(d):
+    # WebKitWebDriver по умолчанию сам принимает confirm(); если диалог всё же открыт — подтверждаем.
+    try:
+        W(d, 2).until(EC.alert_is_present()); d.switch_to.alert.accept()
+    except Exception:
+        pass
+
+def dav_get(path):
+    import base64, urllib.request
+    ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    r = urllib.request.Request('https://localhost:5232' + path, method='PROPFIND', headers={
+        'Authorization': 'Basic ' + base64.b64encode(b'test@rrcki.ru:Secret-123').decode(), 'Depth': '1'})
+    return urllib.request.urlopen(r, context=ctx).read().decode()
+
 def W(d, t):
     # Список перерисовывается после каждого действия — устаревшие элементы не ошибка.
     return WebDriverWait(d, t, ignored_exceptions=(StaleElementReferenceException,))
@@ -182,12 +211,84 @@ try:
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Следующая неделя"]').click()
     W(d, 20).until(lambda d: sum('Планёрка' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')) == 2 and not d.find_elements(By.CSS_SELECTOR, '.event-chip'))
     ok('next week: recurrence continues, no all-day trip')
+    d.find_element(By.XPATH, "//button[text()='Сегодня']").click()
+    W(d, 20).until(lambda d: any('Обновление RuPost' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')))
+
+    # 12. создание, изменение и удаление события
+    import datetime
+    monday = datetime.date.today() - datetime.timedelta(days=datetime.date.today().weekday())
+    wed = (monday + datetime.timedelta(days=2)).isoformat()
+    d.find_element(By.CSS_SELECTOR, '.create-event').click()
+    wait(d, '.editor-modal')
+    set_value(d, field(d, 'Название'), 'Тестовое совещание')
+    set_value(d, field(d, 'Начало'), wed); set_value(d, field(d, 'Окончание'), wed)
+    times = d.find_elements(By.CSS_SELECTOR, '.editor-modal input[type=time]')
+    set_value(d, times[0], '11:00'); set_value(d, times[1], '12:30')
+    set_value(d, field(d, 'Место'), 'Каб. 101')
+    d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
+    W(d, 20).until(lambda d: any('Тестовое совещание' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')))
+    assert 'SUMMARY:Тестовое совещание' in ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/work/*.ics'))
+    ok('event created (UI + server)')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.event-block') if 'Тестовое совещание' in b.get_attribute('textContent')][0].click()
+    [b for b in wait(d, '.event-details').find_elements(By.TAG_NAME, 'button') if 'Изменить' in b.text][0].click()
+    wait(d, '.editor-modal')
+    set_value(d, field(d, 'Название'), 'Совещание перенесено')
+    times = d.find_elements(By.CSS_SELECTOR, '.editor-modal input[type=time]')
+    set_value(d, times[0], '15:00'); set_value(d, times[1], '16:00')
+    d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
+    W(d, 20).until(lambda d: any('Совещание перенесено' in b.get_attribute('textContent') and '15:00' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')))
+    ok('event edited: title and time')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.event-block') if 'Совещание перенесено' in b.get_attribute('textContent')][0].click()
+    [b for b in wait(d, '.event-details').find_elements(By.TAG_NAME, 'button') if 'Удалить' in b.text][0].click()
+    accept_confirm(d)
+    W(d, 20).until(lambda d: not any('Совещание перенесено' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')))
+    assert 'Совещание перенесено' not in ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/work/*.ics'))
+    ok('event deleted (UI + server)')
+
+    # 13. повторяющееся событие: время заблокировано, место меняется у всей серии
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.event-block') if 'Планёрка' in b.get_attribute('textContent')][0].click()
+    [b for b in wait(d, '.event-details').find_elements(By.TAG_NAME, 'button') if 'Изменить' in b.text][0].click()
+    wait(d, '.editor-modal')
+    assert all(not i.is_enabled() for i in d.find_elements(By.CSS_SELECTOR, '.editor-modal input[type=time], .editor-modal input[type=date]'))
+    set_value(d, field(d, 'Место'), 'Переговорная 305')
+    d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
+    W(d, 20).until(lambda d: sum('Переговорная 305' in (b.get_attribute('title') or '') + b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')) >= 0 and not d.find_elements(By.CSS_SELECTOR, '.editor-modal'))
+    ics = open('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/work/planerka.ics').read()
+    assert 'LOCATION:Переговорная 305' in ics and 'RRULE:FREQ=WEEKLY;BYDAY=MO,TH' in ics and 'ORGANIZER' in ics and 'SEQUENCE:1' in ics, ics
+    ok('recurring series: time locked, location updated, RRULE/ORGANIZER kept')
+    d.save_screenshot(f'{OUT}/09-calendar-edit.png')
+
+    # 14. контакты: создание, изменение, удаление
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Контакты']]").click()
+    W(d, 30).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.contact-row')) == 3)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Новый контакт"]').click()
+    wait(d, '.editor-modal')
+    set_value(d, field(d, 'Фамилия Имя Отчество'), 'Сидоров Пётр Ильич')
+    set_value(d, field(d, 'E-mail (по одному в строке)'), 'sidorov@nrcki.ru')
+    set_value(d, field(d, 'Организация, отдел'), 'НИЦ КИ, УИТ')
+    d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
+    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.contact-row')) == 4)
+    ok('contact created')
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.contact-row') if 'Сидоров' in r.get_attribute('textContent')][0].click()
+    [b for b in wait(d, '.contact-card').find_elements(By.TAG_NAME, 'button') if 'Изменить' in b.text][0].click()
+    wait(d, '.editor-modal')
+    set_value(d, field(d, 'Телефоны'), '+7 495 000-00-02')
+    set_value(d, field(d, 'Должность'), 'Инженер')
+    d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
+    W(d, 20).until(lambda d: '+7 495 000-00-02' in d.find_element(By.CSS_SELECTOR, '.contact-card').get_attribute('textContent'))
+    vcf = ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/contacts/*.vcf'))
+    assert 'N:Сидоров;Пётр;Ильич;;' in vcf and 'TITLE:Инженер' in vcf and 'ORG:НИЦ КИ;УИТ' in vcf, vcf
+    ok('contact edited (server vCard N/ORG/TITLE correct)')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.contact-card button') if 'Удалить' in b.text][0].click()
+    accept_confirm(d)
+    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.contact-row')) == 3)
+    ok('contact deleted')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:
     d.quit()
 
-# 12. перезапуск → автовход из keyring
+# 15. перезапуск → автовход из keyring
 d = session()
 try:
     wait(d, '.message-row', 30); ok('auto-login from keyring after restart')
@@ -197,7 +298,7 @@ try:
 finally:
     d.quit()
 
-# 13. после выхода пароль забыт
+# 16. после выхода пароль забыт
 d = session()
 try:
     wait(d, '.login-card', 30)

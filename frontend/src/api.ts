@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, ContactsResult, EventsResult, Folder, LoginResult, MessageDetail, MessagePage,
+  Account, ContactInput, ContactsResult, EventInput, EventsResult, Folder, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings,
 } from './types'
 
@@ -39,6 +39,13 @@ export const api = {
   listContacts: () => invoke<ContactsResult>('list_contacts'),
   listEvents: (start: Date, end: Date) =>
     invoke<EventsResult>('list_events', { start: start.toISOString(), end: end.toISOString() }),
+  createEvent: (calendarUrl: string, input: EventInput) => invoke<void>('create_event', { calendarUrl, input }),
+  updateEvent: (href: string, input: EventInput, changeTime: boolean) =>
+    invoke<void>('update_event', { href, input, changeTime }),
+  deleteEvent: (href: string, etag: string | null) => invoke<void>('delete_event', { href, etag }),
+  createContact: (bookUrl: string, input: ContactInput) => invoke<void>('create_contact', { bookUrl, input }),
+  updateContact: (href: string, input: ContactInput) => invoke<void>('update_contact', { href, input }),
+  deleteContact: (href: string, etag: string | null) => invoke<void>('delete_contact', { href, etag }),
   autoLogin: () => invoke<Account | null>('auto_login'),
   logout: () => invoke<void>('logout'),
   listFolders: () => invoke<Folder[]>('list_folders'),

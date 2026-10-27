@@ -10,7 +10,9 @@ use crate::error::{AppError, Result};
 
 const KEYRING_SERVICE: &str = "ru.rrcki.mail";
 
-pub const DEFAULT_SMTP_HOST: &str = "rp.rrcki.ru";
+pub const DEFAULT_SMTP_HOST: &str = "rp.nrcki.ru";
+/// В 0.2.0 по умолчанию стоял несуществующий rp.rrcki.ru (опечатка) — исправляем при загрузке.
+const BROKEN_SMTP_HOST: &str = "rp.rrcki.ru";
 pub const DEFAULT_SMTP_PORT: u16 = 465;
 
 fn default_smtp_host() -> String {
@@ -73,7 +75,11 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf> {
 pub fn load(app: &AppHandle) -> Option<Settings> {
     let path = settings_path(app).ok()?;
     let raw = std::fs::read(path).ok()?;
-    serde_json::from_slice(&raw).ok()
+    let mut s: Settings = serde_json::from_slice(&raw).ok()?;
+    if s.smtp_host.eq_ignore_ascii_case(BROKEN_SMTP_HOST) {
+        s.smtp_host = s.host.clone();
+    }
+    Some(s)
 }
 
 pub fn save(app: &AppHandle, settings: &Settings) -> Result<()> {

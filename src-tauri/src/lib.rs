@@ -484,6 +484,114 @@ async fn list_contacts(state: State<'_, AppState>) -> Result<ContactsResult> {
     Ok(ContactsResult { books, contacts, errors })
 }
 
+/// Проверяет, что адрес записи лежит внутри найденной коллекции: frontend не
+/// может заставить клиент писать или удалять по произвольному URL с паролем пользователя.
+fn owning_collection(cols: &[dav::Collection], href: &str) -> Result<dav::Collection> {
+    let target = url::Url::parse(href).map_err(|_| AppError::Other("Некорректный адрес записи".into()))?;
+    cols.iter()
+        .find(|c| {
+            url::Url::parse(&c.url).is_ok_and(|u| {
+                u.origin() == target.origin() && target.path().starts_with(u.path()) && target.path() != u.path()
+            })
+        })
+        .cloned()
+        .ok_or_else(|| AppError::Other("Запись не принадлежит ни одному известному календарю/адресной книге".into()))
+}
+
+fn require_writable(c: &dav::Collection) -> Result<()> {
+    if c.writable {
+        Ok(())
+    } else {
+        Err(AppError::Other(format!("«{}» доступен только для чтения", c.name)))
+    }
+}
+
+async fn known(state: &AppState, kind: dav::Kind) -> Result<Vec<dav::Collection>> {
+    let cached = match kind {
+        dav::Kind::Calendar => state.calendars.lock().await.clone(),
+        dav::Kind::Contacts => state.books.lock().await.clone(),
+    };
+    cached.ok_or_else(|| AppError::Other("Сначала откройте раздел, чтобы загрузить список".into()))
+}
+
+fn collection_child(collection_url: &str, uid: &str, ext: &str) -> Result<String> {
+    let base = url::Url::parse(collection_url).map_err(|e| AppError::Other(e.to_string()))?;
+    let base = if base.path().ends_with('/') { base } else { url::Url::parse(&format!("{collection_url}/")).map_err(|e| AppError::Other(e.to_string()))? };
+    base.join(&format!("{uid}.{ext}"))
+        .map(|u| u.to_string())
+        .map_err(|e| AppError::Other(e.to_string()))
+}
+
+#[tauri::command]
+async fn create_event(state: State<'_, AppState>, calendar_url: String, input: dav::EventInput) -> Result<()> {
+    let cols = known(&state, dav::Kind::Calendar).await?;
+    let cal = cols
+        .iter()
+        .find(|c| c.url == calendar_url)
+        .ok_or_else(|| AppError::Other("Календарь не найден".into()))?;
+    require_writable(cal)?;
+    let uid = dav::new_uid();
+    let ics = dav::build_event_ics(&uid, &input)?;
+    let (mut client, _) = dav_client(&state).await?;
+    client.put(&collection_child(&cal.url, &uid, "ics")?, "text/calendar; charset=utf-8", &ics, None).await
+}
+
+#[tauri::command]
+async fn update_event(
+    state: State<'_, AppState>,
+    href: String,
+    input: dav::EventInput,
+    change_time: bool,
+) -> Result<()> {
+    let cal = owning_collection(&known(&state, dav::Kind::Calendar).await?, &href)?;
+    require_writable(&cal)?;
+    let (mut client, _) = dav_client(&state).await?;
+    // Берём свежую версию с сервера: правим её, а не устаревшую копию из списка.
+    let (current, etag) = client.get(&href).await?;
+    let ics = dav::update_event_ics(&current, &input, change_time)?;
+    client.put(&href, "text/calendar; charset=utf-8", &ics, etag.as_deref().or(Some("*"))).await
+}
+
+#[tauri::command]
+async fn delete_event(state: State<'_, AppState>, href: String, etag: Option<String>) -> Result<()> {
+    let cal = owning_collection(&known(&state, dav::Kind::Calendar).await?, &href)?;
+    require_writable(&cal)?;
+    let (mut client, _) = dav_client(&state).await?;
+    client.delete(&href, etag.as_deref()).await
+}
+
+#[tauri::command]
+async fn create_contact(state: State<'_, AppState>, book_url: String, input: dav::ContactInput) -> Result<()> {
+    let cols = known(&state, dav::Kind::Contacts).await?;
+    let book = cols
+        .iter()
+        .find(|c| c.url == book_url)
+        .ok_or_else(|| AppError::Other("Адресная книга не найдена".into()))?;
+    require_writable(book)?;
+    let uid = dav::new_uid();
+    let card = dav::build_vcard(&uid, &input)?;
+    let (mut client, _) = dav_client(&state).await?;
+    client.put(&collection_child(&book.url, &uid, "vcf")?, "text/vcard; charset=utf-8", &card, None).await
+}
+
+#[tauri::command]
+async fn update_contact(state: State<'_, AppState>, href: String, input: dav::ContactInput) -> Result<()> {
+    let book = owning_collection(&known(&state, dav::Kind::Contacts).await?, &href)?;
+    require_writable(&book)?;
+    let (mut client, _) = dav_client(&state).await?;
+    let (current, etag) = client.get(&href).await?;
+    let card = dav::update_vcard(&current, &input)?;
+    client.put(&href, "text/vcard; charset=utf-8", &card, etag.as_deref().or(Some("*"))).await
+}
+
+#[tauri::command]
+async fn delete_contact(state: State<'_, AppState>, href: String, etag: Option<String>) -> Result<()> {
+    let book = owning_collection(&known(&state, dav::Kind::Contacts).await?, &href)?;
+    require_writable(&book)?;
+    let (mut client, _) = dav_client(&state).await?;
+    client.delete(&href, etag.as_deref()).await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EventsResult {
@@ -598,6 +706,12 @@ pub fn run() {
             send_message,
             list_contacts,
             list_events,
+            create_event,
+            update_event,
+            delete_event,
+            create_contact,
+            update_contact,
+            delete_contact,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RRCKI Mail");

@@ -310,3 +310,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .theme-dark .login-field input { background: var(--panel); color: inherit; border-color: var(--line); }
 .event-block.compact { flex-direction: row; align-items: center; padding: 0 6px; }
 .event-block.compact b span { color: var(--muted); font-weight: 500; margin-right: 3px; }
+
+/* --- редакторы событий и контактов --- */
+.editor-modal { gap: 10px; }
+.editor-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.editor-row .login-field { flex: 1; min-width: 140px; }
+.login-field select, .login-field textarea { border: 1px solid #d6dee9; border-radius: 9px; padding: 9px 11px; background: #fff; font: inherit; color: inherit; resize: vertical; }
+.theme-dark .login-field select, .theme-dark .login-field textarea { background: var(--panel); border-color: var(--line); }
+.login-field input:disabled { opacity: .6; }
+.editor-note { margin: 0; font-size: 12px; }
+.secondary-button.danger { color: #c0392b; }
+.create-event { padding: 7px 12px; }
+.reader-actions { display: flex; gap: 8px; flex-wrap: wrap; }
