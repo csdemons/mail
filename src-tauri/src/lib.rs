@@ -8,6 +8,7 @@ pub mod imap;
 mod settings;
 #[doc(hidden)]
 pub mod smtp;
+pub mod sogo;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -44,6 +45,9 @@ struct AppState {
     nc: Mutex<Option<(nextcloud::NcCreds, String)>>,
     /// Незавершённый вход через браузер (Login Flow v2).
     nc_flow: Mutex<Option<(url::Url, nextcloud::LoginFlow)>>,
+    /// Сессия веб-API SOGo для поиска адресатов (или текст ошибки входа,
+    /// чтобы не повторять неудачный вход на каждое нажатие клавиши).
+    sogo: Mutex<Option<std::result::Result<sogo::SogoSession, String>>>,
 }
 
 /// Выполняет операцию на открытом соединении. Если соединение оборвалось
@@ -244,6 +248,9 @@ async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
     *state.profile.lock().await = None;
     *state.calendars.lock().await = None;
     *state.books.lock().await = None;
+    if let Some(Ok(session)) = state.sogo.lock().await.take() {
+        session.logout().await;
+    }
     state.picked.lock().await.clear();
     if let Some(conn) = state.conn.lock().await.take() {
         conn.logout().await;
@@ -317,6 +324,19 @@ async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> Resu
                                         Ok(found) => extra.push_str(&format!("  поиск «{probe}»: {} записей\n", found.len())),
                                         Err(e) => extra.push_str(&format!("  поиск «{probe}»: ошибка: {e}\n")),
                                     }
+                                    if !c.writable {
+                                        // Подробно для корпоративной книги: что именно отвечает сервер.
+                                        for (label, props) in [("FN+EMAIL+N+ORG", &["FN", "EMAIL", "N", "ORG"][..]), ("только FN", &["FN"][..]), ("только EMAIL", &["EMAIL"][..])] {
+                                            let body = dav::DavClient::search_body(&probe, props, 5);
+                                            match client.report_raw(&c.url, &body).await {
+                                                Ok((st, text)) => {
+                                                    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                                                    extra.push_str(&format!("  REPORT {label} → {st}, {} байт: {}\n", text.len(), one.chars().take(400).collect::<String>()));
+                                                }
+                                                Err(e) => extra.push_str(&format!("  REPORT {label} → ошибка: {e}\n")),
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -325,6 +345,36 @@ async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> Resu
                 }
                 Err(e) => extra.push_str(&format!("ошибка: {e}\n")),
             }
+        }
+    }
+    if let Some(p) = state.profile.lock().await.clone() {
+        let probe: String = creds.username.split('@').next().unwrap_or_default().split(['_', '.']).next().unwrap_or_default().chars().take(6).collect();
+        extra.push_str("\n## Веб-API SOGo (поиск адресатов)\n");
+        match url::Url::parse(&p.dav_base()) {
+            Ok(base) => {
+                let mut log = Vec::new();
+                let res = sogo::login(&base, &creds.username, &creds.password, &mut log).await;
+                for l in &log {
+                    extra.push_str(l);
+                    extra.push('\n');
+                }
+                match res {
+                    Ok(session) => {
+                        match session.search_raw(&probe).await {
+                            Ok((st, text)) => {
+                                let parsed = serde_json::from_str::<serde_json::Value>(&text).map(|v| sogo::parse_search(&v).len());
+                                let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                                extra.push_str(&format!("allContactSearch «{probe}» → {st}, найдено: {}, ответ: {}\n",
+                                    parsed.map(|n| n.to_string()).unwrap_or_else(|_| "не JSON".into()), one.chars().take(400).collect::<String>()));
+                            }
+                            Err(e) => extra.push_str(&format!("allContactSearch: ошибка: {e}\n")),
+                        }
+                        session.logout().await;
+                    }
+                    Err(e) => extra.push_str(&format!("вход: {e}\n")),
+                }
+            }
+            Err(e) => extra.push_str(&format!("адрес: {e}\n")),
         }
     }
     Ok(format!("{header}{report}{extra}"))
@@ -534,6 +584,8 @@ async fn list_contacts(state: State<'_, AppState>) -> Result<ContactsResult> {
 }
 
 /// Поиск контактов на сервере во всех адресных книгах (в т.ч. корпоративной).
+/// Сначала CardDAV; если корпоративная (только для чтения) книга ничего не
+/// вернула, а сервер — SOGo, дополнительно ищем через веб-API SOGo.
 #[tauri::command]
 async fn search_contacts(state: State<'_, AppState>, query: String) -> Result<Vec<dav::Contact>> {
     let query = query.trim().to_string();
@@ -552,9 +604,13 @@ async fn search_contacts(state: State<'_, AppState>, query: String) -> Result<Ve
     };
     let mut out: Vec<dav::Contact> = Vec::new();
     let mut last_error = None;
+    let mut gal_empty = books.iter().all(|b| b.writable);
     for book in &books {
         match client.search_contacts(book, &query, 25).await {
             Ok(list) => {
+                if !book.writable && list.is_empty() {
+                    gal_empty = true;
+                }
                 for c in list {
                     if !out.iter().any(|o| o.href == c.href) {
                         out.push(c);
@@ -563,8 +619,23 @@ async fn search_contacts(state: State<'_, AppState>, query: String) -> Result<Ve
             }
             Err(e) => {
                 log::warn!("поиск в «{}»: {e}", book.name);
+                gal_empty = gal_empty || !book.writable;
                 last_error = Some(e);
             }
+        }
+    }
+    let is_sogo = books.iter().any(|b| b.url.contains("/SOGo/"));
+    if gal_empty && is_sogo {
+        match sogo_search(&state, &base, &query).await {
+            Ok(list) => {
+                for c in list {
+                    let dup = out.iter().any(|o| o.emails.iter().any(|e| c.emails.iter().any(|x| x.eq_ignore_ascii_case(e))));
+                    if !dup {
+                        out.push(c);
+                    }
+                }
+            }
+            Err(e) => log::warn!("поиск через веб-API SOGo: {e}"),
         }
     }
     if out.is_empty() {
@@ -573,6 +644,37 @@ async fn search_contacts(state: State<'_, AppState>, query: String) -> Result<Ve
         }
     }
     Ok(out)
+}
+
+async fn sogo_search(state: &AppState, base: &url::Url, query: &str) -> Result<Vec<dav::Contact>> {
+    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    for attempt in 0..2 {
+        let cached = state.sogo.lock().await.clone();
+        let session = match cached {
+            Some(Ok(s)) if attempt == 0 => s,
+            Some(Err(e)) => return Err(AppError::Other(e)),
+            _ => {
+                let mut log = Vec::new();
+                match sogo::login(base, &creds.username, &creds.password, &mut log).await {
+                    Ok(s) => {
+                        *state.sogo.lock().await = Some(Ok(s.clone()));
+                        s
+                    }
+                    Err(e) => {
+                        *state.sogo.lock().await = Some(Err(e.to_string()));
+                        return Err(e);
+                    }
+                }
+            }
+        };
+        match session.search(query).await {
+            Ok(list) => return Ok(list),
+            // Сессия истекла — войти заново один раз.
+            Err(_) if attempt == 0 => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Vec::new())
 }
 
 /// Проверяет, что адрес записи лежит внутри найденной коллекции: frontend не

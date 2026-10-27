@@ -372,15 +372,31 @@ impl DavClient {
     /// (LDAP): на запрос «все записи» она отвечает пустым списком и ищет
     /// только по строке. Ищем по имени, e-mail, фамилии и организации.
     pub async fn search_contacts(&mut self, book: &Collection, query: &str, limit: usize) -> Result<Vec<Contact>> {
-        let url = Url::parse(&book.url).map_err(|e| AppError::Other(e.to_string()))?;
+        self.search_contacts_by(book, query, &["FN", "EMAIL", "N", "ORG"], limit).await
+    }
+
+    /// Тело addressbook-query с фильтром «содержит» по указанным свойствам.
+    pub fn search_body(query: &str, props: &[&str], limit: usize) -> String {
         let q = xml_escape(query.trim());
-        let filters: String = ["FN", "EMAIL", "N", "ORG"]
+        let filters: String = props
             .iter()
             .map(|p| format!(r#"<cr:prop-filter name="{p}"><cr:text-match collation="i;unicode-casemap" match-type="contains">{q}</cr:text-match></cr:prop-filter>"#))
             .collect();
-        let body = format!(
+        format!(
             r#"<?xml version="1.0" encoding="utf-8"?><cr:addressbook-query xmlns:d="DAV:" xmlns:cr="{NS_CARD}"><d:prop><d:getetag/><cr:address-data/></d:prop><cr:filter test="anyof">{filters}</cr:filter><cr:limit><cr:nresults>{limit}</cr:nresults></cr:limit></cr:addressbook-query>"#
-        );
+        )
+    }
+
+    /// Сырой ответ REPORT — для диагностики.
+    pub async fn report_raw(&mut self, url: &str, body: &str) -> Result<(StatusCode, String)> {
+        let url = Url::parse(url).map_err(|e| AppError::Other(e.to_string()))?;
+        let (status, _, text) = self.request("REPORT", &url, Some("1"), Some(body)).await?;
+        Ok((status, text))
+    }
+
+    pub async fn search_contacts_by(&mut self, book: &Collection, query: &str, props: &[&str], limit: usize) -> Result<Vec<Contact>> {
+        let url = Url::parse(&book.url).map_err(|e| AppError::Other(e.to_string()))?;
+        let body = Self::search_body(query, props, limit);
         let Some(resps) = self.report(&url, &body).await? else {
             return Ok(Vec::new());
         };
