@@ -15,6 +15,7 @@ jobs:
   check:
     name: Lint & unit tests
     runs-on: ubuntu-22.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -50,6 +51,7 @@ jobs:
           - { name: linux, os: ubuntu-22.04, bundles: 'deb,rpm,appimage' }
           - { name: windows, os: windows-latest, bundles: 'nsis,msi' }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -81,6 +83,7 @@ jobs:
   bundle-win8:
     name: Bundle (windows 8/8.1)
     needs: check
+    timeout-minutes: 60
     # Кросс-сборка MinGW на Linux — тот же путь, что проверен локально.
     runs-on: ubuntu-24.04
     steps:
@@ -92,6 +95,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri, key: win7-gnu }
       - name: Cross toolchain
+        timeout-minutes: 10
         run: sudo apt-get update && sudo apt-get install -y mingw-w64 nsis
       - run: npm ci
       - run: npm --prefix frontend run build
@@ -119,6 +123,7 @@ jobs:
   bundle-astra17:
     name: Bundle (astra 1.7)
     needs: check
+    timeout-minutes: 60
     runs-on: ubuntu-24.04
     container: debian:10
     steps:
