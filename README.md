@@ -10,7 +10,8 @@ backend: один процесс на пользователя, как Outlook �
 
 Готовые сборки — на странице [Releases](https://github.com/csdemons/mail/releases):
 `*_x64-setup.exe` / `.msi` для Windows, `.deb` для Astra Linux SE 1.8 / Debian / Ubuntu,
-`.rpm` и `.AppImage`. Что изменилось — в [CHANGELOG.md](CHANGELOG.md).
+`.rpm` и `.AppImage`, `*_amd64-astra1.7.deb` для Astra Linux SE 1.7, `*-setup-windows8.exe`
+для Windows 8/8.1. Что изменилось — в [CHANGELOG.md](CHANGELOG.md).
 
 Выпуск версии: поднять `version` в `src-tauri/tauri.conf.json` и `src-tauri/Cargo.toml`,
 добавить раздел в `CHANGELOG.md` и отправить в `main` — CI соберёт пакеты и сам

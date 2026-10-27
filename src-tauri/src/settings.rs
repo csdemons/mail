@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::error::{AppError, Result};
 
@@ -78,11 +78,7 @@ impl Settings {
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| AppError::Other(format!("Каталог настроек недоступен: {e}")))?;
-    Ok(dir.join("settings.json"))
+    Ok(crate::host::config_dir(app)?.join("settings.json"))
 }
 
 pub fn load(app: &AppHandle) -> Option<Settings> {

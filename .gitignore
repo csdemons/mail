@@ -14,3 +14,5 @@ src-tauri/gen/schemas/
 .DS_Store
 __pycache__/
 *.pyc
+frontend/dist-legacy/
+legacy/target/

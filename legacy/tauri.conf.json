@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/1.x/core/tauri-config-schema/schema.json",
+  "build": {
+    "distDir": "../frontend/dist-legacy",
+    "devPath": "http://localhost:5173",
+    "withGlobalTauri": false
+  },
+  "package": {
+    "productName": "RRCKI Mail",
+    "version": "0.3.6"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": { "all": false, "open": true, "save": true }
+    },
+    "bundle": {
+      "active": false,
+      "identifier": "ru.rrcki.mail",
+      "icon": ["../src-tauri/icons/32x32.png", "../src-tauri/icons/128x128.png", "../src-tauri/icons/icon.ico"]
+    },
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "RRCKI Mail",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        "fileDropEnabled": false
+      }
+    ]
+  }
+}

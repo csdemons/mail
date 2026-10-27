@@ -1,0 +1,53 @@
+[package]
+name = "rrcki-mail-legacy"
+version = "0.0.0"  # версия приложения берётся из tauri.conf.json
+description = "RRCKI Mail для Astra Linux SE 1.7 (Debian 10, WebKitGTK 4.0): та же программа на Tauri 1"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "rrcki-mail"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.8", features = ["dialog-open", "dialog-save"] }
+open = "5"
+# indexmap 1.x (через kuchikiki в Tauri 1) не видит std при кросс-проверке.
+indexmap1 = { package = "indexmap", version = "1", features = ["std"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+log = "0.4"
+tokio = { version = "1", features = ["net", "sync", "time", "macros", "rt-multi-thread", "fs"] }
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+futures = "0.3"
+mail-parser = "0.11"
+utf7-imap = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+keyring = { version = "3", features = ["windows-native", "sync-secret-service", "crypto-rust"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-native-tls", "hostname"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "charset", "json"] }
+roxmltree = "0.20"
+ical = { version = "0.11", default-features = false, features = ["ical", "vcard"] }
+rrule = "0.13"
+chrono-tz = "0.9"
+mime_guess = "2"
+ammonia = "4"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+# Сборка с встроенным интерфейсом (без dev-сервера).
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
