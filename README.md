@@ -18,7 +18,7 @@ backend: один процесс на пользователя, как Outlook �
 
 ## Что уже работает
 
-- Вход по логину и паролю RuPost (`rp.nrcki.ru:993`, IMAPS); пароль хранится в
+- Вход по логину и паролю RuPost (`rupost.ru:993`, IMAPS); пароль хранится в
   **системном хранилище** — Windows Credential Manager или Secret Service
   (GNOME Keyring / KWallet) в Linux. Если хранилища нет (например, на терминальном
   сервере без GNOME Keyring), вход работает, но пароль спрашивается при каждом запуске.
@@ -37,7 +37,7 @@ backend: один процесс на пользователя, как Outlook �
 - **Настройки → Диагностика**: отчёт о том, что сервер отвечает по текущей папке
   (CAPABILITY, LIST, STATUS, EXAMINE, SEARCH, FETCH), без пароля — для разбора проблем.
 
-- **Отправка писем** через SMTP (по умолчанию `rp.nrcki.ru:465`, SMTPS; 587 — STARTTLS)
+- **Отправка писем** через SMTP (по умолчанию `rupost.ru:465`, SMTPS; 587 — STARTTLS)
   тем же логином и паролем: новое письмо, ответ (In-Reply-To/References), пересылка,
   копия, вложения до 25 МБ, копия в «Отправленные» (IMAP APPEND), подсказки адресов
   из контактов.
@@ -118,7 +118,7 @@ cargo run --example nextcloud_check      # NC_WRITE=1 — ещё и создат
 
 SMTP, календарь и контакты без интерфейса:
 ```powershell
-$env:SMTP_HOST = 'rp.rrcki.ru'; $env:DAV_URL = 'https://rp.nrcki.ru/'
+$env:SMTP_HOST = 'rupost.ru'; $env:DAV_URL = 'https://rupost.ru/'
 cargo run --example groupware_check -- you@nrcki.ru   # адрес — кому отправить тестовое письмо
 ```
 
