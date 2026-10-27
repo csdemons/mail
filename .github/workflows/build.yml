@@ -27,6 +27,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libsecret-1-dev
+      - name: Tag matches app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          app=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          test "v$app" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != version $app"; exit 1; }
+          grep -q "^## $app\$" CHANGELOG.md || { echo "CHANGELOG.md: нет раздела $app"; exit 1; }
       - run: npm ci
       - run: npm --prefix frontend run typecheck
       - run: npm --prefix frontend run build
@@ -70,3 +76,40 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: bundle
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: File names without spaces
+        run: |
+          find dist -type f | while read -r f; do
+            n="$(dirname "$f")/$(basename "$f" | sed 's/^RRCKI Mail/rrcki-mail/; s/ /-/g')"
+            [ "$f" = "$n" ] || mv "$f" "$n"
+          done
+          find dist -type f -printf '%f  %s bytes\n'
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v h="## $v" '$0==h{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          cat >> notes.md <<'TXT'
+
+          ### Установка
+          - **Windows 10/11:** `rrcki-mail_*_x64-setup.exe` (или `.msi` для GPO). Ставится поверх предыдущей версии, настройки и пароли сохраняются.
+          - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+:** `sudo apt install ./rrcki-mail_*_amd64.deb`
+          - **RED OS / ALT / Fedora:** `.rpm`; любой дистрибутив — `.AppImage` (`chmod +x` и запустить).
+          TXT
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: RRCKI Mail ${{ github.ref_name }}
+          body_path: notes.md
+          files: dist/**/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true

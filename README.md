@@ -6,6 +6,16 @@
 Приложение работает напрямую с почтовым сервером по IMAP (TLS), без промежуточного
 backend: один процесс на пользователя, как Outlook или Thunderbird.
 
+## Скачать
+
+Готовые сборки — на странице [Releases](https://github.com/csdemons/mail/releases):
+`*_x64-setup.exe` / `.msi` для Windows, `.deb` для Astra Linux SE 1.8 / Debian / Ubuntu,
+`.rpm` и `.AppImage`. Что изменилось — в [CHANGELOG.md](CHANGELOG.md).
+
+Выпуск версии: поднять `version` в `src-tauri/tauri.conf.json` и `src-tauri/Cargo.toml`,
+добавить раздел в `CHANGELOG.md`, затем `git tag vX.Y.Z && git push origin vX.Y.Z` —
+CI соберёт пакеты и опубликует релиз.
+
 ## Что уже работает
 
 - Вход по логину и паролю RuPost (`rp.nrcki.ru:993`, IMAPS); пароль хранится в
