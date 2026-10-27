@@ -13,8 +13,8 @@ backend: один процесс на пользователя, как Outlook �
 `.rpm` и `.AppImage`. Что изменилось — в [CHANGELOG.md](CHANGELOG.md).
 
 Выпуск версии: поднять `version` в `src-tauri/tauri.conf.json` и `src-tauri/Cargo.toml`,
-добавить раздел в `CHANGELOG.md`, затем `git tag vX.Y.Z && git push origin vX.Y.Z` —
-CI соберёт пакеты и опубликует релиз.
+добавить раздел в `CHANGELOG.md` и отправить в `main` — CI соберёт пакеты и сам
+создаст релиз `vX.Y.Z` (если релиза с этой версией ещё нет).
 
 ## Что уже работает
 
