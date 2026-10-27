@@ -193,7 +193,8 @@ class H(BaseHTTPRequestHandler):
                     return self.send(200, card)
                 if len(parts) == 6 and parts[5] == 'reorder' and method == 'PUT':
                     b = self.body()
-                    card.update(stackId=int(b['stackId']), order=int(b['order']))
+                    # Как в Nextcloud: параметры пути важнее тела запроса.
+                    card.update(stackId=stack, order=int(b['order']))
                     return self.send(200, [card])
                 if len(parts) == 5 and method == 'DELETE':
                     state['cards'].remove(card)

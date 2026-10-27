@@ -353,8 +353,11 @@ impl Nc {
         Ok(())
     }
 
-    pub async fn deck_move_card(&self, board: i64, stack: i64, card: i64, target_stack: i64, order: i64) -> Result<()> {
-        self.call(Method::PUT, &format!("{DECK}boards/{board}/stacks/{stack}/cards/{card}/reorder"), &[],
+    pub async fn deck_move_card(&self, board: i64, _stack: i64, card: i64, target_stack: i64, order: i64) -> Result<()> {
+        // Nextcloud подставляет параметры из пути поверх тела запроса: если в пути
+        // старая колонка, `stackId` из тела игнорируется и карточка «переезжает»
+        // в ту же колонку. Поэтому целевая колонка — и в пути, и в теле.
+        self.call(Method::PUT, &format!("{DECK}boards/{board}/stacks/{target_stack}/cards/{card}/reorder"), &[],
             Some(json!({ "order": order, "stackId": target_stack })), "Перемещение карточки").await?;
         Ok(())
     }

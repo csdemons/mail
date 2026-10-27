@@ -165,7 +165,11 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
       setDropStack(null)
       if (commit && target !== null) void moveRef.current(d.card, target)
     }
-    const up = () => finish(true)
+    const up = (e: PointerEvent) => {
+      // Колонку определяем и по точке отпускания — последнего pointermove могло не быть.
+      if (drag.current?.active) dropRef.current = stackAt(e.clientX, e.clientY) ?? dropRef.current
+      finish(true)
+    }
     const cancel = () => finish(false)
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape') finish(false) }
     window.addEventListener('pointermove', onMove, { passive: false })

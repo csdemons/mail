@@ -17,6 +17,7 @@ async fn main() {
             cc: vec![],
             subject: "Проверка отправки RRCKI Mail".into(),
             body: "Тестовое письмо.\nЕсли вы его видите — SMTP работает.".into(),
+            html: None,
             in_reply_to: None,
             references: None,
             attachments: vec![],

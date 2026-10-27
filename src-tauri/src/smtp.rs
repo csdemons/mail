@@ -22,6 +22,9 @@ pub struct Outgoing {
     pub cc: Vec<String>,
     pub subject: String,
     pub body: String,
+    /// HTML-версия (оформленное письмо). Текст `body` уходит рядом как
+    /// альтернатива для клиентов без HTML.
+    pub html: Option<String>,
     pub in_reply_to: Option<String>,
     pub references: Option<String>,
     pub attachments: Vec<OutgoingAttachment>,
@@ -75,6 +78,38 @@ fn clean_header_value(v: &str) -> Option<String> {
     (!v.is_empty()).then_some(v)
 }
 
+/// Чистит HTML из редактора: только оформление текста, без скриптов,
+/// обработчиков, форм, внешних картинок и `data:`-ссылок.
+pub fn sanitize_html(html: &str) -> String {
+    use std::collections::HashSet;
+    let tags: HashSet<&str> = [
+        "a", "b", "strong", "i", "em", "u", "s", "strike", "del", "sub", "sup", "br", "p", "div", "span", "font",
+        "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4", "pre", "code", "hr", "table", "thead", "tbody",
+        "tr", "td", "th",
+    ]
+    .into_iter()
+    .collect();
+    let generic: HashSet<&str> = ["style", "align", "dir"].into_iter().collect();
+    let mut b = ammonia::Builder::default();
+    b.tags(tags)
+        .generic_attributes(generic)
+        .add_tag_attributes("font", &["face", "size", "color"])
+        .add_tag_attributes("a", &["href", "title"])
+        .add_tag_attributes("td", &["colspan", "rowspan"])
+        .add_tag_attributes("th", &["colspan", "rowspan"])
+        .url_schemes(["http", "https", "mailto", "tel"].into_iter().collect())
+        .link_rel(Some("noopener noreferrer"));
+    b.clean(html).to_string()
+}
+
+/// Обёртка письма: кодировка и базовый шрифт, как в веб-клиентах.
+pub fn html_document(fragment: &str) -> String {
+    format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"></head>\n<body><div style=\"font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4;\">{}</div></body></html>\n",
+        sanitize_html(fragment)
+    )
+}
+
 pub fn build(msg: Outgoing) -> Result<Message> {
     if msg.to.is_empty() {
         return Err(AppError::Other("Укажите хотя бы одного получателя".into()));
@@ -105,16 +140,22 @@ pub fn build(msg: Outgoing) -> Result<Message> {
     }
 
     let text = SinglePart::plain(msg.body.replace("\r\n", "\n"));
-    let message = if msg.attachments.is_empty() {
-        builder.singlepart(text)
-    } else {
-        let mut mixed = MultiPart::mixed().singlepart(text);
-        for a in msg.attachments {
-            let ct = ContentType::parse(&a.content_type)
-                .unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("valid"));
-            mixed = mixed.singlepart(Attachment::new(a.name).body(a.data, ct));
+    let html = msg.html.filter(|h| !h.trim().is_empty()).map(|h| SinglePart::html(html_document(&h)));
+    let message = match (html, msg.attachments.is_empty()) {
+        (None, true) => builder.singlepart(text),
+        (Some(html), true) => builder.multipart(MultiPart::alternative().singlepart(text).singlepart(html)),
+        (html, false) => {
+            let mut mixed = match html {
+                Some(html) => MultiPart::mixed().multipart(MultiPart::alternative().singlepart(text).singlepart(html)),
+                None => MultiPart::mixed().singlepart(text),
+            };
+            for a in msg.attachments {
+                let ct = ContentType::parse(&a.content_type)
+                    .unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("valid"));
+                mixed = mixed.singlepart(Attachment::new(a.name).body(a.data, ct));
+            }
+            builder.multipart(mixed)
         }
-        builder.multipart(mixed)
     };
     message.map_err(|e| AppError::Other(format!("Не удалось сформировать письмо: {e}")))
 }
@@ -177,6 +218,16 @@ mod tests {
     }
 
     #[test]
+    fn sanitizes_outgoing_html() {
+        let clean = sanitize_html(r##"<p style="font-family: Georgia" onclick="x()"><b>Жирный</b> <font face="Courier New" size="5" color="#ff0000">шрифт</font></p><script>alert(1)</script><img src="https://t/x.png"><a href="javascript:alert(1)">a</a><a href="https://nrcki.ru">b</a><iframe src="https://x"></iframe>"##);
+        assert!(clean.contains(r#"<p style="font-family: Georgia"><b>Жирный</b>"#), "{clean}");
+        assert!(clean.contains(r##"<font face="Courier New" size="5" color="#ff0000">"##), "{clean}");
+        assert!(!clean.contains("onclick") && !clean.contains("script") && !clean.contains("<img") && !clean.contains("iframe"), "{clean}");
+        assert!(!clean.contains("javascript") && clean.contains(r#"href="https://nrcki.ru""#), "{clean}");
+        assert!(html_document("<b>x</b>").contains("<meta charset=\"utf-8\">"));
+    }
+
+    #[test]
     fn builds_reply_with_attachment() {
         let msg = build(Outgoing {
             from_name: Some("Юшков Дмитрий".into()),
@@ -185,6 +236,7 @@ mod tests {
             cc: vec![],
             subject: "Re: Отчёт".into(),
             body: "Спасибо!\nДмитрий".into(),
+            html: Some("<p><b>Спасибо!</b></p><p style=\"color: red\" onclick=\"x()\">Дмитрий</p><script>alert(1)</script><img src=\"https://track/x.png\">".into()),
             in_reply_to: Some("<abc@nrcki.ru>".into()),
             references: Some("<root@nrcki.ru> <abc@nrcki.ru>".into()),
             attachments: vec![OutgoingAttachment {
@@ -197,7 +249,7 @@ mod tests {
         let raw = String::from_utf8(msg.formatted()).expect("utf8");
         assert!(raw.contains("In-Reply-To: <abc@nrcki.ru>"));
         assert!(raw.contains("References: <root@nrcki.ru> <abc@nrcki.ru>"));
-        assert!(raw.contains("multipart/mixed"));
+        assert!(raw.contains("multipart/mixed") && raw.contains("multipart/alternative") && raw.contains("text/html"));
         assert!(raw.contains("=?utf-8?b?"), "non-ASCII headers must be encoded");
         assert!(build(Outgoing {
             from_name: None,
@@ -206,6 +258,7 @@ mod tests {
             cc: vec![],
             subject: String::new(),
             body: String::new(),
+            html: None,
             in_reply_to: None,
             references: None,
             attachments: vec![],

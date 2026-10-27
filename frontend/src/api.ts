@@ -34,7 +34,7 @@ export const api = {
     invoke<Settings>('update_profile', { ...p }),
   pickAttachments: () => invoke<PickedFile[]>('pick_attachments'),
   sendMessage: (m: {
-    to: string; cc: string; subject: string; body: string
+    to: string; cc: string; subject: string; body: string; html: string | null
     inReplyTo: string | null; references: string | null; attachments: string[]
   }) => invoke<SendResult>('send_message', { ...m }),
   listContacts: () => invoke<ContactsResult>('list_contacts'),

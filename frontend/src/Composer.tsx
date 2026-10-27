@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Paperclip, Send, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
+import RichEditor, { type RichEditorHandle } from './RichEditor'
 import type { Contact, Draft, PickedFile } from './types'
 
 interface Props {
@@ -82,7 +83,7 @@ export default function Composer({ from, draft, contacts, onClose, onSent }: Pro
   const [cc, setCc] = useState(draft.cc)
   const [showCc, setShowCc] = useState(Boolean(draft.cc))
   const [subject, setSubject] = useState(draft.subject)
-  const [body, setBody] = useState(draft.body)
+  const editor = useRef<RichEditorHandle>(null)
   const [files, setFiles] = useState<PickedFile[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -107,7 +108,9 @@ export default function Composer({ from, draft, contacts, onClose, onSent }: Pro
     setError('')
     try {
       const result = await api.sendMessage({
-        to, cc, subject, body,
+        to, cc, subject,
+        body: editor.current?.text() ?? '',
+        html: editor.current?.html() ?? null,
         inReplyTo: draft.inReplyTo,
         references: draft.references,
         attachments: files.map((f) => f.id),
@@ -134,7 +137,7 @@ export default function Composer({ from, draft, contacts, onClose, onSent }: Pro
           ? <RecipientField label="Копия" value={cc} onChange={setCc} contacts={contacts} />
           : <button type="button" className="text-button add-cc" onClick={() => setShowCc(true)}>+ Копия</button>}
         <label className="compose-field"><span>Тема</span><input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
-        <textarea className="compose-body" autoFocus={draft.mode === 'reply'} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Напишите сообщение…" />
+        <RichEditor ref={editor} initialText={draft.body} autoFocus={draft.mode === 'reply'} onNotice={setError} />
         {files.length > 0 && (
           <div className="compose-files">
             {files.map((f) => (

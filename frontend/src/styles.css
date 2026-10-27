@@ -404,3 +404,22 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .talk-pending .talk-file { cursor: default; }
 .talk-pending .talk-file button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; display: inline-flex; }
 .talk-input-row .icon-button { flex: 0 0 auto; }
+
+/* Редактор письма */
+.rich-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-top: 6px; }
+.rt-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.rt-toolbar select { height: 30px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: inherit; font: inherit; font-size: 13px; padding: 0 6px; }
+.rt-font { width: 128px; }
+.rt-size { width: 124px; margin-left: 4px; }
+.rt-btn { position: relative; width: 28px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.rt-btn:hover { background: var(--hover); }
+.rt-btn.active { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); }
+.rt-sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
+.rt-a { font-weight: 700; font-size: 15px; text-decoration: underline; text-decoration-color: #d0021b; text-decoration-thickness: 3px; }
+.rt-color input[type=color] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; border: 0; padding: 0; }
+.rt-content { resize: none; flex: 1; min-height: 220px; max-height: 50vh; overflow: auto; font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4; padding: 12px 2px; cursor: text; }
+.rt-content:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
+.rt-content blockquote { margin: 6px 0 6px 2px; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
+.rt-content a { color: var(--blue); }
+.rt-content ul, .rt-content ol { padding-left: 26px; margin: 4px 0; }
+.compose-modal { width: min(840px, 100%); }

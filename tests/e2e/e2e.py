@@ -166,12 +166,28 @@ try:
     to = d.find_element(By.CSS_SELECTOR, '.recipient-field input').get_attribute('value')
     assert 'ivanov@nrcki.ru' in to, to
     subj = d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'); subj.send_keys('Проверка отправки из RRCKI Mail')
-    d.find_element(By.CSS_SELECTOR, '.compose-body').send_keys('Добрый день!\nЭто тест.')
+    body = d.find_element(By.CSS_SELECTOR, '.compose-body')
+    body.send_keys('Добрый день!'); body.send_keys(Keys.ENTER); body.send_keys('Это тест.')
+    # Оформление: выделить всё, шрифт Georgia, жирный, крупнее.
+    body.send_keys(Keys.CONTROL, 'a')
+    from selenium.webdriver.support.ui import Select
+    Select(d.find_element(By.CSS_SELECTOR, '.rt-font')).select_by_visible_text('Georgia')
+    d.find_element(By.CSS_SELECTOR, '.rt-btn[aria-label^="Жирный"]').click()
+    Select(d.find_element(By.CSS_SELECTOR, '.rt-size')).select_by_visible_text('Очень крупный')
+    W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.rt-btn[aria-label^="Жирный"]').get_attribute('aria-pressed') == 'true')
+    d.save_screenshot(f'{OUT}/05-compose-format.png')
     d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
     W(d, 30).until(lambda d: 'Письмо отправлено' in (d.find_elements(By.CSS_SELECTOR, '.toast') or [None])[0].get_attribute('textContent') if d.find_elements(By.CSS_SELECTOR, '.toast') else False)
     W(d, 10).until(lambda d: len(outbox()) == before + 1)
     s1, raw1 = subject_of(outbox()[-1])
     assert s1 == 'Проверка отправки из RRCKI Mail' and b'ivanov@nrcki.ru' in raw1, s1; ok('sent via SMTP, Cyrillic subject intact')
+    m1 = email.message_from_bytes(raw1)
+    parts = {p.get_content_type(): p.get_payload(decode=True).decode(p.get_content_charset() or 'utf-8') for p in m1.walk() if not p.is_multipart()}
+    assert m1.get_content_type() == 'multipart/alternative' and set(parts) == {'text/plain', 'text/html'}, (m1.get_content_type(), list(parts))
+    assert parts['text/plain'].replace('\r\n', '\n').strip() == 'Добрый день!\nЭто тест.', repr(parts['text/plain'])
+    h = parts['text/html']
+    assert 'Georgia' in h and ('bold' in h or '<b>' in h) and ('x-large' in h or 'size="5"' in h) and 'Добрый день!' in h, h
+    ok('formatted mail: multipart/alternative, Georgia + bold + size in HTML, clean plain text')
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
     M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('test@rrcki.ru', 'Secret-123')
     typ, data = M.select('Sent'); M.logout()
@@ -201,6 +217,8 @@ try:
     W(d, 30).until(lambda d: len(outbox()) == before + 1)
     s2, raw2 = subject_of(outbox()[-1])
     assert s2 == 'Re: Отчёт с вложением' and b'petrova@nrcki.ru' in raw2, (s2, raw2[:400])
+    html2 = [p for p in email.message_from_bytes(raw2).walk() if p.get_content_type() == 'text/html'][0].get_payload(decode=True).decode()
+    assert '<blockquote' in html2, html2; ok('reply quote sent as blockquote')
     assert b'In-Reply-To: <report-oct@nrcki.ru>' in raw2 and b'References: <thread-root@nrcki.ru> <report-oct@nrcki.ru>' in raw2, raw2[:700]
     ok('reply has In-Reply-To, References and Cc')
 
