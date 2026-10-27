@@ -23,6 +23,8 @@ mod settings;
 mod smtp;
 #[path = "../../src-tauri/src/sogo.rs"]
 mod sogo;
+#[path = "../../src-tauri/src/updater.rs"]
+mod updater;
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

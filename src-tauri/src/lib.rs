@@ -9,6 +9,7 @@ mod settings;
 #[doc(hidden)]
 pub mod smtp;
 pub mod sogo;
+pub mod updater;
 mod commands;
 mod host;
 

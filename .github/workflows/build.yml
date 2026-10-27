@@ -205,6 +205,9 @@ jobs:
           - **Astra Linux SE 1.7:** `sudo apt install ./rrcki-mail_*_amd64-astra1.7.deb`
           - **RED OS / ALT / Fedora:** `.rpm`; любой дистрибутив — `.AppImage` (`chmod +x` и запустить).
           TXT
+      - name: latest.json (встроенное обновление)
+        if: steps.ver.outputs.exists == 'false'
+        run: python3 .github/latest_json.py "${{ steps.ver.outputs.version }}" dist notes.md "$GITHUB_REPOSITORY"
       - uses: softprops/action-gh-release@v2
         if: steps.ver.outputs.exists == 'false'
         with:

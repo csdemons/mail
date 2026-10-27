@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::error::{AppError, Result};
 use crate::host;
-use crate::{dav, imap, nextcloud, settings, smtp, sogo};
+use crate::{dav, imap, nextcloud, settings, smtp, sogo, updater};
 use crate::imap::{Connection, Credentials, FlagKind, Folder, MessageDetail, MessagePage};
 use crate::settings::Settings;
 
@@ -41,6 +41,9 @@ pub struct AppState {
     /// Сессия веб-API SOGo для поиска адресатов (или текст ошибки входа,
     /// чтобы не повторять неудачный вход на каждое нажатие клавиши).
     sogo: Mutex<Option<std::result::Result<sogo::SogoSession, String>>>,
+    /// Найденное обновление и ход его скачивания.
+    update: Mutex<Option<(updater::UpdateInfo, updater::ManifestAsset)>>,
+    update_progress: updater::Progress,
 }
 
 /// Выполняет операцию на открытом соединении. Если соединение оборвалось
@@ -1088,6 +1091,82 @@ pub async fn forget_attachment(state: State<'_, AppState>, attachment: String) -
     Ok(())
 }
 
+// ---------------------------------------------------------------- обновления
+
+/// Есть ли новая версия для этой сборки. `None` — обновлений нет или проверка
+/// отключена администратором (`update.json`).
+#[tauri::command]
+pub async fn check_update(app: AppHandle, state: State<'_, AppState>) -> Result<Option<updater::UpdateInfo>> {
+    let cfg = updater::load_config(host::config_dir(&app).ok().as_deref());
+    if cfg.disabled {
+        return Ok(None);
+    }
+    let url = cfg.url.unwrap_or_else(|| updater::DEFAULT_MANIFEST_URL.to_string());
+    let manifest = updater::fetch_manifest(&url).await?;
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    // Версия приложения в легаси-сборке берётся из tauri.conf.json.
+    let current = app.package_info().version.to_string().split('~').next().map(str::to_string).filter(|v| v != "0.0.0").unwrap_or(current);
+    if !updater::is_newer(&manifest.version, &current) {
+        *state.update.lock().await = None;
+        return Ok(None);
+    }
+    let variant = updater::detect_variant(host::VARIANT);
+    let Some(asset) = updater::pick(&manifest, &variant) else {
+        return Ok(None);
+    };
+    let info = updater::UpdateInfo {
+        current,
+        version: manifest.version.clone(),
+        notes: manifest.notes.clone(),
+        size: asset.size,
+        file_name: asset.name.clone(),
+        variant,
+    };
+    *state.update.lock().await = Some((info.clone(), asset));
+    Ok(Some(info))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    done: u64,
+    total: u64,
+}
+
+#[tauri::command]
+pub fn update_progress(state: State<'_, AppState>) -> UpdateProgress {
+    UpdateProgress {
+        done: state.update_progress.done.load(Ordering::Relaxed),
+        total: state.update_progress.total.load(Ordering::Relaxed),
+    }
+}
+
+/// Скачивает найденное обновление, проверяет SHA-256 и ставит. Если установщик
+/// запущен или программа перезапускается — текущий процесс закрывается.
+#[tauri::command]
+pub async fn install_update(app: AppHandle, state: State<'_, AppState>) -> Result<updater::InstallResult> {
+    let (info, asset) = state
+        .update
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| AppError::Other("Сначала проверьте обновления".into()))?;
+    let dir = std::env::temp_dir().join("rrcki-mail-update");
+    let file = updater::download(&asset, &dir, &state.update_progress).await?;
+    let variant = info.variant.clone();
+    let result = tokio::task::spawn_blocking(move || updater::install(&variant, &file))
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))??;
+    if result.restarting {
+        let handle = app.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            handle.exit(0);
+        });
+    }
+    Ok(result)
+}
+
 /// Список команд для `invoke_handler` — один на обе сборки.
 macro_rules! app_commands {
     () => {
@@ -1133,6 +1212,9 @@ macro_rules! app_commands {
             crate::commands::talk_poll,
             crate::commands::talk_send,
             crate::commands::talk_send_file,
+            crate::commands::check_update,
+            crate::commands::update_progress,
+            crate::commands::install_update,
             crate::commands::forget_attachment,
         ]
     };

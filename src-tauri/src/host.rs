@@ -10,6 +10,9 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::error::{AppError, Result};
 
+/// Сборка определяется во время работы (Windows / deb / rpm / AppImage).
+pub const VARIANT: Option<&str> = None;
+
 pub fn config_dir(app: &AppHandle) -> Result<PathBuf> {
     app.path()
         .app_config_dir()

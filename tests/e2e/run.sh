@@ -18,6 +18,10 @@ export GNOME_KEYRING_CONTROL
 # Файл, который отладочная сборка «выберет» вместо системного диалога.
 printf 'test file for talk\n' > "$E2E_HOME/отчёт-e2e.txt"
 export RRCKI_E2E_PICK="$E2E_HOME/отчёт-e2e.txt"
+# Обновления: адрес latest.json — мок; «вариант» сборки — test (без установки).
+mkdir -p "$XDG_CONFIG_HOME/ru.rrcki.mail"
+echo '{"url": "https://localhost:8443/updates/latest.json"}' > "$XDG_CONFIG_HOME/ru.rrcki.mail/update.json"
+export RRCKI_E2E_VARIANT=test
 tauri-driver >/tmp/tauri-driver.log 2>&1 &
 TD=$!
 sleep 2

@@ -4,6 +4,7 @@ import { Mail } from 'lucide-react'
 import { api, errorText } from './api'
 import App from './App'
 import Login from './Login'
+import UpdateNotice from './UpdateNotice'
 import type { Account, Settings } from './types'
 
 type State =
@@ -42,15 +43,20 @@ export default function Root() {
 
   if (state.kind === 'login') {
     return (
+      <>
+      <UpdateNotice />
       <Login
         initial={state.settings}
         initialError={state.error}
         onLoggedIn={(result) => setState({ kind: 'ready', account: result.account, warning: result.warning ?? '' })}
       />
+      </>
     )
   }
 
   return (
+    <>
+    <UpdateNotice />
     <App
       account={state.account}
       initialNotice={state.warning}
@@ -60,5 +66,6 @@ export default function Root() {
         setState({ kind: 'login', settings, error: '' })
       }}
     />
+    </>
   )
 }

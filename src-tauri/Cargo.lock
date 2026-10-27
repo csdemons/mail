@@ -3666,7 +3666,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rrcki-mail"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -3685,6 +3685,7 @@ dependencies = [
  "rrule",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

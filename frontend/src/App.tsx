@@ -13,6 +13,7 @@ import type {
   Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
 } from './types'
 import Composer from './Composer'
+import { CHECK_UPDATE_EVENT } from './UpdateNotice'
 import DeckView from './DeckView'
 import TalkView from './TalkView'
 import NcConnect from './NcConnect'
@@ -676,6 +677,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">
             <button className="secondary-button" disabled={diagBusy} onClick={() => void runDiagnostics()}><Stethoscope size={16} /> Диагностика</button>
+            <button className="secondary-button" onClick={() => window.dispatchEvent(new Event(CHECK_UPDATE_EVENT))}><Download size={16} /> Проверить обновления</button>
             <button className="secondary-button" onClick={() => { setShowSettings(false); onLogout() }}><LogOut size={16} /> Выйти и забыть пароль</button>
           </div>
           {diagText !== null && <div className="diag-block">

@@ -13,6 +13,8 @@ from urllib.parse import unquote, urlparse, parse_qs
 LOGIN, APP_PASSWORD, UID = 'test@rrcki.ru', 'app-pass-123', 'test'
 lock = threading.Condition()
 ids = itertools.count(100)
+UPDATE_BLOB = b'fake package for update test\n' * 4000
+
 state = {
     'dirs': {'/'},
     'files': {},
@@ -124,6 +126,17 @@ class H(BaseHTTPRequestHandler):
             if state['polls'] < 3:  # пользователь ещё входит в браузере
                 return self.send(404, [])
             return self.send(200, {'server': base, 'loginName': LOGIN, 'appPassword': APP_PASSWORD})
+
+        # --- обновления (без авторизации, как GitHub Releases)
+        if method == 'GET' and p == '/updates/latest.json':
+            import hashlib
+            return self.send(200, {'version': '9.9.9', 'notes': '- Проверка обновлений\n- Ещё пункт', 'assets': {
+                'test': {'name': 'rrcki-mail_9.9.9_amd64.deb', 'url': f'{base}/updates/rrcki-mail_9.9.9_amd64.deb',
+                         'sha256': hashlib.sha256(UPDATE_BLOB).hexdigest(), 'size': len(UPDATE_BLOB)},
+                'win': {'name': 'x.exe', 'url': f'{base}/updates/x.exe', 'sha256': '00'}}})
+        if method == 'GET' and p == '/updates/rrcki-mail_9.9.9_amd64.deb':
+            self.send_response(200); self.send_header('Content-Length', str(len(UPDATE_BLOB))); self.end_headers()
+            self.wfile.write(UPDATE_BLOB); return
 
         # --- тестовые ручки
         if p == '/test/state':

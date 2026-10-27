@@ -245,3 +245,17 @@ export interface TalkFile {
   size: number
   mimetype: string
 }
+
+export interface UpdateInfo {
+  current: string
+  version: string
+  notes: string
+  size: number
+  fileName: string
+  variant: string
+}
+
+export interface InstallResult {
+  restarting: boolean
+  manual: string | null
+}

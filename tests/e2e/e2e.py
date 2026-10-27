@@ -114,6 +114,20 @@ try:
     time.sleep(1)
     rows = d.find_elements(By.CSS_SELECTOR, '.message-row')
     assert len(rows) == 50, len(rows); ok('first page: 50 rows')
+
+    # Обновление: уведомление о новой версии, «Что нового», загрузка с проверкой SHA-256.
+    card = W(d, 40).until(lambda d: d.find_element(By.CSS_SELECTOR, '.update-card'))
+    W(d, 10).until(lambda d: 'Доступна версия 9.9.9' in d.find_element(By.CSS_SELECTOR, '.update-card').get_attribute('textContent'))
+    [b for b in card.find_elements(By.TAG_NAME, 'button') if 'Что нового' in b.text][0].click()
+    assert 'Проверка обновлений' in wait(d, '.update-notes').get_attribute('textContent'); ok('update available: 9.9.9 with release notes')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.update-card button') if 'Обновить' in b.text][0].click()
+    W(d, 30).until(lambda d: 'скачана' in d.find_element(By.CSS_SELECTOR, '.update-card').get_attribute('textContent'))
+    cmd = d.find_element(By.CSS_SELECTOR, '.update-cmd').get_attribute('textContent')
+    path = cmd.split(': ', 1)[1]
+    assert open(path, 'rb').read() == b'fake package for update test\n' * 4000, path
+    ok('update downloaded, SHA-256 verified, manual install hint shown')
+    d.find_element(By.CSS_SELECTOR, '.update-card button[aria-label="Закрыть"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.update-card'))
     folders = [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '.folder-item')]
     print('   folders:', folders)
     assert any('Входящие' in f for f in folders) and any('Проекты' in f for f in folders), folders

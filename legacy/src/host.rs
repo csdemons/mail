@@ -7,6 +7,9 @@ use tauri::AppHandle;
 
 use crate::error::{AppError, Result};
 
+/// Эта сборка — пакет для Astra Linux SE 1.7.
+pub const VARIANT: Option<&str> = Some("astra17");
+
 pub fn config_dir(app: &AppHandle) -> Result<PathBuf> {
     app.path_resolver()
         .app_config_dir()

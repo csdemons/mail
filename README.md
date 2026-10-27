@@ -13,6 +13,14 @@ backend: один процесс на пользователя, как Outlook �
 `.rpm` и `.AppImage`, `*_amd64-astra1.7.deb` для Astra Linux SE 1.7, `*-setup-windows8.exe`
 для Windows 8/8.1. Что изменилось — в [CHANGELOG.md](CHANGELOG.md).
 
+**Обновления.** Программа сама проверяет новую версию (файл `latest.json` в последнем
+релизе) при запуске и раз в 6 часов и предлагает обновиться. Отключить или направить на
+внутреннее зеркало — файлом `update.json` в `/etc/rrcki-mail/` (Linux) или
+`%ProgramData%\RRCKI Mail\` (Windows):
+```json
+{ "disabled": false, "url": "https://mirror.example/rrcki-mail/latest.json" }
+```
+
 Выпуск версии: поднять `version` в `src-tauri/tauri.conf.json` и `src-tauri/Cargo.toml`,
 добавить раздел в `CHANGELOG.md` и отправить в `main` — CI соберёт пакеты и сам
 создаст релиз `vX.Y.Z` (если релиза с этой версией ещё нет).
