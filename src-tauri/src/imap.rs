@@ -40,6 +40,9 @@ pub struct Connection {
     session: ImapSession,
     selected: Option<String>,
     creds: Credentials,
+    /// Последнее открытое письмо целиком (папка, UID, исходник): вложения и их
+    /// предпросмотр берутся отсюда, без повторной загрузки с сервера.
+    raw_cache: Option<(String, u32, Vec<u8>)>,
 }
 
 /// TLS-подключение (IMAPS) и вход. Сертификат проверяется через системное
@@ -88,6 +91,7 @@ pub async fn connect(creds: &Credentials) -> Result<Connection> {
         session,
         selected: None,
         creds: creds.clone(),
+        raw_cache: None,
     })
 }
 
@@ -661,7 +665,22 @@ async fn fetch_raw(conn: &mut Connection, folder: &str, uid: u32) -> Result<Fetc
         .iter()
         .position(|f| f.uid == Some(uid) && f.body().is_some())
         .ok_or(AppError::NotFound)?;
-    Ok(fetches.swap_remove(pos))
+    let fetch = fetches.swap_remove(pos);
+    if let Some(body) = fetch.body() {
+        conn.raw_cache = Some((folder.to_string(), uid, body.to_vec()));
+    }
+    Ok(fetch)
+}
+
+/// Исходник письма: из кэша последнего открытого или с сервера.
+async fn raw_message(conn: &mut Connection, folder: &str, uid: u32) -> Result<Vec<u8>> {
+    if let Some((f, u, raw)) = &conn.raw_cache {
+        if f == folder && *u == uid {
+            return Ok(raw.clone());
+        }
+    }
+    let fetch = fetch_raw(conn, folder, uid).await?;
+    Ok(fetch.body().ok_or(AppError::NotFound)?.to_vec())
 }
 
 fn attachment_name(part: &mail_parser::MessagePart<'_>, index: usize) -> String {
@@ -786,9 +805,8 @@ pub async fn get_attachment(
     uid: u32,
     index: usize,
 ) -> Result<(String, Vec<u8>)> {
-    let fetch = fetch_raw(conn, folder, uid).await?;
-    let body = fetch.body().ok_or(AppError::NotFound)?;
-    let msg = MessageParser::default().parse(body).ok_or(AppError::NotFound)?;
+    let raw = raw_message(conn, folder, uid).await?;
+    let msg = MessageParser::default().parse(&raw).ok_or(AppError::NotFound)?;
     let part = msg.attachments().nth(index).ok_or(AppError::NotFound)?;
     Ok((attachment_name(part, index), part.contents().to_vec()))
 }

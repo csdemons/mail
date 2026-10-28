@@ -968,6 +968,28 @@ pub async fn save_attachment(
     Ok(Some(path.display().to_string()))
 }
 
+/// Вложение для предпросмотра в окне программы (картинки, PDF, текст).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentData {
+    name: String,
+    /// Содержимое в base64.
+    data: String,
+}
+
+/// Предпросмотр больше этого размера не загружается в интерфейс — только «Сохранить».
+const MAX_PREVIEW_BYTES: usize = 30 * 1024 * 1024;
+
+#[tauri::command]
+pub async fn attachment_data(state: State<'_, AppState>, folder: String, uid: u32, index: usize) -> Result<AttachmentData> {
+    use base64::Engine as _;
+    let (name, data) = with_conn!(state, c => imap::get_attachment(c, &folder, uid, index))?;
+    if data.len() > MAX_PREVIEW_BYTES {
+        return Err(AppError::Other(format!("Файл слишком большой для просмотра ({} МБ) — сохраните его", data.len() / 1024 / 1024)));
+    }
+    Ok(AttachmentData { name, data: base64::engine::general_purpose::STANDARD.encode(data) })
+}
+
 // ---------------------------------------------------------------- Nextcloud
 
 #[derive(Serialize)]
@@ -1665,6 +1687,7 @@ macro_rules! app_commands {
             crate::commands::move_messages,
             crate::commands::create_folder,
             crate::commands::open_message_window,
+            crate::commands::attachment_data,
             crate::commands::close_window,
             crate::commands::mail_filters_get,
             crate::commands::mail_filters_save,

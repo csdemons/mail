@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Archive, CircleAlert, Download, FileText, Flag, Forward, Mail, Minus, Plus, Printer, Reply, ReplyAll, Trash2, X,
+  Archive, CircleAlert, Flag, Forward, Mail, Minus, Plus, Printer, Reply, ReplyAll, Trash2, X,
 } from 'lucide-react'
 
-import { api, errorText, formatFullDate, formatSize } from './api'
+import { api, errorText, formatFullDate } from './api'
+import { AttachmentList } from './AttachmentViewer'
 import Composer from './Composer'
 import { trashFor } from './FolderPicker'
 import { buildDraft, ensureArchive, initials, senderLabel } from './mailActions'
@@ -121,7 +122,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (draft || confirmDelete) return
+      if (draft || confirmDelete || document.querySelector('.viewer-backdrop')) return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
       const ctrl = e.ctrlKey || e.metaKey
@@ -169,17 +170,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
             <small>{formatFullDate(detail.date)}</small>
           </div>
         </div>
-        {detail.attachments.length > 0 && <div className="attachment-list">
-          {detail.attachments.map((a) => (
-            <div key={a.index} className="attachment-item">
-              <button className="attachment-card" title={`Сохранить ${a.name}`} onClick={() => void saveAttachment(a.index)}>
-                <div className="attachment-icon"><FileText size={21} /></div>
-                <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {a.contentType}</span></div>
-                <Download size={17} />
-              </button>
-            </div>
-          ))}
-        </div>}
+        {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} />}
         <article className="message-body plain" style={{ fontSize: font }}>{detail.bodyText || '(пустое письмо)'}</article>
       </div> : <div className="empty-reader">
         {error ? <><strong>Не удалось открыть письмо</strong><span>{error}</span></> : <span>Загрузка письма…</span>}

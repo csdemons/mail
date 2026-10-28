@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 
 import {
-  api, errorText, formatFullDate, formatListDate, formatSize, messageKey, NC_MAIL_DIR, PAGE_SIZE,
+  api, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE,
 } from './api'
 import type {
   Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
@@ -23,6 +23,7 @@ import type { NcStatus } from './types'
 import ContactsView from './ContactsView'
 import CalendarView from './CalendarView'
 import MailFilters from './MailFilters'
+import { AttachmentList } from './AttachmentViewer'
 import { buildDraft, ensureArchive } from './mailActions'
 import FolderPicker, { trashFor } from './FolderPicker'
 
@@ -517,6 +518,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (module !== 'mail' || draft || showSettings || showFilters || movePicker || confirmDelete) return
+      if (document.querySelector('.viewer-backdrop')) return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
       const ctrl = e.ctrlKey || e.metaKey
@@ -879,18 +881,15 @@ export default function App({ account, initialNotice, onLogout }: Props) {
                 <small>{formatFullDate(detail.date)}</small>
               </div>
             </div>
-            {detail.attachments.length > 0 && <div className="attachment-list">
-              {detail.attachments.map((a) => (
-                <div key={a.index} className="attachment-item">
-                  <button className="attachment-card" title={`Сохранить ${a.name}`} onClick={() => void saveAttachment(a.index)}>
-                    <div className="attachment-icon"><FileText size={21} /></div>
-                    <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {a.contentType}</span></div>
-                    <Download size={17} />
-                  </button>
-                  {ncStatus?.connected && <button className="icon-button soft attachment-cloud" aria-label={`Сохранить ${a.name} в Nextcloud`} title={`Сохранить в Nextcloud (${NC_MAIL_DIR})`} onClick={() => void saveToNextcloud(a.index, a.name)}><Cloud size={17} /></button>}
-                </div>
-              ))}
-            </div>}
+            {detail.attachments.length > 0 && <AttachmentList
+              key={`${detail.folder}/${detail.uid}`}
+              folder={detail.folder}
+              uid={detail.uid}
+              attachments={detail.attachments}
+              onSave={(i) => void saveAttachment(i)}
+              onCloud={ncStatus?.connected ? (i, name) => void saveToNextcloud(i, name) : undefined}
+              cloudTitle={`Сохранить в Nextcloud (${NC_MAIL_DIR})`}
+            />}
             <article className="message-body plain">{detail.bodyText || '(пустое письмо)'}</article>
             <div className="reader-actions">
               <button className="primary-button" onClick={() => openComposer('reply')}><Reply size={16} /> Ответить</button>

@@ -3659,6 +3659,7 @@ version = "0.0.0"
 dependencies = [
  "ammonia",
  "async-imap",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "env_logger",

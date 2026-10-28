@@ -328,7 +328,9 @@ try:
     W(d, 20).until(lambda d: any('Тестовое совещание' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')))
     assert 'SUMMARY:Тестовое совещание' in ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/work/*.ics'))
     ok('event created (UI + server)')
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.event-block') if 'Тестовое совещание' in b.get_attribute('textContent')][0].click()
+    ev = [b for b in d.find_elements(By.CSS_SELECTOR, '.event-block') if 'Тестовое совещание' in b.get_attribute('textContent')][0]
+    # Блок может частично перекрываться линией «сейчас» — клик напрямую.
+    d.execute_script('arguments[0].scrollIntoView({block: "center"}); arguments[0].click()', ev)
     [b for b in wait(d, '.event-details').find_elements(By.TAG_NAME, 'button') if 'Изменить' in b.text][0].click()
     wait(d, '.editor-modal')
     set_value(d, field(d, 'Название'), 'Совещание перенесено')
@@ -783,6 +785,56 @@ try:
     d.execute_script("window.dispatchEvent(new Event('focus'))")
     W(d, 15).until(lambda d: not row('E2E window'))
     ok('message window: archive closes window, main list refreshed')
+
+    # Предпросмотр вложений: картинка (миниатюра и просмотр), PDF (pdf.js), текст в cp1251.
+    import zlib, struct
+    def png(w, h, rgb):
+        raw = b''.join(b'\x00' + bytes(rgb) * w for _ in range(h))
+        chunk = lambda t, data: struct.pack('>I', len(data)) + t + data + struct.pack('>I', zlib.crc32(t + data) & 0xffffffff)
+        return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+    def pdf():
+        objs = [b'<< /Type /Catalog /Pages 2 0 R >>', b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+                b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+                None, b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
+        stream = b'0 0 1 rg 20 20 260 160 re f BT /F1 24 Tf 1 1 1 rg 40 90 Td (Hello PDF) Tj ET'
+        objs[3] = b'<< /Length %d >>\nstream\n' % len(stream) + stream + b'\nendstream'
+        out = b'%PDF-1.4\n'; offs = []
+        for i, o in enumerate(objs, 1):
+            offs.append(len(out)); out += b'%d 0 obj\n' % i + o + b'\nendobj\n'
+        x = len(out)
+        out += b'xref\n0 %d\n0000000000 65535 f \n' % (len(objs) + 1) + b''.join(b'%010d 00000 n \n' % o for o in offs)
+        return out + b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % (len(objs) + 1, x)
+    msg = EmailMessage(); msg['From'] = 'Фотограф <photo@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = 'E2E preview'; msg.set_content('Смотрите вложения.')
+    msg.add_attachment(png(120, 80, (220, 40, 40)), maintype='image', subtype='png', filename='снимок.png')
+    msg.add_attachment(pdf(), maintype='application', subtype='pdf', filename='схема.pdf')
+    msg.add_attachment('Отчёт в кодировке 1251\nстрока 2'.encode('cp1251'), maintype='application', subtype='octet-stream', filename='отчёт.txt')
+    M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes()); M.logout()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: row('E2E preview'))
+    row('E2E preview')[0].click()
+    thumb = W(d, 20).until(lambda d: d.find_element(By.CSS_SELECTOR, '.attachment-thumb'))
+    W(d, 10).until(lambda d: d.execute_script('return arguments[0].naturalWidth', thumb) == 120)
+    ok('attachments: image thumbnail shown without download')
+    d.find_element(By.CSS_SELECTOR, '.attachment-item.has-thumb .attachment-card').click()
+    img = wait(d, '.viewer-image')
+    W(d, 10).until(lambda d: d.execute_script('return arguments[0].naturalWidth', d.find_element(By.CSS_SELECTOR, '.viewer-image')) == 120)
+    d.save_screenshot(f'{OUT}/22-viewer-image.png')
+    ok('viewer: image opened full-size')
+    d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ARROW_RIGHT)
+    W(d, 30).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.pdf-page') or d.find_elements(By.XPATH, "//*[contains(text(),'PDF не открылся')]"))
+    canvas = d.find_element(By.CSS_SELECTOR, '.pdf-page')
+    time.sleep(1)
+    blue = d.execute_script("const c = arguments[0], x = c.getContext('2d').getImageData(Math.floor(c.width * 0.15), Math.floor(c.height * 0.5), 1, 1).data; return [x[0], x[1], x[2]]", canvas)
+    assert blue[2] > 200 and blue[0] < 60, blue
+    d.save_screenshot(f'{OUT}/23-viewer-pdf.png')
+    ok('viewer: PDF rendered by pdf.js')
+    d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ARROW_RIGHT)
+    W(d, 10).until(lambda d: 'Отчёт в кодировке 1251' in d.find_element(By.CSS_SELECTOR, '.viewer-text').get_attribute('textContent'))
+    ok('viewer: text file, cp1251 decoded')
+    d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop'))
+    assert d.find_elements(By.CSS_SELECTOR, '.reader-title-row')
+    ok('viewer: Esc closes preview, message stays open')
 
     # Фильтры почты (SOGo): адрес сервера SOGo — мок на 8444.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()

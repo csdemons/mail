@@ -1,6 +1,6 @@
 [package]
 name = "rrcki-mail"
-version = "0.7.0"
+version = "0.8.0"
 description = "RRCKI Mail — корпоративный почтовый клиент"
 authors = ["RRCKI"]
 license = ""
@@ -31,6 +31,7 @@ tokio-native-tls = "0.3"
 native-tls = "0.2"
 futures = "0.3"
 mail-parser = "0.11"
+base64 = "0.22"
 utf7-imap = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 keyring = { version = "3", features = ["windows-native", "sync-secret-service", "crypto-rust"] }
