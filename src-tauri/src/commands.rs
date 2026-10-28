@@ -1039,6 +1039,87 @@ pub fn notify_poll_secs() -> u32 {
     60
 }
 
+/// Как открылся документ: в окне программы (Direct Editing) или в браузере.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditResult {
+    in_app: bool,
+    path: String,
+}
+
+fn editor_label(path: &str) -> String {
+    format!("doc-{:x}", path.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)))
+}
+
+/// Открывает файл Nextcloud на редактирование: через Direct Editing — в окне
+/// программы (вход не нужен), иначе — страница файла в браузере.
+async fn edit_in_nextcloud(app: &AppHandle, nc: &nextcloud::Nc, path: &str, mime: &str) -> Result<EditResult> {
+    let name = path.rsplit('/').next().unwrap_or(path).to_string();
+    // Тип от сервера бывает общим (application/zip, octet-stream) — пробуем и тип по расширению.
+    let editors = nc.editors().await;
+    let editor = editors.for_mime(mime).or_else(|| nextcloud::office_mime(&name).and_then(|m| editors.for_mime(m)));
+    if let Some(editor) = editor {
+        let url = nc.direct_open(path, &editor.id).await?;
+        let url = url::Url::parse(&url).map_err(|e| AppError::Other(e.to_string()))?;
+        host::open_external_window(app, &editor_label(path), &format!("{name} — {}", editor.name), url)?;
+        return Ok(EditResult { in_app: true, path: path.to_string() });
+    }
+    let id = nc.file_id(path).await?;
+    let url = nc.creds.base.join(&format!("index.php/f/{id}")).map_err(|e| AppError::Other(e.to_string()))?;
+    host::open_url(app, url.as_str())?;
+    Ok(EditResult { in_app: false, path: path.to_string() })
+}
+
+/// Редакторы документов на сервере Nextcloud (для меню «Создать» и диагностики).
+#[tauri::command]
+pub async fn nc_editors(state: State<'_, AppState>) -> Result<nextcloud::NcEditors> {
+    Ok(nc(&state).await?.editors().await)
+}
+
+#[tauri::command]
+pub async fn nc_edit(app: AppHandle, state: State<'_, AppState>, path: String, mime: String) -> Result<EditResult> {
+    let nc = nc(&state).await?;
+    edit_in_nextcloud(&app, &nc, &path, &mime).await
+}
+
+/// Новый документ/таблица/презентация в папке `dir` и сразу на редактирование.
+#[tauri::command]
+pub async fn nc_create_document(app: AppHandle, state: State<'_, AppState>, dir: String, name: String, kind: String) -> Result<EditResult> {
+    let (ext, blank): (&str, &[u8]) = match kind.as_str() {
+        "docx" => ("docx", include_bytes!("../templates/blank.docx")),
+        "xlsx" => ("xlsx", include_bytes!("../templates/blank.xlsx")),
+        "pptx" => ("pptx", include_bytes!("../templates/blank.pptx")),
+        _ => return Err(AppError::Other("Неизвестный тип документа".into())),
+    };
+    let base = name.trim().trim_end_matches(&format!(".{ext}")).trim().to_string();
+    if base.is_empty() {
+        return Err(AppError::Other("Укажите название".into()));
+    }
+    let file = format!("{base}.{ext}");
+    let nc = nc(&state).await?;
+    let editors = nc.editors().await;
+    if let Some(c) = editors.creators.iter().find(|c| c.extension == ext) {
+        let path = format!("{}/{file}", dir.trim_end_matches('/'));
+        let url = nc.direct_create(&path, &c.editor, &c.id).await?;
+        let url = url::Url::parse(&url).map_err(|e| AppError::Other(e.to_string()))?;
+        let editor = editors.editors.iter().find(|e| e.id == c.editor).map(|e| e.name.clone()).unwrap_or_default();
+        host::open_external_window(&app, &editor_label(&path), &format!("{file} — {editor}"), url)?;
+        return Ok(EditResult { in_app: true, path });
+    }
+    // Нет Direct Editing — пустой файл из шаблона программы, затем открыть.
+    let path = nc_upload(&state).await?.upload_unique(&dir, &file, blank.to_vec()).await?;
+    edit_in_nextcloud(&app, &nc, &path, nextcloud::office_mime(&file).unwrap_or("")).await
+}
+
+/// Вложение письма → Nextcloud («Почта») → на редактирование.
+#[tauri::command]
+pub async fn nc_edit_attachment(app: AppHandle, state: State<'_, AppState>, folder: String, uid: u32, index: usize, dir: String) -> Result<EditResult> {
+    let (name, data) = with_conn!(state, c => imap::get_attachment(c, &folder, uid, index))?;
+    let path = nc_upload(&state).await?.upload_unique(&dir, &name, data).await?;
+    let nc = nc(&state).await?;
+    edit_in_nextcloud(&app, &nc, &path, nextcloud::office_mime(&name).unwrap_or("")).await
+}
+
 /// Аватар Nextcloud: `kind` = "user" (ID пользователя) или "room" (токен беседы Talk).
 #[tauri::command]
 pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> Result<Option<String>> {
@@ -1786,6 +1867,10 @@ macro_rules! app_commands {
             crate::commands::attachment_data,
             crate::commands::message_html_remote,
             crate::commands::nc_avatar,
+            crate::commands::nc_editors,
+            crate::commands::nc_edit,
+            crate::commands::nc_create_document,
+            crate::commands::nc_edit_attachment,
             crate::commands::poll_new_mail,
             crate::commands::notify,
             crate::commands::notify_poll_secs,

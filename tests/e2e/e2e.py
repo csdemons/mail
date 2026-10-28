@@ -623,7 +623,27 @@ try:
         return [r for r in d.find_elements(By.CSS_SELECTOR, '.files-list .file-row') if name in r.get_attribute('textContent')]
     W(d, 20).until(lambda d: file_row('Документы') and file_row('Talk'))
     file_row('Документы')[0].find_element(By.CSS_SELECTOR, '.file-name.link').click()
-    W(d, 15).until(lambda d: file_row('Регламент.txt'))
+    W(d, 15).until(lambda d: file_row('Регламент.txt') and file_row('План.docx'))
+    # Euro-Office через Direct Editing: документ — в отдельном окне, без входа и без доступа к командам программы.
+    main_h = d.current_window_handle
+    def editor_window(expected):
+        W(d, 15).until(lambda d: len(d.window_handles) == 2)
+        d.switch_to.window([h for h in d.window_handles if h != main_h][0])
+        W(d, 15).until(lambda d: expected in d.find_element(By.ID, 'doc').text)
+        assert d.execute_script('return typeof window.__TAURI_INTERNALS__ === "undefined" && typeof window.__TAURI__ === "undefined"'), 'editor page must not reach app IPC'
+        d.save_screenshot(f'{OUT}/26-editor.png')
+        d.close(); d.switch_to.window(main_h)
+    file_row('План.docx')[0].click()
+    [b for b in wait(d, '.file-panel').find_elements(By.CSS_SELECTOR, '.file-actions button') if 'Редактировать' in b.text][0].click()
+    editor_window('Редактор: /Документы/План.docx')
+    ok('docx opened in Euro-Office (Direct Editing) in its own window, no IPC access')
+    d.find_element(By.CSS_SELECTOR, '.create-doc > button').click()
+    [b for b in wait(d, '.create-doc-menu').find_elements(By.TAG_NAME, 'button') if 'Таблица' in b.text][0].click()
+    name_in = wait(d, '.create-doc-form input'); clear(name_in); name_in.send_keys('Бюджет 2027')
+    d.find_element(By.CSS_SELECTOR, '.create-doc-form button[type=submit]').click()
+    editor_window('Редактор: /Документы/Бюджет 2027.xlsx')
+    W(d, 10).until(lambda d: '/Документы/Бюджет 2027.xlsx' in nc_mock('GET', '/test/state')['files'] and file_row('Бюджет 2027.xlsx'))
+    ok('new spreadsheet created through the editor and opened')
     file_row('Регламент.txt')[0].click()
     panel = wait(d, '.file-panel')
     [b for b in panel.find_elements(By.CSS_SELECTOR, '.share-add')][0].click()
@@ -838,6 +858,7 @@ try:
     msg.add_attachment(png(120, 80, (220, 40, 40)), maintype='image', subtype='png', filename='снимок.png')
     msg.add_attachment(pdf(), maintype='application', subtype='pdf', filename='схема.pdf')
     msg.add_attachment('Отчёт в кодировке 1251\nстрока 2'.encode('cp1251'), maintype='application', subtype='octet-stream', filename='отчёт.txt')
+    msg.add_attachment(b'PK fake smeta', maintype='application', subtype='vnd.openxmlformats-officedocument.wordprocessingml.document', filename='Смета.docx')
     M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes()); M.logout()
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
     W(d, 20).until(lambda d: row('E2E preview'))
@@ -865,6 +886,14 @@ try:
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop'))
     assert d.find_elements(By.CSS_SELECTOR, '.reader-title-row')
     ok('viewer: Esc closes preview, message stays open')
+    main_h = d.current_window_handle
+    d.find_element(By.CSS_SELECTOR, '.attachment-edit').click()
+    W(d, 15).until(lambda d: len(d.window_handles) == 2)
+    d.switch_to.window([h for h in d.window_handles if h != main_h][0])
+    W(d, 15).until(lambda d: 'Редактор: /Почта/Смета.docx' in d.find_element(By.ID, 'doc').text)
+    d.close(); d.switch_to.window(main_h)
+    assert nc_mock('GET', '/test/state')['files']['/Почта/Смета.docx'] == 'PK fake smeta'
+    ok('docx attachment: saved to Nextcloud /Почта and opened in the editor')
 
     # HTML-рассылка: встроенный логотип (cid) внутри письма, а не вложением; картинка из интернета — по кнопке.
     from email.mime.multipart import MIMEMultipart

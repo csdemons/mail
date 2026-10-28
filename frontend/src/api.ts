@@ -125,6 +125,10 @@ export const api = {
     invoke<{ items: MessageSummary[]; lastUid: number }>('poll_new_mail', { folder, afterUid, limit }),
   notify: (title: string, body: string) => invoke<void>('notify', { title, body }),
   notifyPollSecs: () => invoke<number>('notify_poll_secs'),
+  ncEditors: () => invoke<{ editors: { id: string; name: string }[]; creators: { id: string; editor: string; name: string; extension: string }[] }>('nc_editors'),
+  ncEdit: (path: string, mime: string) => invoke<EditResult>('nc_edit', { path, mime }),
+  ncCreateDocument: (dir: string, name: string, kind: 'docx' | 'xlsx' | 'pptx') => invoke<EditResult>('nc_create_document', { dir, name, kind }),
+  ncEditAttachment: (folder: string, uid: number, index: number, dir: string) => invoke<EditResult>('nc_edit_attachment', { folder, uid, index, dir }),
   ncAvatar: (kind: 'user' | 'room', id: string) => invoke<string | null>('nc_avatar', { kind, id }),
   messageHtmlRemote: (folder: string, uid: number) => invoke<string>('message_html_remote', { folder, uid }),
   attachmentData: (folder: string, uid: number, index: number) => invoke<{ name: string; data: string }>('attachment_data', { folder, uid, index }),
@@ -199,3 +203,16 @@ export const NC_MAIL_DIR = '/Почта'
 const sessionResetters = new Set<() => void>()
 export function onSessionReset(fn: () => void) { sessionResetters.add(fn) }
 export function resetSession() { sessionResetters.forEach((fn) => fn()) }
+
+/** Как открылся документ: в окне программы (редактор Nextcloud) или в браузере. */
+export interface EditResult { inApp: boolean; path: string }
+
+const OFFICE_EXT = /\.(docx|xlsx|pptx|doc|xls|ppt|odt|ods|odp|rtf|csv)$/i
+/** Офисный документ — его можно открыть в редакторе Nextcloud (Euro-Office / ONLYOFFICE). */
+export function isOfficeFile(name: string) { return OFFICE_EXT.test(name) }
+
+export function editNotice(r: EditResult, name: string) {
+  return r.inApp
+    ? `«${name}» открыт в редакторе. Изменения сохраняются в Nextcloud (${r.path}).`
+    : `«${name}» открыт в браузере (редактор Nextcloud). Файл: ${r.path}.`
+}

@@ -737,3 +737,15 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .notify-settings { display: flex; flex-direction: column; gap: 6px; }
 .notify-settings label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .notify-settings .text-button { align-self: flex-start; padding-left: 0; }
+
+/* Создание документов и редактирование в Nextcloud */
+.create-doc { position: relative; }
+.create-doc-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 30; display: flex; flex-direction: column; min-width: 220px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px #0002; }
+.create-doc-menu button { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; }
+.create-doc-menu button:hover { background: var(--hover); }
+.attachment-edit { align-self: center; }
+.create-doc-menu { min-width: 280px; }
+.create-doc-form { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.create-doc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.create-doc-form input { padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; }
+.create-doc-form .settings-actions { margin-top: 4px; }

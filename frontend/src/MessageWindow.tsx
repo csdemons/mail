@@ -3,7 +3,7 @@ import {
   Archive, CircleAlert, Flag, Forward, Mail, Minus, Plus, Printer, Reply, ReplyAll, Trash2, X,
 } from 'lucide-react'
 
-import { api, errorText, formatFullDate } from './api'
+import { api, editNotice, errorText, formatFullDate, NC_MAIL_DIR } from './api'
 import { AttachmentList } from './AttachmentViewer'
 import Composer from './Composer'
 import MessageBody from './MessageBody'
@@ -171,7 +171,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
             <small>{formatFullDate(detail.date)}</small>
           </div>
         </div>
-        {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} />}
+        {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} onEdit={ncConnected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(folder, uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined} />}
         <MessageBody detail={detail} scale={font / 15} onNotice={setNotice} />
       </div> : <div className="empty-reader">
         {error ? <><strong>Не удалось открыть письмо</strong><span>{error}</span></> : <span>Загрузка письма…</span>}

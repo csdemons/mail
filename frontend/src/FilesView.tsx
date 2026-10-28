@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  ChevronRight, Cloud, Copy, Download, ExternalLink, File, FileText, Folder, FolderPlus, Home, Image, Link2, Lock, Mail,
-  Pencil, RefreshCw, Search, Share2, Trash2, Upload, UserPlus, X,
+  ChevronRight, Cloud, Copy, Download, ExternalLink, File, FilePen, FilePlus, FileSpreadsheet, FileText, Folder, FolderPlus, Home, Image, Link2, Lock, Mail,
+  Pencil, Presentation, RefreshCw, Search, Share2, Trash2, Upload, UserPlus, X,
 } from 'lucide-react'
 
-import { api, errorText, formatSize, NC_MAIL_DIR } from './api'
+import { api, editNotice, isOfficeFile, errorText, formatSize, NC_MAIL_DIR } from './api'
 import type { NcFile, NcShare, NcUser } from './types'
 
 function fileIcon(f: NcFile) {
@@ -30,6 +30,11 @@ export default function FilesView({ onNotice, onSendLinks }: {
   const [selected, setSelected] = useState<NcFile | null>(null)
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState('')
+  const [createMenu, setCreateMenu] = useState(false)
+  const [createKind, setCreateKind] = useState<'docx' | 'xlsx' | 'pptx' | null>(null)
+  const [createName, setCreateName] = useState('')
+  const DEFAULT_NAMES = { docx: 'Новый документ', xlsx: 'Новая таблица', pptx: 'Новая презентация' } as const
+  const pickKind = (k: 'docx' | 'xlsx' | 'pptx') => { setCreateKind(k); setCreateName(DEFAULT_NAMES[k]) }
 
   const load = useCallback(async (p: string) => {
     setLoading(true)
@@ -73,6 +78,34 @@ export default function FilesView({ onNotice, onSendLinks }: {
     }
   }
 
+  async function edit(f: NcFile) {
+    try {
+      setBusy(`Открываю «${f.name}»…`)
+      onNotice(editNotice(await api.ncEdit(f.path, f.mime), f.name))
+    } catch (e) {
+      onNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function createDoc(kind: 'docx' | 'xlsx' | 'pptx', raw: string) {
+    const name = raw.trim()
+    if (!name) return
+    setCreateMenu(false)
+    setCreateKind(null)
+    try {
+      setBusy(`Создаю «${name}.${kind}»…`)
+      const r = await api.ncCreateDocument(path, name, kind)
+      onNotice(editNotice(r, `${name}.${kind}`))
+      await load(path)
+    } catch (e) {
+      onNotice(`Не удалось создать: ${errorText(e)}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
   async function mkdir() {
     const name = window.prompt('Название папки')?.trim()
     if (!name) return
@@ -104,6 +137,23 @@ export default function FilesView({ onNotice, onSendLinks }: {
           <div className="reader-toolbar-spacer" />
           <label className="search-box files-filter"><Search size={15} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Фильтр" /></label>
           <button className="icon-button soft" aria-label="Обновить" onClick={() => void load(path)}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button>
+          <div className="create-doc">
+            <button className="secondary-button" aria-haspopup="menu" aria-expanded={createMenu} onClick={() => { setCreateMenu(!createMenu); setCreateKind(null) }}><FilePlus size={15} /> Создать</button>
+            {createMenu && <div className="create-doc-menu popover" role="menu">
+              {createKind === null ? <>
+                <button role="menuitem" onClick={() => pickKind('docx')}><FileText size={15} /> Документ (.docx)</button>
+                <button role="menuitem" onClick={() => pickKind('xlsx')}><FileSpreadsheet size={15} /> Таблица (.xlsx)</button>
+                <button role="menuitem" onClick={() => pickKind('pptx')}><Presentation size={15} /> Презентация (.pptx)</button>
+              </> : <form className="create-doc-form" onSubmit={(e) => { e.preventDefault(); void createDoc(createKind, createName) }}>
+                <label>Название<input autoFocus aria-label="Название файла" value={createName} onChange={(e) => setCreateName(e.target.value)} /></label>
+                <span className="muted">.{createKind} в папке {path}</span>
+                <div className="settings-actions">
+                  <button type="button" className="secondary-button" onClick={() => { setCreateMenu(false); setCreateKind(null) }}>Отмена</button>
+                  <button type="submit" className="primary-button" disabled={!createName.trim()}>Создать и открыть</button>
+                </div>
+              </form>}
+            </div>}
+          </div>
           <button className="secondary-button" onClick={() => void mkdir()}><FolderPlus size={15} /> Папка</button>
           <button className="primary-button files-upload" disabled={Boolean(busy)} onClick={() => void upload()}><Upload size={15} /> Загрузить</button>
         </div>
@@ -112,7 +162,7 @@ export default function FilesView({ onNotice, onSendLinks }: {
         <div className="files-list" role="list">
           {visible.map((f) => (
             <div key={f.path} role="listitem" className={`file-row ${selected?.path === f.path ? 'selected' : ''}`}
-              onClick={() => setSelected(f)} onDoubleClick={() => (f.isDir ? setPath(f.path) : void api.ncOpen(f.fileId ? `f/${f.fileId}` : 'apps/files'))}>
+              onClick={() => setSelected(f)} onDoubleClick={() => (f.isDir ? setPath(f.path) : isOfficeFile(f.name) ? void edit(f) : void api.ncOpen(f.fileId ? `f/${f.fileId}` : 'apps/files'))}>
               {fileIcon(f)}
               {f.isDir
                 ? <button className="file-name link" onClick={(e) => { e.stopPropagation(); setPath(f.path) }}>{f.name}</button>
@@ -137,13 +187,15 @@ export default function FilesView({ onNotice, onSendLinks }: {
           onOpenDir={(p) => setPath(p)}
           onSendLinks={onSendLinks}
           onNotice={onNotice}
+          onEdit={() => void edit(selected)}
         />
       )}
     </div>
   )
 }
 
-function FilePanel({ file, onClose, onChanged, onOpenDir, onSendLinks, onNotice }: {
+function FilePanel({ file, onClose, onChanged, onOpenDir, onSendLinks, onNotice, onEdit }: {
+  onEdit: () => void
   file: NcFile
   onClose: () => void
   onChanged: (text: string) => Promise<void>
@@ -197,6 +249,7 @@ function FilePanel({ file, onClose, onChanged, onOpenDir, onSendLinks, onNotice 
         <div className="file-head">{fileIcon(file)}<div><strong>{file.name}</strong><span>{file.isDir ? 'Папка' : formatSize(file.size)} · {when(file.modified)}</span></div></div>
 
         <div className="file-actions">
+          {!file.isDir && isOfficeFile(file.name) && <button className="primary-button" onClick={onEdit}><FilePen size={15} /> Редактировать</button>}
           {file.isDir
             ? <button className="secondary-button" onClick={() => onOpenDir(file.path)}><Folder size={15} /> Открыть</button>
             : <button className="secondary-button" onClick={() => void run(async () => { const p = await api.ncFilesDownload(file.path); if (p) onNotice(`Сохранено: ${p}`) })}><Download size={15} /> Скачать</button>}

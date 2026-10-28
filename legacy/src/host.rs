@@ -86,3 +86,19 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) -> Result<()> {
         .show()
         .map_err(|e| AppError::Other(format!("Уведомление не показано: {e}")))
 }
+
+/// Окно с внешней страницей (редактор документов Nextcloud), без доступа к IPC.
+pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url::Url) -> Result<()> {
+    if let Some(w) = app.get_window(label) {
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    tauri::WindowBuilder::new(app, label, tauri::WindowUrl::External(url))
+        .title(title)
+        .inner_size(1280.0, 860.0)
+        .min_inner_size(640.0, 480.0)
+        .build()
+        .map_err(|e| AppError::Other(format!("Не удалось открыть окно редактора: {e}")))?;
+    Ok(())
+}

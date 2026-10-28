@@ -19,7 +19,9 @@ state = {
     'dirs': {'/', '/Документы'},
     'dir_ids': {},
     'shares': [],
-    'files': {'/Документы/Регламент.txt': {'id': 4242, 'data': 'Регламент работ\n'.encode()}},
+    'files': {'/Документы/Регламент.txt': {'id': 4242, 'data': 'Регламент работ\n'.encode()},
+              '/Документы/План.docx': {'id': 4243, 'data': b'PK fake docx'}},
+    'direct': {},
     'polls': 0,
     'revoked': False,
     'boards': [
@@ -160,6 +162,15 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header('Content-Type', 'image/svg+xml'); self.send_header('Content-Length', str(len(body))); self.end_headers()
             return self.wfile.write(body)
 
+        # --- Direct Editing: страница редактора по одноразовой ссылке (без входа)
+        if method == 'GET' and p.startswith('/index.php/apps/eurooffice/direct/'):
+            path = state['direct'].get(p.rsplit('/', 1)[1])
+            if not path:
+                return self.send(404, {})
+            html = f'<!doctype html><meta charset="utf-8"><title>Euro-Office</title><h1 id="doc">Редактор: {path}</h1>'.encode()
+            self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.send_header('Content-Length', str(len(html))); self.end_headers()
+            return self.wfile.write(html)
+
         # --- Внешняя картинка для HTML-письма (зелёный PNG 40×30)
         if method == 'GET' and p == '/e2e/remote.png':
             import zlib, struct
@@ -218,6 +229,22 @@ class H(BaseHTTPRequestHandler):
 
         if not self.authed():
             return
+        if p.startswith('/ocs/v2.php/apps/files/api/v1/directEditing'):
+            mimes = {'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                     'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'}
+            if method == 'GET':
+                return self.ocs({'editors': {'eurooffice': {'id': 'eurooffice', 'name': 'Euro-Office', 'mimetypes': list(mimes.values()), 'optionalMimetypes': [], 'secure': False}},
+                                 'creators': {f'eurooffice_{e}': {'id': f'eurooffice_{e}', 'editor': 'eurooffice', 'name': e, 'extension': e, 'templates': False, 'mimetype': m} for e, m in mimes.items()}})
+            b = self.body()
+            path = b.get('path', '')
+            if p.endswith('/create'):
+                state['files'][path] = {'id': next(ids), 'data': b'PK new ' + path.encode()}
+            elif path not in state['files']:
+                return self.ocs({}, 404)
+            tok = f'tok{next(ids)}'
+            state['direct'][tok] = path
+            return self.ocs({'url': f'{base}/index.php/apps/eurooffice/direct/{tok}'})
         if method == 'GET' and p == '/ocs/v1.php/cloud/user':
             return self.ocs({'id': UID, 'displayname': 'Тестовый Пользователь', 'email': LOGIN})
         if method == 'DELETE' and p == '/ocs/v2.php/core/apppassword':

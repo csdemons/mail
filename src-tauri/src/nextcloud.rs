@@ -1190,6 +1190,83 @@ impl Nc {
         Ok(parse_share(&d))
     }
 
+    /// Редакторы документов, доступные через Direct Editing (ONLYOFFICE / Euro-Office,
+    /// Nextcloud Text). Нет приложения или API — пустой список, не ошибка.
+    pub async fn editors(&self) -> NcEditors {
+        let Ok((_, _, d)) = self.ocs(Method::GET, "ocs/v2.php/apps/files/api/v1/directEditing", &[("format", "json".into())], None, "Редакторы документов").await else {
+            return NcEditors::default();
+        };
+        let strings = |v: &Value| -> Vec<String> { v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+        let objects = |v: &Value| -> Vec<Value> {
+            match v {
+                Value::Object(m) => m.values().cloned().collect(),
+                Value::Array(a) => a.clone(),
+                _ => Vec::new(),
+            }
+        };
+        NcEditors {
+            editors: objects(&d["editors"]).iter().map(|e| NcEditor {
+                id: text(&e["id"]),
+                name: text(&e["name"]),
+                mimetypes: strings(&e["mimetypes"]),
+                optional_mimetypes: strings(&e["optionalMimetypes"]),
+            }).filter(|e| !e.id.is_empty()).collect(),
+            creators: objects(&d["creators"]).iter().map(|c| NcCreator {
+                id: text(&c["id"]),
+                editor: text(&c["editor"]),
+                name: text(&c["name"]),
+                extension: text(&c["extension"]).trim_start_matches('.').to_ascii_lowercase(),
+            }).filter(|c| !c.id.is_empty()).collect(),
+        }
+    }
+
+    /// Одноразовая ссылка на редактор для файла (вход не нужен — как в мобильных приложениях).
+    pub async fn direct_open(&self, path: &str, editor_id: &str) -> Result<String> {
+        let body = json!({ "path": clean_path(path)?, "editorId": editor_id });
+        let (_, _, d) = self.ocs(Method::POST, "ocs/v2.php/apps/files/api/v1/directEditing/open", &[("format", "json".into())], Some(body), "Открытие в редакторе").await?;
+        self.own_url(&text(&d["url"]))
+    }
+
+    /// Новый документ через редактор (шаблон сервера) — ссылка на редактор.
+    pub async fn direct_create(&self, path: &str, editor_id: &str, creator_id: &str) -> Result<String> {
+        let body = json!({ "path": clean_path(path)?, "editorId": editor_id, "creatorId": creator_id });
+        let (_, _, d) = self.ocs(Method::POST, "ocs/v2.php/apps/files/api/v1/directEditing/create", &[("format", "json".into())], Some(body), "Новый документ").await?;
+        self.own_url(&text(&d["url"]))
+    }
+
+    /// Ссылка должна вести на этот же Nextcloud — чужой адрес в окно программы не открываем.
+    fn own_url(&self, url: &str) -> Result<String> {
+        let u = url::Url::parse(url).map_err(|_| AppError::Other("Редактор вернул некорректную ссылку".into()))?;
+        let b = &self.creds.base;
+        if u.scheme() != b.scheme() || u.host_str() != b.host_str() || u.port_or_known_default() != b.port_or_known_default() {
+            return Err(AppError::Other("Редактор вернул ссылку на другой сервер".into()));
+        }
+        Ok(u.to_string())
+    }
+
+    /// ID файла (для ссылки `index.php/f/<id>`).
+    pub async fn file_id(&self, path: &str) -> Result<i64> {
+        let path = clean_path(path)?;
+        let resp = self
+            .dav(Method::from_bytes(b"PROPFIND").expect("PROPFIND"), self.files_url(&path)?)
+            .header("Depth", "0")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(PROPFIND_FILES)
+            .send()
+            .await
+            .map_err(net_error)?;
+        if resp.status().as_u16() != 207 {
+            return Err(status_error(resp.status(), "Файл"));
+        }
+        let xml = resp.text().await.map_err(net_error)?;
+        let root = self.files_root_path()?;
+        let decoded_root = percent_encoding::percent_decode_str(&root).decode_utf8_lossy().to_string();
+        parse_file_list(&xml, &decoded_root)?
+            .into_iter()
+            .find_map(|f| f.file_id)
+            .ok_or_else(|| AppError::Other("Nextcloud не сообщил ID файла".into()))
+    }
+
     /// Существующая публичная ссылка без пароля или новая — для письма.
     pub async fn link_for(&self, path: &str) -> Result<String> {
         if let Some(s) = self.shares_list(path).await?.into_iter().find(|s| s.share_type == 3 && !s.has_password && !s.url.is_empty()) {
@@ -1332,4 +1409,61 @@ mod tests {
         let done = parse_card(&json!({"id": 1, "done": "2026-10-27T10:00:00+00:00", "owner": "u"}));
         assert!(done.done && done.owner == "u");
     }
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NcEditors {
+    pub editors: Vec<NcEditor>,
+    pub creators: Vec<NcCreator>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NcEditor {
+    pub id: String,
+    pub name: String,
+    pub mimetypes: Vec<String>,
+    pub optional_mimetypes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NcCreator {
+    pub id: String,
+    pub editor: String,
+    pub name: String,
+    pub extension: String,
+}
+
+impl NcEditors {
+    /// Редактор для типа файла: сначала «основные» типы, затем дополнительные.
+    pub fn for_mime(&self, mime: &str) -> Option<&NcEditor> {
+        self.editors
+            .iter()
+            .find(|e| e.mimetypes.iter().any(|m| m == mime))
+            .or_else(|| self.editors.iter().find(|e| e.optional_mimetypes.iter().any(|m| m == mime)))
+    }
+}
+
+/// Тип файла по расширению — для офисных форматов (Nextcloud может не сообщить MIME).
+pub fn office_mime(name: &str) -> Option<&'static str> {
+    let ext = name.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "doc" => "application/msword",
+        "xls" => "application/vnd.ms-excel",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+        "rtf" => "application/rtf",
+        "csv" => "text/csv",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "pdf" => "application/pdf",
+        _ => return None,
+    })
 }

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  ChevronLeft, ChevronRight, Cloud, Download, File, FileText, Image as ImageIcon, Maximize2, Minimize2, X,
+  ChevronLeft, ChevronRight, Cloud, Download, File, FilePen, FileText, Image as ImageIcon, Maximize2, Minimize2, X,
 } from 'lucide-react'
 
-import { api, errorText, formatSize, onSessionReset } from './api'
+import { api, errorText, formatSize, isOfficeFile, onSessionReset } from './api'
 import type { AttachmentInfo } from './types'
 
 export type PreviewKind = 'image' | 'pdf' | 'text' | null
@@ -82,10 +82,12 @@ interface ListProps {
   onSave: (index: number) => void
   onCloud?: (index: number, name: string) => void
   cloudTitle?: string
+  /** Открыть офисный файл в редакторе Nextcloud. */
+  onEdit?: (index: number, name: string) => void
 }
 
 /** Вложения письма: миниатюры картинок, щелчок — просмотр, отдельная кнопка — сохранить. */
-export function AttachmentList({ folder, uid, attachments, onSave, onCloud, cloudTitle }: ListProps) {
+export function AttachmentList({ folder, uid, attachments, onSave, onCloud, cloudTitle, onEdit }: ListProps) {
   const [open, setOpen] = useState<number | null>(null)
   const previewable = attachments.filter((a) => previewKind(a))
   return (
@@ -103,6 +105,7 @@ export function AttachmentList({ folder, uid, attachments, onSave, onCloud, clou
                 <Thumbnail folder={folder} uid={uid} a={a} />
                 <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {kind ? 'просмотр' : a.contentType}</span></div>
               </button>
+              {onEdit && isOfficeFile(a.name) && <button className="icon-button soft attachment-edit" aria-label={`Редактировать ${a.name}`} title="Редактировать в Nextcloud (Euro-Office) — копия сохранится в папку «Почта»" onClick={() => onEdit(a.index, a.name)}><FilePen size={17} /></button>}
               <button className="icon-button soft attachment-save" aria-label={`Сохранить ${a.name}`} title="Сохранить на компьютер" onClick={() => onSave(a.index)}><Download size={17} /></button>
               {onCloud && <button className="icon-button soft attachment-cloud" aria-label={`Сохранить ${a.name} в Nextcloud`} title={cloudTitle} onClick={() => onCloud(a.index, a.name)}><Cloud size={17} /></button>}
             </div>

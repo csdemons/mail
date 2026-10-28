@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 
 import {
-  api, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE,
+  api, editNotice, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE,
 } from './api'
 import type {
   Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
@@ -998,6 +998,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               onSave={(i) => void saveAttachment(i)}
               onCloud={ncStatus?.connected ? (i, name) => void saveToNextcloud(i, name) : undefined}
               cloudTitle={`Сохранить в Nextcloud (${NC_MAIL_DIR})`}
+              onEdit={ncStatus?.connected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(detail.folder, detail.uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined}
             />}
             <MessageBody detail={detail} onNotice={setNotice} />
             <div className="reader-actions">
