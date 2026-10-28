@@ -630,7 +630,13 @@ try:
         W(d, 15).until(lambda d: len(d.window_handles) == 2)
         d.switch_to.window([h for h in d.window_handles if h != main_h][0])
         W(d, 15).until(lambda d: expected in d.find_element(By.ID, 'doc').text)
-        assert d.execute_script('return typeof window.__TAURI_INTERNALS__ === "undefined" && typeof window.__TAURI__ === "undefined"'), 'editor page must not reach app IPC'
+        # Tauri внедряет мост во все окна, но команды для окна редактора запрещены (нет в capabilities).
+        res = d.execute_async_script('''const done = arguments[arguments.length - 1];
+            const t = window.__TAURI_INTERNALS__;
+            if (!t) { done('no-ipc'); return }
+            t.invoke('get_profile').then((r) => done('ALLOWED ' + JSON.stringify(r))).catch((e) => done('denied: ' + e))''')
+        print('   editor IPC:', res)
+        assert not res.startswith('ALLOWED'), res
         d.save_screenshot(f'{OUT}/26-editor.png')
         d.close(); d.switch_to.window(main_h)
     file_row('План.docx')[0].click()
