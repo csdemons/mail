@@ -36,7 +36,7 @@ pub const DEFAULT_MANIFEST_URL: &str = "https://github.com/csdemons/mail/release
 
 /// Открытые ключи подписи `latest.json` (Ed25519, base64 32 байт). Несколько —
 /// чтобы сменить ключ: новый добавляется заранее, старый убирается позже.
-const UPDATE_PUBLIC_KEYS: &[&str] = &["33ZHTEuD4Ay/xjPYiNVkj2P78SiAsyIDrToxdB1NFa4="];
+const UPDATE_PUBLIC_KEYS: &[&str] = &["UhcIkgOlNtHqJjtYlNf4Ij6HHuRbEgFNh+zptMcVBaY="];
 
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 

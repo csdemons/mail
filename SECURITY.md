@@ -63,7 +63,7 @@
 ### Проверка релиза вручную
 ```sh
 base64 -d SHA256SUMS.txt.sig > /tmp/sums.sig
-echo "MCowBQYDK2VwAyEA33ZHTEuD4Ay/xjPYiNVkj2P78SiAsyIDrToxdB1NFa4=" | base64 -d > /tmp/pub.der
+echo "MCowBQYDK2VwAyEAUhcIkgOlNtHqJjtYlNf4Ij6HHuRbEgFNh+zptMcVBaY=" | base64 -d > /tmp/pub.der
 openssl pkey -pubin -inform DER -in /tmp/pub.der -out /tmp/pub.pem
 openssl pkeyutl -verify -pubin -inkey /tmp/pub.pem -rawin -in SHA256SUMS.txt -sigfile /tmp/sums.sig
 sha256sum -c SHA256SUMS.txt --ignore-missing
