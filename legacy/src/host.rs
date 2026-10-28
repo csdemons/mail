@@ -51,3 +51,12 @@ pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Res
         .map_err(|e| AppError::Other(format!("Не удалось открыть окно: {e}")))?;
     Ok(())
 }
+
+/// Закрывает окна писем (при выходе из учётной записи).
+pub fn close_message_windows(app: &AppHandle) {
+    for (label, w) in app.windows() {
+        if label.starts_with("msg-") {
+            let _ = w.close();
+        }
+    }
+}

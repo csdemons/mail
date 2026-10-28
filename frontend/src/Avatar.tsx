@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 
-import { api } from './api'
+import { api, onSessionReset } from './api'
 
 /** Аватары Nextcloud на время работы программы: один запрос на человека/беседу. */
 const cache = new Map<string, Promise<string | null>>()
+onSessionReset(() => cache.clear())
 
 function load(kind: 'user' | 'room', id: string): Promise<string | null> {
   const key = `${kind}:${id}`

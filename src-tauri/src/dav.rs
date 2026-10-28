@@ -37,7 +37,15 @@ pub struct DavClient {
     http: Client,
     user: String,
     pass: String,
+    /// Сервер, которому можно отправлять логин и пароль (схема, хост, порт адреса
+    /// календаря/контактов из настроек). Запросы и перенаправления на другие
+    /// адреса не выполняются — пароль не уходит на посторонний сервер.
+    origin: (String, String, u16),
     pub log: Vec<String>,
+}
+
+fn origin_of(u: &Url) -> (String, String, u16) {
+    (u.scheme().to_string(), u.host_str().unwrap_or_default().to_ascii_lowercase(), u.port_or_known_default().unwrap_or(0))
 }
 
 /// Свойства одного `<response>` из `<multistatus>` (только со статусом 200).
@@ -150,7 +158,8 @@ fn parse_multistatus(xml: &str) -> Result<Vec<DavResponse>> {
 }
 
 impl DavClient {
-    pub fn new(user: &str, pass: &str) -> Result<Self> {
+    /// `base` — адрес сервера календаря/контактов из настроек: только ему отправляется пароль.
+    pub fn new(user: &str, pass: &str, base: &Url) -> Result<Self> {
         let http = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(45))
@@ -162,8 +171,25 @@ impl DavClient {
             http,
             user: user.to_string(),
             pass: pass.to_string(),
+            origin: origin_of(base),
             log: Vec::new(),
         })
+    }
+
+    /// Можно ли отправить пароль на `url`: тот же хост и порт, та же схема
+    /// (или переход http → https на том же хосте). https → http — нельзя.
+    fn check_target(&mut self, url: &Url) -> Result<()> {
+        let (scheme, host, port) = origin_of(url);
+        let (o_scheme, o_host, o_port) = &self.origin;
+        let same = host == *o_host && ((scheme == *o_scheme && port == *o_port) || (o_scheme == "http" && scheme == "https"));
+        if same {
+            return Ok(());
+        }
+        self.log.push(format!("отказ: {url} — другой сервер, пароль не отправлен"));
+        Err(AppError::Other(format!(
+            "Сервер календаря/контактов ссылается на другой адрес ({scheme}://{host}:{port}). Пароль туда не отправлен. \
+             Если это ваш сервер, укажите его адрес в настройках «Календарь и контакты»."
+        )))
     }
 
     /// Запрос с ручным следованием редиректам (PROPFIND/REPORT не должны
@@ -178,6 +204,7 @@ impl DavClient {
         let method = Method::from_bytes(method.as_bytes()).expect("valid method");
         let mut url = url.clone();
         for _ in 0..6 {
+            self.check_target(&url)?;
             let mut req = self
                 .http
                 .request(method.clone(), url.clone())
@@ -887,6 +914,7 @@ impl DavClient {
         if_none_match: bool,
     ) -> Result<(StatusCode, Option<String>, String)> {
         let method_v = Method::from_bytes(method.as_bytes()).expect("valid method");
+        self.check_target(url)?;
         let mut req = self
             .http
             .request(method_v, url.clone())
@@ -1239,6 +1267,22 @@ pub fn new_uid() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_only_to_configured_server() {
+        let base = Url::parse("https://rp.nrcki.ru/").unwrap();
+        let mut c = DavClient::new("u", "p", &base).unwrap();
+        for ok in ["https://rp.nrcki.ru/SOGo/dav/u/", "https://RP.nrcki.ru:443/x"] {
+            assert!(c.check_target(&Url::parse(ok).unwrap()).is_ok(), "{ok}");
+        }
+        for bad in ["https://evil.example/", "http://rp.nrcki.ru/", "https://rp.nrcki.ru:8443/", "https://rp.nrcki.ru.evil.example/"] {
+            assert!(c.check_target(&Url::parse(bad).unwrap()).is_err(), "{bad}");
+        }
+        // http в настройках: переход на https того же сервера разрешён.
+        let mut c = DavClient::new("u", "p", &Url::parse("http://dav.local:8080/").unwrap()).unwrap();
+        assert!(c.check_target(&Url::parse("https://dav.local/").unwrap()).is_ok());
+        assert!(c.check_target(&Url::parse("http://other.local:8080/").unwrap()).is_err());
+    }
 
     fn cal() -> Collection {
         Collection { url: "https://x/cal/".into(), name: "Личный".into(), color: Some("#2474ed".into()), writable: true }

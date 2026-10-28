@@ -105,6 +105,11 @@ async fn start_session(state: &AppState, creds: Credentials, profile: Settings) 
     *state.profile.lock().await = Some(profile);
     *state.calendars.lock().await = None;
     *state.books.lock().await = None;
+    // Сессия веб-API SOGo и выбранные файлы принадлежали прежнему входу.
+    if let Some(Ok(session)) = state.sogo.lock().await.take() {
+        session.logout().await;
+    }
+    state.picked.lock().await.clear();
     Ok(())
 }
 
@@ -152,6 +157,19 @@ pub async fn login(
     }
 
     let previous = settings::load(&app);
+    // Другой сотрудник на том же компьютере не должен унаследовать чужой Nextcloud
+    // (Deck, Talk, Файлы) и имя отправителя: эти поля берём, только если учётка та же.
+    let same_user = previous
+        .as_ref()
+        .is_some_and(|p| p.username.eq_ignore_ascii_case(&username) && p.host.eq_ignore_ascii_case(&host));
+    let mine = previous.as_ref().filter(|_| same_user);
+    if let Some(p) = previous.as_ref().filter(|_| !same_user) {
+        if !p.nextcloud_login.is_empty() {
+            if let Ok(base) = nextcloud::normalize_base(&p.nextcloud_url) {
+                settings::nc_forget_password(base.as_str(), &p.nextcloud_login);
+            }
+        }
+    }
     let s = Settings {
         host: host.clone(),
         port,
@@ -168,13 +186,13 @@ pub async fn login(
             .map(|u| u.trim().to_string())
             .or_else(|| previous.as_ref().map(|p| p.dav_url.clone()))
             .unwrap_or_default(),
-        display_name: previous.as_ref().map(|p| p.display_name.clone()).unwrap_or_default(),
+        display_name: mine.map(|p| p.display_name.clone()).unwrap_or_default(),
         nextcloud_url: previous
             .as_ref()
             .map(|p| p.nextcloud_url.clone())
             .unwrap_or_else(|| settings::DEFAULT_NEXTCLOUD_URL.to_string()),
-        nextcloud_login: previous.as_ref().map(|p| p.nextcloud_login.clone()).unwrap_or_default(),
-        nextcloud_uid: previous.as_ref().map(|p| p.nextcloud_uid.clone()).unwrap_or_default(),
+        nextcloud_login: mine.map(|p| p.nextcloud_login.clone()).unwrap_or_default(),
+        nextcloud_uid: mine.map(|p| p.nextcloud_uid.clone()).unwrap_or_default(),
     };
 
     let creds = Credentials {
@@ -236,11 +254,29 @@ pub async fn auto_login(app: AppHandle, state: State<'_, AppState>) -> Result<Op
 
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
-    if let Some(s) = settings::load(&app) {
+    // Окна писем показывают данные этой учётной записи.
+    host::close_message_windows(&app);
+    // «Выйти и забыть пароль» забывает и подключение к Nextcloud: пароль приложения
+    // отзывается на сервере и удаляется из системного хранилища.
+    *state.nc_flow.lock().await = None;
+    if let Some((creds, uid)) = state.nc.lock().await.take() {
+        if let Ok(client) = nextcloud::Nc::new(creds.clone(), &uid) {
+            client.revoke().await;
+        }
+        settings::nc_forget_password(creds.base.as_str(), &creds.login);
+    }
+    if let Some(mut s) = settings::load(&app) {
         settings::forget_password(&s);
+        if !s.nextcloud_login.is_empty() {
+            if let Ok(base) = nextcloud::normalize_base(&s.nextcloud_url) {
+                settings::nc_forget_password(base.as_str(), &s.nextcloud_login);
+            }
+            s.nextcloud_login.clear();
+            s.nextcloud_uid.clear();
+            let _ = settings::save(&app, &s);
+        }
     }
     *state.creds.lock().await = None;
-    *state.nc.lock().await = None;
     *state.profile.lock().await = None;
     *state.calendars.lock().await = None;
     *state.books.lock().await = None;
@@ -297,9 +333,9 @@ pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> 
         }
         for (title, kind) in [("CalDAV", dav::Kind::Calendar), ("CardDAV", dav::Kind::Contacts)] {
             extra.push_str(&format!("\n## {title} ({})\n", p.dav_base()));
-            match dav::DavClient::new(&creds.username, &creds.password) {
+            let base = url::Url::parse(&p.dav_base()).map_err(|e| AppError::Other(e.to_string()))?;
+            match dav::DavClient::new(&creds.username, &creds.password, &base) {
                 Ok(mut client) => {
-                    let base = url::Url::parse(&p.dav_base()).map_err(|e| AppError::Other(e.to_string()))?;
                     let res = client.discover(&base, kind).await;
                     for line in &client.log {
                         extra.push_str(line);
@@ -391,7 +427,8 @@ pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> 
                                     }
                                     Err(e) => extra.push_str(&format!("view: ошибка: {e}\n")),
                                 }
-                                if let Ok(mut dc) = dav::DavClient::new(&creds.username, &creds.password) {
+                                let dav_base = url::Url::parse(&p.dav_base()).map_err(|e| AppError::Other(e.to_string()))?;
+                                if let Ok(mut dc) = dav::DavClient::new(&creds.username, &creds.password, &dav_base) {
                                     let vcf = format!("{}Contacts/{source}/{}", p.dav_base().trim_end_matches('/').to_string() + "/SOGo/dav/" + &creds.username + "/", urlencoding_segment(&format!("{sid}.vcf")));
                                     match dc.get(&vcf).await {
                                         Ok((text, _)) => extra.push_str(&format!("GET {vcf} → ok, {} байт, поля: {}\n", text.len(),
@@ -573,7 +610,7 @@ async fn dav_client(state: &AppState) -> Result<(dav::DavClient, url::Url)> {
     let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
     let base = url::Url::parse(&profile.dav_base())
         .map_err(|e| AppError::Other(format!("Некорректный адрес сервера календаря: {e}")))?;
-    Ok((dav::DavClient::new(&creds.username, &creds.password)?, base))
+    Ok((dav::DavClient::new(&creds.username, &creds.password, &base)?, base))
 }
 
 #[derive(Serialize)]

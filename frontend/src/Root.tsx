@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { api, errorText } from './api'
+import { api, errorText, resetSession } from './api'
 import App from './App'
 import MessageWindow from './MessageWindow'
 import Login from './Login'
@@ -56,7 +56,7 @@ function MainRoot() {
       <Login
         initial={state.settings}
         initialError={state.error}
-        onLoggedIn={(result) => setState({ kind: 'ready', account: result.account, warning: result.warning ?? '' })}
+        onLoggedIn={(result) => { resetSession(); setState({ kind: 'ready', account: result.account, warning: result.warning ?? '' }) }}
       />
       </>
     )
@@ -71,6 +71,7 @@ function MainRoot() {
       onLogout={async () => {
         const settings = await api.getSettings().catch(() => null)
         await api.logout().catch(() => undefined)
+        resetSession()
         setState({ kind: 'login', settings, error: '' })
       }}
     />

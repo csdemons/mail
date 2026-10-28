@@ -189,3 +189,9 @@ export const VARIANT_LABEL: Record<string, string> = {
 
 /** Папка в Nextcloud для файлов из почты (вложения, большие файлы по ссылке). */
 export const NC_MAIL_DIR = '/Почта'
+
+/** Кэши данных учётной записи (вложения, аватары) сбрасываются при выходе и новом входе,
+ *  чтобы другой сотрудник на этом компьютере не увидел чужие данные. */
+const sessionResetters = new Set<() => void>()
+export function onSessionReset(fn: () => void) { sessionResetters.add(fn) }
+export function resetSession() { sessionResetters.forEach((fn) => fn()) }

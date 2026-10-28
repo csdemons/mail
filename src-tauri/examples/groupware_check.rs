@@ -30,7 +30,7 @@ async fn main() {
     }
 
     let base = url::Url::parse(&env("DAV_URL", "https://rp.nrcki.ru/")).unwrap();
-    let mut client = dav::DavClient::new(&user, &pass).unwrap();
+    let mut client = dav::DavClient::new(&user, &pass, &base).unwrap();
     match client.discover(&base, dav::Kind::Contacts).await {
         Ok(books) => {
             for b in &books {

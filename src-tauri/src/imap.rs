@@ -924,13 +924,40 @@ async fn has_capability(conn: &mut Connection, name: &str) -> bool {
 
 /// Удаляет помеченные \Deleted письма: только указанные (UID EXPUNGE, если
 /// сервер умеет UIDPLUS), иначе — все помеченные в папке.
+/// Окончательно удаляет только письма `uids` (у них уже стоит \\Deleted).
 async fn expunge_uids(conn: &mut Connection, uids: &[u32]) -> Result<()> {
-    if has_capability(conn, "UIDPLUS").await {
+    // E2E: проверка запасного пути на сервере, который UIDPLUS поддерживает. В релизе этого нет.
+    #[cfg(debug_assertions)]
+    let force_plain = std::env::var_os("RRCKI_E2E_NO_UIDPLUS").is_some();
+    #[cfg(not(debug_assertions))]
+    let force_plain = false;
+    if !force_plain && has_capability(conn, "UIDPLUS").await {
         let _: Vec<_> = conn.session.uid_expunge(uid_set(uids)).await?.try_collect().await?;
-    } else {
-        let _: Vec<_> = conn.session.expunge().await?.try_collect().await?;
+        return Ok(());
     }
-    Ok(())
+    // Без UIDPLUS есть только EXPUNGE, а он удаляет ВСЕ письма папки с \\Deleted —
+    // в том числе помеченные к удалению другим клиентом (Outlook, веб-почта).
+    // Поэтому на время EXPUNGE снимаем \\Deleted с чужих писем и затем возвращаем.
+    let ours: std::collections::HashSet<u32> = uids.iter().copied().collect();
+    let others: Vec<u32> = conn.session.uid_search("DELETED").await?.into_iter().filter(|u| !ours.contains(u)).collect();
+    if !others.is_empty() {
+        let _: Vec<Fetch> = conn.session.uid_store(uid_set(&others), "-FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+    }
+    let result: Result<()> = async {
+        let _: Vec<_> = conn.session.expunge().await?.try_collect().await?;
+        Ok(())
+    }
+    .await;
+    if !others.is_empty() {
+        let restored: Result<Vec<Fetch>> = async {
+            Ok(conn.session.uid_store(uid_set(&others), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?)
+        }
+        .await;
+        if let Err(e) = restored {
+            log::warn!("не удалось вернуть \\Deleted письмам {:?}: {e}", others);
+        }
+    }
+    result
 }
 
 /// Перемещает письма в другую папку (UID MOVE, без него — COPY + удаление).

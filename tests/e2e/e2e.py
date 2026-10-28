@@ -1,4 +1,4 @@
-import imaplib, ssl, subprocess, sys, time, os, glob, email
+import json, imaplib, ssl, subprocess, sys, time, os, glob, email
 from email.header import decode_header, make_header
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -739,6 +739,14 @@ try:
     W(d, 10).until(lambda d: 'E2E тащить D' in subjects('Junk'))
     ok('drag message onto sidebar folder moves it')
     # Из корзины — безвозвратно, с подтверждением; клавиша Del.
+    def flags_of(folder, subj):
+        M = imap(); M.select(f'"{folder}"')
+        _, ids = M.search(None, 'SUBJECT', f'"{subj}"')
+        if not ids[0]: M.logout(); return None
+        _, data = M.fetch(ids[0].split()[-1], '(FLAGS)'); M.logout(); return data[0].decode()
+    # Письмо, помеченное к удалению «другим клиентом», не должно исчезнуть при нашем удалении.
+    msg = EmailMessage(); msg['From'] = 'x@nrcki.ru'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = 'E2E other client deleted'; msg.set_content('x')
+    M = imap(); M.append('Trash', '(\\Deleted)', imaplib.Time2Internaldate(time.time()), msg.as_bytes()); M.logout()
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Корзина' in f.get_attribute('textContent')][0].click()
     W(d, 20).until(lambda d: row('E2E удалить C'))
     row('E2E удалить C')[0].click()
@@ -748,14 +756,11 @@ try:
     [b for b in d.find_elements(By.CSS_SELECTOR, '.confirm-modal button') if 'Удалить' in b.text][0].click()
     W(d, 10).until(lambda d: not row('E2E удалить C'))
     W(d, 10).until(lambda d: 'E2E удалить C' not in subjects('Trash'))
-    ok('Del in Trash: confirmation, permanently expunged')
+    assert 'E2E other client deleted' in subjects('Trash'), 'EXPUNGE must not remove messages deleted by another client'
+    assert '\\Deleted' in flags_of('Trash', 'E2E other client deleted')
+    ok('Del in Trash: confirmation, permanently expunged; other client\'s \\Deleted message kept (no UIDPLUS)')
 
     # Ответить всем, «Важное», архив, отдельное окно письма.
-    def flags_of(folder, subj):
-        M = imap(); M.select(f'"{folder}"')
-        _, ids = M.search(None, 'SUBJECT', f'"{subj}"')
-        if not ids[0]: M.logout(); return None
-        _, data = M.fetch(ids[0].split()[-1], '(FLAGS)'); M.logout(); return data[0].decode()
     M = imap()
     for subj in ('E2E reply-all', 'E2E window'):
         msg = EmailMessage(); msg['From'] = 'Начальник <boss@nrcki.ru>'; msg['To'] = 'test@rrcki.ru, Петров <petrov@nrcki.ru>'
@@ -951,6 +956,10 @@ try:
     d.find_element(By.CSS_SELECTOR, '.account-switch').click()
     [b for b in d.find_elements(By.CSS_SELECTOR, '.account-menu button') if 'Выйти' in b.text][0].click()
     wait(d, '.login-card'); ok('logout -> login screen')
+    W(d, 10).until(lambda d: nc_mock('GET', '/test/state')['revoked'] is True)
+    cfg = [json.load(open(f)) for f in glob.glob(os.environ['XDG_CONFIG_HOME'] + '/*/settings.json')]
+    assert cfg and all(not c.get('nextcloudLogin') for c in cfg), cfg
+    ok('logout also revokes and forgets the Nextcloud app password')
 finally:
     d.quit()
 

@@ -3,7 +3,7 @@ import {
   ChevronLeft, ChevronRight, Cloud, Download, File, FileText, Image as ImageIcon, Maximize2, Minimize2, X,
 } from 'lucide-react'
 
-import { api, errorText, formatSize } from './api'
+import { api, errorText, formatSize, onSessionReset } from './api'
 import type { AttachmentInfo } from './types'
 
 export type PreviewKind = 'image' | 'pdf' | 'text' | null
@@ -30,6 +30,7 @@ function mimeFor(a: AttachmentInfo): string {
 /** Кэш содержимого вложений на время работы окна: повторный просмотр не грузит файл заново. */
 const cache = new Map<string, Promise<string>>()
 const MAX_CACHE = 40
+onSessionReset(() => cache.clear())
 
 export function loadAttachment(folder: string, uid: number, index: number): Promise<string> {
   const key = `${folder}\u0000${uid}\u0000${index}`
