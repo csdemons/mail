@@ -845,6 +845,64 @@ pub async fn set_flag(
     Ok(())
 }
 
+// ---------------------------------------------------------------- перемещение и удаление
+
+fn uid_set(uids: &[u32]) -> String {
+    uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+}
+
+async fn has_capability(conn: &mut Connection, name: &str) -> bool {
+    conn.capabilities().await.map(|c| c.iter().any(|x| x.eq_ignore_ascii_case(name))).unwrap_or(false)
+}
+
+/// Удаляет помеченные \Deleted письма: только указанные (UID EXPUNGE, если
+/// сервер умеет UIDPLUS), иначе — все помеченные в папке.
+async fn expunge_uids(conn: &mut Connection, uids: &[u32]) -> Result<()> {
+    if has_capability(conn, "UIDPLUS").await {
+        let _: Vec<_> = conn.session.uid_expunge(uid_set(uids)).await?.try_collect().await?;
+    } else {
+        let _: Vec<_> = conn.session.expunge().await?.try_collect().await?;
+    }
+    Ok(())
+}
+
+/// Перемещает письма в другую папку (UID MOVE, без него — COPY + удаление).
+pub async fn move_messages(conn: &mut Connection, folder: &str, uids: &[u32], target: &str) -> Result<()> {
+    if uids.is_empty() || folder == target {
+        return Ok(());
+    }
+    let can_move = has_capability(conn, "MOVE").await;
+    conn.ensure_selected(folder).await?;
+    if can_move {
+        conn.session.uid_mv(uid_set(uids), target).await?;
+    } else {
+        conn.session.uid_copy(uid_set(uids), target).await?;
+        let _: Vec<Fetch> = conn.session.uid_store(uid_set(uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+        expunge_uids(conn, uids).await?;
+    }
+    Ok(())
+}
+
+/// Удаление: в «Корзину» (`trash`), а из самой корзины (или если её нет) — насовсем.
+/// Возвращает `true`, если письма удалены безвозвратно.
+pub async fn delete_messages(conn: &mut Connection, folder: &str, uids: &[u32], trash: Option<&str>) -> Result<bool> {
+    if uids.is_empty() {
+        return Ok(false);
+    }
+    match trash {
+        Some(t) if t != folder => {
+            move_messages(conn, folder, uids, t).await?;
+            Ok(false)
+        }
+        _ => {
+            conn.ensure_selected(folder).await?;
+            let _: Vec<Fetch> = conn.session.uid_store(uid_set(uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+            expunge_uids(conn, uids).await?;
+            Ok(true)
+        }
+    }
+}
+
 // ---------------------------------------------------------------- диагностика
 
 /// Выполняет произвольную команду и возвращает все ответы сервера текстом.

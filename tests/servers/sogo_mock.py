@@ -10,6 +10,12 @@ PEOPLE = [
     {'c_name': 'sidorov', 'c_cn': 'Сидоров Олег', 'c_mail': ['sidorov@nrcki.ru'], 'c_title': 'Аналитик', 'sourceid': 'gal'},
 ]
 
+# Настройки пользователя: фильтры почты хранятся в SOGoSieveFilters, остальное должно сохраниться.
+DEFAULTS = {'SOGoLanguage': 'Russian', 'SOGoMailSignature': 'С уважением',
+            'SOGoSieveFilters': [{'name': 'Рассылка', 'active': 1, 'match': 'all',
+                                  'rules': [{'field': 'subject', 'operator': 'contains', 'value': '[noc]'}],
+                                  'actions': [{'method': 'fileinto', 'argument': 'INBOX/Рассылки'}]}]}
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, obj=None, headers=()):
@@ -22,6 +28,10 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get('Content-Length') or 0); b = json.loads(self.rfile.read(n) or b'{}')
         if self.path == '/SOGo/connect' and b.get('userName') == USER and b.get('password') == PASS:
             return self.send(200, {'expire': -1}, [('Set-Cookie', '0xHIGHFLYxSOGo=basic%20abc; path=/SOGo/; secure; HttpOnly'), ('Set-Cookie', 'XSRF-TOKEN=tok123; path=/SOGo/')])
+        ok = '0xHIGHFLYxSOGo=basic%20abc' in (self.headers.get('Cookie') or '') and self.headers.get('X-XSRF-TOKEN') == 'tok123'
+        if unquote(self.path) == f'/SOGo/so/{USER}/Preferences/save' and ok and isinstance(b.get('defaults'), dict):
+            DEFAULTS.clear(); DEFAULTS.update(b['defaults'])
+            return self.send(200, {})
         self.send(403, {})
     def do_GET(self):
         u = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -30,6 +40,11 @@ class H(BaseHTTPRequestHandler):
             if not ok: return self.send(302, None, [('Location', '/SOGo/')])
             s = q.get('search', '').lower()
             return self.send(200, {'contacts': [p for p in PEOPLE if s in json.dumps(p, ensure_ascii=False).lower()]})
+        if unquote(u.path) == f'/SOGo/so/{USER}/Preferences/jsonDefaults':
+            if not ok: return self.send(302, None, [('Location', '/SOGo/')])
+            return self.send(200, DEFAULTS)
+        if unquote(u.path) == '/__defaults':
+            return self.send(200, DEFAULTS)
         if unquote(u.path) == f'/SOGo/so/{USER}/logoff':
             return self.send(200, {})
         self.send(404, {})

@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Star, Stethoscope, Sun, Trash2, Users, X, Copy,
+  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Star, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter,
 } from 'lucide-react'
 
 import {
@@ -22,6 +22,8 @@ import FilesView from './FilesView'
 import type { NcStatus } from './types'
 import ContactsView from './ContactsView'
 import CalendarView from './CalendarView'
+import MailFilters from './MailFilters'
+import FolderPicker, { trashFor } from './FolderPicker'
 
 const ROLE_LABELS: Partial<Record<FolderRole, string>> = {
   inbox: 'Входящие',
@@ -103,6 +105,16 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const [listError, setListError] = useState('')
 
   const [selectedKey, setSelectedKey] = useState('')
+  /** Отмеченные письма (Ctrl/Shift+клик); пусто — действия над открытым письмом. */
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const anchorKey = useRef('')
+  const [movePicker, setMovePicker] = useState<MessageSummary[] | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<MessageSummary[] | null>(null)
+  const [showFilters, setShowFilters] = useState(false)
+  const [filterSeed, setFilterSeed] = useState<MessageSummary | null>(null)
+  const [dragInfo, setDragInfo] = useState<{ x: number; y: number; count: number; over: string | null } | null>(null)
+  const msgDrag = useRef<{ x0: number; y0: number; items: MessageSummary[]; active: boolean } | null>(null)
+  const suppressRowClick = useRef(false)
   const [detail, setDetail] = useState<MessageDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
@@ -195,6 +207,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     setListError('')
     if (!keepSelection) {
       setMessages([])
+      setChecked(new Set())
       setSelectedKey('')
       setDetail(null)
     }
@@ -378,6 +391,158 @@ export default function App({ account, initialNotice, onLogout }: Props) {
 
   const selected = messages.find((m) => messageKey(m) === selectedKey)
 
+  /** Письма, над которыми выполняется действие: отмеченные, иначе открытое. */
+  function actionTargets(): MessageSummary[] {
+    if (checked.size > 0) return messages.filter((m) => checked.has(messageKey(m)))
+    return selected ? [selected] : []
+  }
+
+  function onRowClick(e: React.MouseEvent, m: MessageSummary) {
+    if (suppressRowClick.current) return
+    const key = messageKey(m)
+    if (e.ctrlKey || e.metaKey) {
+      setChecked((prev) => {
+        const next = new Set(prev.size === 0 && selectedKey ? [selectedKey] : prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return next
+      })
+      anchorKey.current = key
+      return
+    }
+    if (e.shiftKey && (anchorKey.current || selectedKey)) {
+      const keys = visibleMessages.map(messageKey)
+      const a = keys.indexOf(anchorKey.current || selectedKey)
+      const b = keys.indexOf(key)
+      if (a >= 0 && b >= 0) {
+        setChecked(new Set(keys.slice(Math.min(a, b), Math.max(a, b) + 1)))
+        return
+      }
+    }
+    anchorKey.current = key
+    setChecked(new Set())
+    void openMessage(m)
+  }
+
+  /** Убирает письма из списка и поправляет счётчики папок. */
+  function dropFromList(items: MessageSummary[], target: string | null) {
+    const keys = new Set(items.map(messageKey))
+    const unread = items.filter((m) => m.unread).length
+    const source = items[0]?.folder
+    setMessages((list) => list.filter((m) => !keys.has(messageKey(m))))
+    setTotal((t) => Math.max(0, t - items.length))
+    setChecked(new Set())
+    setFolders((list) => list.map((f) => {
+      if (f.id === source) return { ...f, total: Math.max(0, f.total - items.length), unseen: Math.max(0, f.unseen - unread) }
+      if (target && f.id === target) return { ...f, total: f.total + items.length, unseen: f.unseen + unread }
+      return f
+    }))
+    if (keys.has(selectedKey)) {
+      // Открываем следующее письмо, как в обычных почтовых клиентах.
+      const order = visibleMessages.map(messageKey)
+      const idx = order.indexOf(selectedKey)
+      const next = order.slice(idx + 1).concat(order.slice(0, idx).reverse()).find((k) => !keys.has(k))
+      const nextMsg = next ? messages.find((m) => messageKey(m) === next) : undefined
+      setSelectedKey('')
+      setDetail(null)
+      if (nextMsg) void openMessage(nextMsg)
+    }
+  }
+
+  async function moveTo(items: MessageSummary[], target: string) {
+    if (items.length === 0) return
+    const source = items[0].folder
+    if (target === source) return
+    const dest = folders.find((f) => f.id === target)
+    try {
+      await api.moveMessages(source, items.map((m) => m.uid), target)
+      dropFromList(items, target)
+      setNotice(`${items.length === 1 ? 'Письмо перемещено' : `Перемещено писем: ${items.length}`} в «${dest ? folderLabel(dest) : target}».`)
+    } catch (error) {
+      setNotice(`Не удалось переместить: ${errorText(error)}`)
+    }
+  }
+
+  /** Удаление: в корзину своего ящика; из корзины (или без корзины) — безвозвратно, с подтверждением. */
+  function requestDelete(items: MessageSummary[], force = false) {
+    if (items.length === 0) return
+    const trash = trashFor(folders, items[0].folder)
+    if (!trash || trash.id === items[0].folder || force) setConfirmDelete(items)
+    else void deleteNow(items, false)
+  }
+
+  async function deleteNow(items: MessageSummary[], permanentAsked: boolean) {
+    setConfirmDelete(null)
+    const source = items[0].folder
+    const trash = trashFor(folders, source)
+    const toTrash = !permanentAsked && trash && trash.id !== source ? trash.id : null
+    try {
+      const permanent = await api.deleteMessages(source, items.map((m) => m.uid), toTrash)
+      dropFromList(items, permanent ? null : toTrash)
+      const n = items.length === 1 ? 'Письмо' : `Писем: ${items.length},`
+      setNotice(permanent ? `${n} удалено безвозвратно.` : `${n} перемещено в корзину.`)
+    } catch (error) {
+      setNotice(`Не удалось удалить: ${errorText(error)}`)
+    }
+  }
+
+  // Del — удалить, Shift+Del — безвозвратно; Ctrl+A — отметить все.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (module !== 'mail' || draft || showSettings || showFilters || movePicker || confirmDelete) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+      if (e.key === 'Delete') {
+        e.preventDefault()
+        requestDelete(actionTargets(), e.shiftKey)
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        setChecked(new Set(visibleMessages.map(messageKey)))
+      } else if (e.key === 'Escape' && checked.size > 0) {
+        setChecked(new Set())
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  // Перетаскивание писем на папку (указатель, а не HTML5 DnD — одинаково в WebView2 и WebKitGTK).
+  useEffect(() => {
+    function folderAt(x: number, y: number): string | null {
+      const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-folder-id]')
+      return el?.dataset.folderId ?? null
+    }
+    function onMove(e: PointerEvent) {
+      const d = msgDrag.current
+      if (!d) return
+      if (!d.active) {
+        if (Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) < 8) return
+        d.active = true
+      }
+      setDragInfo({ x: e.clientX, y: e.clientY, count: d.items.length, over: folderAt(e.clientX, e.clientY) })
+    }
+    function onUp(e: PointerEvent) {
+      const d = msgDrag.current
+      msgDrag.current = null
+      if (!d?.active) return
+      setDragInfo(null)
+      suppressRowClick.current = true
+      setTimeout(() => { suppressRowClick.current = false }, 0)
+      const target = folderAt(e.clientX, e.clientY)
+      if (target) void moveTo(d.items, target)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp) }
+  })
+
+  function startMessageDrag(e: React.PointerEvent, m: MessageSummary) {
+    if (e.button !== 0 || e.ctrlKey || e.shiftKey || e.metaKey) return
+    const key = messageKey(m)
+    const items = checked.has(key) ? messages.filter((x) => checked.has(messageKey(x))) : [m]
+    msgDrag.current = { x0: e.clientX, y0: e.clientY, items, active: false }
+  }
+
   function startDraft(next: Draft) {
     setDraft(next)
     // Контакты для подсказок адресов — один раз за сессию, ошибки не мешают письму.
@@ -513,7 +678,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               return f.selectable ? (
                 <button
                   key={f.id}
-                  className={`folder-item ${folderId === f.id ? 'selected' : ''} ${f.total === 0 ? 'folder-empty' : ''}`}
+                  className={`folder-item ${folderId === f.id ? 'selected' : ''} ${f.total === 0 ? 'folder-empty' : ''} ${dragInfo?.over === f.id && f.id !== folderId ? 'drop-target' : ''}`}
+                  data-folder-id={f.id}
                   style={indent}
                   title={`${f.path} — ${f.total} ${pluralLetters(f.total)}${f.unseen ? `, непрочитанных ${f.unseen}` : ''}`}
                   onClick={() => setFolderId(f.id)}
@@ -550,6 +716,9 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             >
               <RefreshCw size={17} className={loading ? 'spin' : ''} />
             </button>
+            <button className="icon-button soft" aria-label="Фильтры почты" title="Фильтры почты (правила сортировки)" onClick={() => { setFilterSeed(null); setShowFilters(true) }}>
+              <ListFilter size={17} />
+            </button>
           </div>
           <div className="filter-row">
             {(['Все', 'Непрочитанные', 'Помеченные', 'С вложениями'] as MailFilter[]).map((item) => (
@@ -557,6 +726,12 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             ))}
           </div>
           <div className="message-list-header"><span>{listTitle}</span><span>{total} {pluralLetters(total)}</span></div>
+          {checked.size > 0 && <div className="bulk-bar">
+            <span>Отмечено: {checked.size}</span>
+            <button className="text-button" onClick={() => setMovePicker(actionTargets())}><FolderInput size={15} /> Переместить</button>
+            <button className="text-button danger-text" onClick={() => requestDelete(actionTargets())}><Trash2 size={15} /> Удалить</button>
+            <button className="icon-button soft" aria-label="Снять отметку" onClick={() => setChecked(new Set())}><X size={15} /></button>
+          </div>}
           <div className="message-list">
             {loading && messages.length === 0 && <div className="empty-state"><span>Загрузка писем с сервера…</span></div>}
             {listError && (
@@ -570,7 +745,13 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               const key = messageKey(m)
               const sender = senderLabel(m)
               return (
-                <button key={key} className={`message-row ${selectedKey === key ? 'selected' : ''} ${m.unread ? 'unread' : ''}`} onClick={() => void openMessage(m)}>
+                <button
+                  key={key}
+                  className={`message-row ${selectedKey === key ? 'selected' : ''} ${checked.has(key) ? 'checked' : ''} ${m.unread ? 'unread' : ''}`}
+                  onClick={(e) => onRowClick(e, m)}
+                  onPointerDown={(e) => startMessageDrag(e, m)}
+                  onDragStart={(e) => e.preventDefault()}
+                >
                   <div className={`sender-avatar avatar-${m.uid % 5}`}>{initials(sender)}</div>
                   <div className="message-summary">
                     <div className="message-topline"><span className="sender-name">{sender}</span><time>{formatListDate(m.date)}</time></div>
@@ -624,6 +805,15 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               </button>
               <button className="icon-button" aria-label="Непрочитанное" title={selected.unread ? 'Отметить прочитанным' : 'Отметить непрочитанным'} onClick={() => void toggleFlag(selected, 'seen')}>
                 <Mail size={18} />
+              </button>
+              <button className="icon-button" aria-label="Переместить в папку" title="Переместить в папку…" onClick={() => setMovePicker([selected])}>
+                <FolderInput size={18} />
+              </button>
+              <button className="icon-button" aria-label="Создать фильтр" title="Создать фильтр по этому письму" onClick={() => { setFilterSeed(selected); setShowFilters(true) }}>
+                <ListFilter size={18} />
+              </button>
+              <button className="icon-button danger-icon" aria-label="Удалить письмо" title="Удалить (Del)" onClick={() => requestDelete([selected])}>
+                <Trash2 size={18} />
               </button>
             </>}
             <button className="icon-button soft" aria-label="Скрыть чтение" onClick={() => setReaderOpen(false)}><PanelRightClose size={18} /></button>
@@ -684,6 +874,28 @@ export default function App({ account, initialNotice, onLogout }: Props) {
         />
       )}
 
+      {dragInfo && <div className="mail-drag-ghost" style={{ left: dragInfo.x + 12, top: dragInfo.y + 8 }}>
+        <Mail size={14} /> {dragInfo.count === 1 ? '1 письмо' : `${dragInfo.count} ${pluralLetters(dragInfo.count)}`}
+      </div>}
+      {movePicker && <FolderPicker
+        folders={folders}
+        exclude={movePicker[0]?.folder}
+        title={movePicker.length === 1 ? 'Переместить письмо' : `Переместить письма (${movePicker.length})`}
+        label={folderLabel}
+        onClose={() => setMovePicker(null)}
+        onPick={(id) => { const items = movePicker; setMovePicker(null); void moveTo(items, id) }}
+      />}
+      {confirmDelete && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setConfirmDelete(null) }}>
+        <div className="settings-modal confirm-modal" role="alertdialog" aria-label="Подтверждение удаления">
+          <strong>Удалить безвозвратно?</strong>
+          <p>{confirmDelete.length === 1 ? `Письмо «${confirmDelete[0].subject || '(без темы)'}»` : `Писем: ${confirmDelete.length}`} будет удалено без возможности восстановления.</p>
+          <div className="settings-actions">
+            <button className="secondary-button" onClick={() => setConfirmDelete(null)}>Отмена</button>
+            <button className="primary-button danger-button" autoFocus onClick={() => void deleteNow(confirmDelete, true)}><Trash2 size={15} /> Удалить</button>
+          </div>
+        </div>
+      </div>}
+      {showFilters && <MailFilters folders={folders} seed={filterSeed} onClose={() => setShowFilters(false)} onNotice={setNotice} label={folderLabel} />}
       {showSettings && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowSettings(false) }}>
         <div className="settings-modal">
           <div className="compose-header"><div><strong>Учётная запись</strong><small>Параметры подключения</small></div><button className="icon-button" onClick={() => setShowSettings(false)} aria-label="Закрыть"><X size={18} /></button></div>
@@ -704,6 +916,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           {ncStatus && <div className="settings-section"><strong>Nextcloud (Deck, Talk)</strong><NcConnect status={ncStatus} onChange={setNcStatus} compact /></div>}
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">
+            <button className="secondary-button" onClick={() => { setShowSettings(false); setFilterSeed(null); setShowFilters(true) }}><ListFilter size={16} /> Фильтры почты</button>
             <button className="secondary-button" disabled={diagBusy} onClick={() => void runDiagnostics()}><Stethoscope size={16} /> Диагностика</button>
             <button className="secondary-button" onClick={() => window.dispatchEvent(new Event(CHECK_UPDATE_EVENT))}><Download size={16} /> Проверить обновления</button>
             <button className="secondary-button" onClick={() => { setShowSettings(false); onLogout() }}><LogOut size={16} /> Выйти и забыть пароль</button>

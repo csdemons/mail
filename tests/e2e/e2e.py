@@ -646,6 +646,118 @@ try:
     wait(d, '.attachment-cloud').click()
     W(d, 20).until(lambda d: '/Почта/Отчёт за октябрь.txt' in nc_mock('GET', '/test/state')['files'])
     ok('mail attachment saved to Nextcloud /Почта')
+
+    # Удаление и перемещение писем.
+    def utf7(name):
+        import base64 as _b
+        out, buf = [], ''
+        for ch in name + '\0':
+            if ch != '\0' and 0x20 <= ord(ch) <= 0x7e or ch == '\0':
+                if buf: out.append('&' + _b.b64encode(buf.encode('utf-16-be')).decode().rstrip('=').replace('/', ',') + '-'); buf = ''
+                if ch != '\0': out.append('&-' if ch == '&' else ch)
+            else:
+                buf += ch
+        return ''.join(out)
+    from email.message import EmailMessage
+    from selenium.webdriver.common.action_chains import ActionChains
+    def imap():
+        ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+        M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('test@rrcki.ru', 'Secret-123'); return M
+    def subjects(folder):
+        M = imap(); M.select(f'"{folder}"')
+        _, ids = M.search(None, 'ALL'); out = []
+        for i in ids[0].split():
+            _, data = M.fetch(i, '(BODY.PEEK[HEADER.FIELDS (SUBJECT)])')
+            out.append(str(make_header(decode_header(email.message_from_bytes(data[0][1])['Subject'] or ''))))
+        M.logout(); return out
+    M = imap()
+    for subj in ('E2E перенос A', 'E2E перенос B', 'E2E удалить C', 'E2E тащить D'):
+        msg = EmailMessage(); msg['From'] = 'Робот <robot@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = subj; msg.set_content('тест')
+        M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+    M.logout()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    row = lambda t: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if t in r.get_attribute('textContent')]
+    W(d, 20).until(lambda d: row('E2E удалить C') and row('E2E тащить D'))
+    row('E2E удалить C')[0].click()
+    W(d, 10).until(lambda d: 'E2E удалить C' in d.find_element(By.CSS_SELECTOR, '.reader-title-row').get_attribute('textContent'))
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Удалить письмо"]').click()
+    W(d, 10).until(lambda d: not row('E2E удалить C'))
+    W(d, 10).until(lambda d: 'E2E удалить C' in subjects('Trash') and 'E2E удалить C' not in subjects('INBOX'))
+    ok('delete: message moved to Trash on server, removed from list')
+    row('E2E перенос A')[0].click()
+    W(d, 10).until(lambda d: 'E2E перенос A' in d.find_element(By.CSS_SELECTOR, '.reader-title-row').get_attribute('textContent'))
+    ActionChains(d).key_down(Keys.CONTROL).click(row('E2E перенос B')[0]).key_up(Keys.CONTROL).perform()
+    W(d, 5).until(lambda d: 'Отмечено: 2' in d.find_element(By.CSS_SELECTOR, '.bulk-bar').get_attribute('textContent'))
+    d.save_screenshot(f'{OUT}/16-multiselect.png')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.bulk-bar button') if 'Переместить' in b.text][0].click()
+    picker = wait(d, '.folder-picker')
+    picker.find_element(By.CSS_SELECTOR, 'input').send_keys('2026')
+    W(d, 5).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.folder-picker-list .folder-item')) == 1)
+    d.find_element(By.CSS_SELECTOR, '.folder-picker-list .folder-item').click()
+    W(d, 10).until(lambda d: not row('E2E перенос A') and not row('E2E перенос B'))
+    proj = utf7('Проекты/2026')
+    W(d, 10).until(lambda d: {'E2E перенос A', 'E2E перенос B'} <= set(subjects(proj)))
+    ok('multi-select (Ctrl+click) and move to folder via picker')
+    # Перетаскивание письма на папку «Архив»/«Спам» в боковой панели.
+    target = [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Спам' in f.get_attribute('textContent')][0]
+    src = row('E2E тащить D')[0]
+    ac = ActionChains(d).move_to_element(src).click_and_hold()
+    for i in range(1, 6):
+        ac = ac.move_to_element_with_offset(target, 0, 0) if i == 5 else ac.move_by_offset(-20 * i, 3)
+    ac.perform()
+    W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.mail-drag-ghost'))
+    d.save_screenshot(f'{OUT}/17-drag.png')
+    ActionChains(d).release().perform()
+    W(d, 10).until(lambda d: not row('E2E тащить D'))
+    W(d, 10).until(lambda d: 'E2E тащить D' in subjects('Junk'))
+    ok('drag message onto sidebar folder moves it')
+    # Из корзины — безвозвратно, с подтверждением; клавиша Del.
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Корзина' in f.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: row('E2E удалить C'))
+    row('E2E удалить C')[0].click()
+    W(d, 10).until(lambda d: 'E2E удалить C' in d.find_element(By.CSS_SELECTOR, '.reader-title-row').get_attribute('textContent'))
+    d.find_element(By.TAG_NAME, 'body').send_keys(Keys.DELETE)
+    wait(d, '.confirm-modal')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.confirm-modal button') if 'Удалить' in b.text][0].click()
+    W(d, 10).until(lambda d: not row('E2E удалить C'))
+    W(d, 10).until(lambda d: 'E2E удалить C' not in subjects('Trash'))
+    ok('Del in Trash: confirmation, permanently expunged')
+
+    # Фильтры почты (SOGo): адрес сервера SOGo — мок на 8444.
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    dav = [i for i in d.find_elements(By.CSS_SELECTOR, '.settings-modal .login-field input') if 'автоопределение' in (i.get_attribute('placeholder') or '')][0]
+    clear(dav); dav.send_keys('https://localhost:8444/')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if b.text == 'Сохранить'][0].click()
+    time.sleep(1)
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if 'Фильтры почты' in b.text][0].click()
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.filter-item'))
+    t = d.find_element(By.CSS_SELECTOR, '.filter-item').get_attribute('textContent')
+    assert 'Рассылка' in t and '[noc]' in t, t; ok('filters: existing SOGo filter listed')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filters-modal button') if 'Новый фильтр' in b.text][0].click()
+    d.find_element(By.CSS_SELECTOR, 'input[aria-label="Название фильтра"]').send_keys('От Иванова')
+    from selenium.webdriver.support.ui import Select
+    Select(d.find_element(By.CSS_SELECTOR, '.filter-row select[aria-label="Поле"]')).select_by_visible_text('От')
+    d.find_element(By.CSS_SELECTOR, '.filter-row input[aria-label="Значение"]').send_keys('ivanov@nrcki.ru')
+    d.find_element(By.CSS_SELECTOR, '.filter-folder').click()
+    wait(d, '.folder-picker input').send_keys('2026')
+    W(d, 5).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.folder-picker-list .folder-item')) == 1)
+    d.find_element(By.CSS_SELECTOR, '.folder-picker-list .folder-item').click()
+    d.save_screenshot(f'{OUT}/18-filter-edit.png')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-editor button') if 'Сохранить фильтр' in b.text][0].click()
+    W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.filter-item')) == 2)
+    import json as _j, urllib.request as _u
+    ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    saved = _j.loads(_u.urlopen('https://localhost:8444/__defaults', context=ctx).read())
+    f2 = saved['SOGoSieveFilters'][1]
+    assert saved['SOGoMailSignature'] == 'С уважением', saved
+    assert f2['name'] == 'От Иванова' and f2['rules'] == [{'field': 'from', 'operator': 'contains', 'value': 'ivanov@nrcki.ru'}], f2
+    assert f2['actions'] == [{'method': 'fileinto', 'argument': 'Проекты/2026'}], f2
+    ok('filters: new rule saved to SOGo, other preferences kept')
+    d.find_element(By.CSS_SELECTOR, '.filter-item .switch input').click()
+    W(d, 10).until(lambda d: _j.loads(_u.urlopen('https://localhost:8444/__defaults', context=ctx).read())['SOGoSieveFilters'][0]['active'] == 0)
+    ok('filters: toggle off saved')
+    d.save_screenshot(f'{OUT}/19-filters.png')
+    d.find_element(By.CSS_SELECTOR, '.filters-modal button[aria-label="Закрыть"]').click()
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:

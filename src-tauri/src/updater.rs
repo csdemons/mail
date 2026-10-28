@@ -239,11 +239,17 @@ pub fn install(variant: &str, file: &Path) -> Result<InstallResult> {
     match variant {
         "win" | "win8" => {
             // /P — без вопросов, только окно прогресса; /R — запустить программу после установки.
-            std::process::Command::new(file)
-                .args(["/P", "/R"])
-                .spawn()
-                .map_err(|e| AppError::Other(format!("Не удалось запустить установщик: {e}")))?;
-            Ok(InstallResult { restarting: true, manual: None })
+            match std::process::Command::new(file).args(["/P", "/R"]).spawn() {
+                Ok(_) => Ok(InstallResult { restarting: true, manual: None }),
+                // 740 — программа установлена «для всех пользователей» (Program Files),
+                // установщику нужны права администратора. CreateProcess их не
+                // запрашивает; запуск через оболочку (как двойной щелчок) покажет UAC.
+                Err(e) if e.raw_os_error() == Some(740) => {
+                    run_elevated(file)?;
+                    Ok(InstallResult { restarting: true, manual: None })
+                }
+                Err(e) => Err(AppError::Other(format!("Не удалось запустить установщик: {e}"))),
+            }
         }
         "appimage" => {
             let target = std::env::var_os("APPIMAGE").map(PathBuf::from).ok_or_else(|| AppError::Other("Путь к AppImage неизвестен".into()))?;
@@ -279,6 +285,27 @@ pub fn install(variant: &str, file: &Path) -> Result<InstallResult> {
         }
         _ => manual(format!("Скачанный файл: {}", file.display())),
     }
+}
+
+/// Запуск через оболочку Windows (`start`): для программ, которым нужны права
+/// администратора, Windows сама покажет запрос UAC.
+#[cfg(windows)]
+fn run_elevated(file: &Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(file)
+        .args(["/P", "/R"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| AppError::Other(format!("Не удалось запустить установщик с правами администратора: {e}")))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_elevated(_file: &Path) -> Result<()> {
+    Err(AppError::Other("Требуются права администратора".into()))
 }
 
 #[cfg(test)]

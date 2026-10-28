@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   Account, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
-  TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
+  SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
 } from './types'
 
@@ -119,6 +119,11 @@ export const api = {
   /** `beforeUid` — UID последнего показанного письма (курсор догрузки). */
   listMessages: (folder: string, beforeUid: number | null = null, limit = PAGE_SIZE) =>
     invoke<MessagePage>('list_messages', { folder, beforeUid, limit }),
+  moveMessages: (folder: string, uids: number[], target: string) => invoke<void>('move_messages', { folder, uids, target }),
+  /** true — письма удалены безвозвратно (корзины нет или удаляли из неё). */
+  deleteMessages: (folder: string, uids: number[], trash: string | null) => invoke<boolean>('delete_messages', { folder, uids, trash }),
+  mailFiltersGet: () => invoke<{ filters: SieveFilter[] }>('mail_filters_get'),
+  mailFiltersSave: (filters: SieveFilter[]) => invoke<void>('mail_filters_save', { filters }),
   diagnostics: (folder: string | null) => invoke<string>('diagnostics', { folder }),
   getMessage: (folder: string, uid: number) =>
     invoke<MessageDetail>('get_message', { folder, uid }),

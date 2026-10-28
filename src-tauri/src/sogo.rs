@@ -174,6 +174,45 @@ impl SogoSession {
         Ok(Vec::new())
     }
 
+    fn req(&self, method: reqwest::Method, url: Url) -> Result<reqwest::RequestBuilder> {
+        let mut r = http()?.request(method, url).header("Cookie", &self.cookie).header("Accept", "application/json");
+        if let Some(x) = &self.xsrf {
+            r = r.header("X-XSRF-TOKEN", x);
+        }
+        Ok(r)
+    }
+
+    /// Настройки пользователя SOGo (`Preferences/jsonDefaults`) — там же фильтры почты.
+    pub async fn defaults(&self) -> Result<Value> {
+        let resp = self.req(reqwest::Method::GET, self.url("Preferences/jsonDefaults")?)?.send().await.map_err(net)?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(net)?;
+        if !status.is_success() {
+            return Err(AppError::Other(format!("SOGo: настройки недоступны (HTTP {status})")));
+        }
+        let v: Value = serde_json::from_str(&text).map_err(|_| AppError::Other("SOGo: настройки — не JSON".into()))?;
+        if !v.is_object() {
+            return Err(AppError::Other("SOGo: неожиданный формат настроек".into()));
+        }
+        Ok(v)
+    }
+
+    /// Сохраняет настройки целиком — как веб-интерфейс SOGo (он отправляет все
+    /// настройки, сервер заменяет их и пересобирает Sieve-скрипт фильтров).
+    pub async fn save_defaults(&self, defaults: &Value) -> Result<()> {
+        let resp = self.req(reqwest::Method::POST, self.url("Preferences/save")?)?
+            .json(&json!({ "defaults": defaults }))
+            .send()
+            .await
+            .map_err(net)?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::Other(format!("SOGo не сохранил фильтры (HTTP {status}): {}", text.chars().take(200).collect::<String>())));
+        }
+        Ok(())
+    }
+
     /// Сырой ответ карточки контакта веб-интерфейса SOGo (`…/Contacts/<книга>/<id>/view`).
     pub async fn view_raw(&self, source: &str, id: &str) -> Result<(StatusCode, String)> {
         let url = self.url(&format!("Contacts/{source}/{id}/view"))?;
@@ -251,6 +290,42 @@ pub fn parse_search(v: &Value) -> Vec<Contact> {
         });
     }
     out
+}
+
+/// Проверка фильтров перед сохранением: массив объектов с правилами и действиями,
+/// разумные размеры, без управляющих символов.
+pub fn validate_filters(filters: &Value) -> Result<()> {
+    let list = filters.as_array().ok_or_else(|| AppError::Other("Фильтры: ожидается список".into()))?;
+    if list.len() > 200 {
+        return Err(AppError::Other("Слишком много фильтров".into()));
+    }
+    let ok_str = |v: &Value| v.as_str().is_some_and(|s| s.chars().count() <= 500 && !s.chars().any(|c| c.is_control() && c != '\t'));
+    for f in list {
+        let o = f.as_object().ok_or_else(|| AppError::Other("Фильтр: ожидается объект".into()))?;
+        if !o.get("name").is_some_and(|n| ok_str(n) && n.as_str().is_some_and(|x| !x.trim().is_empty())) {
+            return Err(AppError::Other("У фильтра должно быть название".into()));
+        }
+        if !matches!(o.get("match").and_then(Value::as_str), Some("all" | "any" | "allmessages")) {
+            return Err(AppError::Other("Фильтр: условие «все/любое/все письма»".into()));
+        }
+        for r in o.get("rules").and_then(Value::as_array).into_iter().flatten() {
+            for k in ["field", "operator", "value"] {
+                if !r.get(k).is_some_and(|v| ok_str(v) || v.is_number()) {
+                    return Err(AppError::Other(format!("Фильтр «{}»: неполное условие", o["name"].as_str().unwrap_or_default())));
+                }
+            }
+        }
+        let actions = o.get("actions").and_then(Value::as_array).ok_or_else(|| AppError::Other("Фильтр без действий".into()))?;
+        if actions.is_empty() {
+            return Err(AppError::Other(format!("Фильтр «{}»: нужно хотя бы одно действие", o["name"].as_str().unwrap_or_default())));
+        }
+        for a in actions {
+            if !a.get("method").is_some_and(ok_str) || a.get("argument").is_some_and(|v| !(v.is_null() || ok_str(v))) {
+                return Err(AppError::Other("Фильтр: некорректное действие".into()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Список книги из `…/view`: либо `{"headers": [[поля…], [значения…], …]}`
@@ -372,6 +447,19 @@ mod tests {
         assert_eq!(h[0].org.as_deref(), Some("УИТ"));
         assert_eq!(h[0].id, "sogo:gal:ivanov");
         assert_eq!(parse_list(&json!({"cards": [{"c_name": "x", "c_cn": "X", "c_mail": "x@nrcki.ru"}]}), "gal").len(), 1);
+    }
+
+    #[test]
+    fn validates_filters() {
+        let good = json!([{"name": "Мониторинг", "active": 1, "match": "any",
+            "rules": [{"field": "from", "operator": "contains", "value": "zabbix@nrcki.ru"}],
+            "actions": [{"method": "fileinto", "argument": "INBOX/Сервера/Monitoring"}, {"method": "stop"}]}]);
+        assert!(validate_filters(&good).is_ok());
+        assert!(validate_filters(&json!([{"name": "x", "match": "all", "rules": [], "actions": []}])).is_err());
+        assert!(validate_filters(&json!([{"name": "", "match": "all", "actions": [{"method": "keep"}]}])).is_err());
+        assert!(validate_filters(&json!([{"name": "x", "match": "some", "actions": [{"method": "keep"}]}])).is_err());
+        assert!(validate_filters(&json!({"name": "x"})).is_err());
+        assert!(validate_filters(&json!([{"name": "x", "match": "all", "rules": [{"field": "subject", "operator": "contains"}], "actions": [{"method": "keep"}]}])).is_err());
     }
 
     #[test]

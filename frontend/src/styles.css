@@ -607,3 +607,47 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 /* Тёмная тема: выпадающие списки и поля даты — тёмные с светлым текстом. */
 .theme-dark select, .theme-dark input[type=date], .theme-dark input[type=time], .theme-dark input[type=password], .theme-dark textarea { background: #1c2330; color: #f4f7fc; border-color: #41506a; color-scheme: dark; }
 .theme-dark select option { background: #1c2330; color: #f4f7fc; }
+
+/* Отметка, удаление и перемещение писем */
+.message-row { user-select: none; }
+.message-row.checked { background: #dbe9ff; box-shadow: inset 3px 0 #155fd3; }
+.theme-dark .message-row.checked { background: #2d4a73; box-shadow: inset 3px 0 #8bb8ff; }
+.bulk-bar { display: flex; align-items: center; gap: 4px; padding: 4px 8px 4px 12px; border-bottom: 1px solid var(--line); background: var(--hover); font-size: 13px; }
+.bulk-bar > span { flex: 1; font-weight: 600; }
+.danger-text { color: #d92d20; }
+.danger-icon:hover { color: #d92d20; }
+.theme-dark .danger-text { color: #ff8a80; }
+.danger-button { background: #d92d20; }
+.danger-button:hover { background: #b42318; }
+.folder-item.drop-target { background: #dbe9ff; outline: 2px dashed #2474ed; outline-offset: -2px; }
+.theme-dark .folder-item.drop-target { background: #2d4a73; outline-color: #8bb8ff; }
+.mail-drag-ghost { position: fixed; z-index: 60; pointer-events: none; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; background: #2474ed; color: #fff; font-size: 13px; font-weight: 600; box-shadow: 0 6px 20px #0003; }
+.confirm-modal { width: min(420px, 100%); gap: 8px; }
+.confirm-modal p { margin: 0; color: var(--muted, #667085); }
+.folder-picker { width: min(460px, 100%); gap: 10px; }
+.folder-picker .search-box { width: 100%; }
+.folder-picker-list { overflow-y: auto; max-height: 55vh; display: flex; flex-direction: column; }
+.folder-picker-list .folder-item:disabled { opacity: .45; cursor: default; }
+
+/* Фильтры почты */
+.filters-modal { width: min(720px, 100%); gap: 10px; }
+.filter-list { display: flex; flex-direction: column; gap: 6px; }
+.filter-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.filter-item.off .filter-text { opacity: .55; }
+.filter-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.filter-text span { font-size: 12px; color: var(--muted, #667085); overflow-wrap: anywhere; }
+.switch { position: relative; width: 34px; height: 20px; flex: none; }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 1; }
+.switch span { position: absolute; inset: 0; border-radius: 10px; background: #c4ccd8; transition: background .15s; }
+.switch span::after { content: ''; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.switch input:checked + span { background: #2474ed; }
+.switch input:checked + span::after { transform: translateX(14px); }
+.filter-editor { display: flex; flex-direction: column; gap: 10px; }
+.filter-editor select, .filter-editor input { min-width: 0; }
+.filter-rows { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.filter-row { display: flex; gap: 6px; width: 100%; align-items: center; flex-wrap: wrap; }
+.filter-row select, .filter-row input { padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; font-size: 13px; }
+.filter-row input:not(.filter-header) { flex: 1; min-width: 140px; }
+.filter-header { width: 110px; }
+.filter-folder { padding: 7px 10px; flex: 1; justify-content: flex-start; overflow: hidden; text-overflow: ellipsis; }
+.filter-caption { font-size: 12px; font-weight: 600; color: var(--muted, #667085); }

@@ -365,6 +365,17 @@ pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> 
                             }
                             Err(e) => extra.push_str(&format!("allContactSearch: ошибка: {e}\n")),
                         }
+                        match session.defaults().await {
+                            Ok(d) => {
+                                let f = d.get("SOGoSieveFilters").cloned().unwrap_or(serde_json::Value::Null);
+                                let n = f.as_array().map(Vec::len).unwrap_or(0);
+                                let sample: String = f.to_string().chars().take(400).collect();
+                                extra.push_str(&format!("фильтры (SOGoSieveFilters): {n}, пример: {sample}\n"));
+                                extra.push_str(&format!("настройки: {} ключей, Sieve: {}\n", d.as_object().map(|o| o.len()).unwrap_or(0),
+                                    d.get("SOGoSieveScriptsEnabled").or(d.get("SOGoSieveFiltersEnabled")).map(|v| v.to_string()).unwrap_or_else(|| "—".into())));
+                            }
+                            Err(e) => extra.push_str(&format!("фильтры: {e}\n")),
+                        }
                         let mut blog = Vec::new();
                         let _ = session.browse("gal", &mut blog).await;
                         for l in blog {
@@ -426,6 +437,7 @@ pub async fn update_profile(
         p.dav_url = dav_url.trim().to_string();
         *state.calendars.lock().await = None;
         *state.books.lock().await = None;
+        *state.sogo.lock().await = None;
     }
     settings::save(&app, &p)?;
     *guard = Some(p.clone());
@@ -1400,6 +1412,60 @@ pub async fn forget_attachment(state: State<'_, AppState>, attachment: String) -
     Ok(())
 }
 
+// ---------------------------------------------------------------- фильтры почты (SOGo / Sieve)
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailFilters {
+    filters: serde_json::Value,
+}
+
+/// Фильтры почты пользователя — те же, что в веб-почте SOGo (Настройки → Фильтры).
+#[tauri::command]
+pub async fn mail_filters_get(state: State<'_, AppState>) -> Result<MailFilters> {
+    let (_, base) = dav_client(&state).await?;
+    let (_, defaults) = sogo_defaults(&state, &base).await?;
+    let filters = defaults.get("SOGoSieveFilters").cloned().filter(|v| v.is_array()).unwrap_or_else(|| serde_json::json!([]));
+    Ok(MailFilters { filters })
+}
+
+/// Сессия SOGo и настройки пользователя; при ошибке (сессия истекла, прошлый вход
+/// не удался) — один повтор с новым входом.
+async fn sogo_defaults(state: &AppState, base: &url::Url) -> Result<(sogo::SogoSession, serde_json::Value)> {
+    if let Ok(s) = sogo_session(state, base, false).await {
+        if let Ok(d) = s.defaults().await {
+            return Ok((s, d));
+        }
+    }
+    let s = sogo_session(state, base, true).await?;
+    let d = s.defaults().await?;
+    Ok((s, d))
+}
+
+/// Сохраняет фильтры: читает свежие настройки, меняет только `SOGoSieveFilters`
+/// и отправляет обратно целиком (SOGo пересобирает Sieve-скрипт).
+#[tauri::command]
+pub async fn mail_filters_save(state: State<'_, AppState>, filters: serde_json::Value) -> Result<()> {
+    sogo::validate_filters(&filters)?;
+    let (_, base) = dav_client(&state).await?;
+    let (session, mut defaults) = sogo_defaults(&state, &base).await?;
+    defaults["SOGoSieveFilters"] = filters;
+    session.save_defaults(&defaults).await
+}
+
+// ---------------------------------------------------------------- перемещение и удаление писем
+
+#[tauri::command]
+pub async fn move_messages(state: State<'_, AppState>, folder: String, uids: Vec<u32>, target: String) -> Result<()> {
+    with_conn!(state, c => imap::move_messages(c, &folder, &uids, &target))
+}
+
+/// Удалить письма: в корзину `trash` или (из корзины) насовсем. `true` — насовсем.
+#[tauri::command]
+pub async fn delete_messages(state: State<'_, AppState>, folder: String, uids: Vec<u32>, trash: Option<String>) -> Result<bool> {
+    with_conn!(state, c => imap::delete_messages(c, &folder, &uids, trash.as_deref()))
+}
+
 // ---------------------------------------------------------------- о программе
 
 #[derive(Serialize)]
@@ -1571,6 +1637,10 @@ macro_rules! app_commands {
             crate::commands::nc_upload_links,
             crate::commands::nc_save_mail_attachment,
             crate::commands::app_info,
+            crate::commands::move_messages,
+            crate::commands::mail_filters_get,
+            crate::commands::mail_filters_save,
+            crate::commands::delete_messages,
             crate::commands::check_update,
             crate::commands::update_progress,
             crate::commands::install_update,

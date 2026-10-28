@@ -352,3 +352,15 @@ export interface UploadedLink {
   path: string
   url: string
 }
+
+/** Правило фильтра почты в формате SOGo (SOGoSieveFilters). */
+export interface SieveRule { field: string; operator: string; value: string; custom_header?: string }
+export interface SieveAction { method: string; argument?: string }
+export interface SieveFilter {
+  name: string
+  active: number | boolean | string
+  match: 'all' | 'any' | 'allmessages'
+  rules: SieveRule[]
+  actions: SieveAction[]
+  [extra: string]: unknown
+}
