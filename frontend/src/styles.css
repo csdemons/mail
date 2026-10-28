@@ -749,3 +749,16 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .create-doc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 .create-doc-form input { padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; }
 .create-doc-form .settings-actions { margin-top: 4px; }
+
+/* Контекстное меню (правая кнопка мыши) */
+.context-menu { position: fixed; z-index: 80; min-width: 250px; padding: 4px; background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 34px #0003; outline: none; font-size: 13px; }
+.context-menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; }
+.context-menu button.active, .context-menu button:hover:not(:disabled) { background: var(--hover); }
+.context-menu button:disabled { opacity: .45; }
+.context-menu button.danger { color: #d92d20; }
+.theme-dark .context-menu button.danger { color: #ff8a80; }
+.context-icon { width: 16px; display: grid; place-items: center; flex: none; opacity: .85; }
+.context-label { flex: 1; }
+.context-menu kbd { font: 11px/1 inherit; color: var(--muted, #667085); border: 0; background: none; }
+.context-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.message-row.menu-target { outline: 2px solid #2474ed; outline-offset: -2px; }

@@ -1,6 +1,6 @@
 [package]
 name = "rrcki-mail"
-version = "0.11.0"
+version = "0.12.0"
 description = "RRCKI Mail — корпоративный почтовый клиент"
 authors = ["RRCKI"]
 license = ""

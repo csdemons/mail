@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink,
+  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
 } from 'lucide-react'
 
 import {
@@ -24,6 +24,8 @@ import type { NcStatus } from './types'
 import ContactsView from './ContactsView'
 import CalendarView from './CalendarView'
 import MailFilters from './MailFilters'
+import ContextMenu from './ContextMenu'
+import type { MenuItem } from './ContextMenu'
 import { AttachmentList } from './AttachmentViewer'
 import MessageBody from './MessageBody'
 import { buildDraft, ensureArchive } from './mailActions'
@@ -131,6 +133,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const [dragInfo, setDragInfo] = useState<{ x: number; y: number; count: number; over: string | null } | null>(null)
   const msgDrag = useRef<{ x0: number; y0: number; items: MessageSummary[]; active: boolean } | null>(null)
   const suppressRowClick = useRef(false)
+  /** Контекстное меню письма: где открыто и к каким письмам относится. */
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; items: MessageSummary[] } | null>(null)
   /** Было открыто отдельное окно письма — при возврате в главное окно список обновляется. */
   const windowOpened = useRef(false)
   const [detail, setDetail] = useState<MessageDetail | null>(null)
@@ -709,6 +713,70 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     startDraft(buildDraft(mode, detail, account.username))
   }
 
+  /** Ответ/пересылка из меню — письмо может быть ещё не открыто: загружаем его. */
+  async function composeFor(m: MessageSummary, mode: 'reply' | 'replyAll' | 'forward') {
+    try {
+      const full = detail && messageKey(detail) === messageKey(m) ? detail : await api.getMessage(m.folder, m.uid)
+      startDraft(buildDraft(mode, full, account.username))
+    } catch (error) {
+      setNotice(`Не удалось открыть письмо: ${errorText(error)}`)
+    }
+  }
+
+  function openRowMenu(e: React.MouseEvent, m: MessageSummary) {
+    e.preventDefault()
+    const key = messageKey(m)
+    // Как в Outlook: правый щелчок по отмеченным — меню для всех отмеченных, иначе — для этого письма.
+    const items = checked.has(key) && checked.size > 1 ? messages.filter((x) => checked.has(messageKey(x))) : [m]
+    if (!checked.has(key) && checked.size > 0) setChecked(new Set())
+    setRowMenu({ x: e.clientX, y: e.clientY, items })
+  }
+
+  function rowMenuItems(items: MessageSummary[]): MenuItem[] {
+    const one = items.length === 1 ? items[0] : null
+    const allUnread = items.every((m) => m.unread)
+    const allFlagged = items.every((m) => m.flagged)
+    const allImportant = items.every((m) => m.important)
+    const each = (flag: 'seen' | 'flagged' | 'important', want: boolean) => () => {
+      for (const m of items) {
+        const has = flag === 'seen' ? !m.unread : m[flag]
+        if (has !== want) void toggleFlag(m, flag)
+      }
+    }
+    const list: MenuItem[] = []
+    if (one) {
+      list.push(
+        { label: 'Открыть', icon: <Mail size={15} />, onSelect: () => void openMessage(one) },
+        { label: 'Открыть в отдельном окне', icon: <ExternalLink size={15} />, hint: 'Enter', onSelect: () => openInWindow(one) },
+        { separator: true },
+        { label: 'Ответить', icon: <Reply size={15} />, hint: 'Ctrl+R', onSelect: () => void composeFor(one, 'reply') },
+        { label: 'Ответить всем', icon: <ReplyAll size={15} />, hint: 'Ctrl+Shift+R', onSelect: () => void composeFor(one, 'replyAll') },
+        { label: 'Переслать', icon: <Forward size={15} />, hint: 'Ctrl+Shift+F', onSelect: () => void composeFor(one, 'forward') },
+        { separator: true },
+      )
+    }
+    list.push(
+      allUnread
+        ? { label: 'Отметить как прочитанное', icon: <MailOpen size={15} />, onSelect: each('seen', true) }
+        : { label: 'Отметить как непрочитанное', icon: <Mail size={15} />, onSelect: each('seen', false) },
+      allImportant
+        ? { label: 'Снять «Важное»', icon: <CircleAlert size={15} />, onSelect: each('important', false) }
+        : { label: 'Пометить как важное', icon: <CircleAlert size={15} />, onSelect: each('important', true) },
+      allFlagged
+        ? { label: 'Снять флажок', icon: <Flag size={15} />, onSelect: each('flagged', false) }
+        : { label: 'Поставить флажок', icon: <Flag size={15} />, onSelect: each('flagged', true) },
+      { separator: true },
+      { label: 'В архив', icon: <Archive size={15} />, onSelect: () => void archive(items) },
+      { label: 'Переместить в папку…', icon: <FolderInput size={15} />, onSelect: () => setMovePicker(items) },
+    )
+    if (one) list.push({ label: 'Создать фильтр по отправителю…', icon: <ListFilter size={15} />, onSelect: () => { setFilterSeed(one); setShowFilters(true) } })
+    list.push(
+      { separator: true },
+      { label: items.length > 1 ? `Удалить (${items.length})` : 'Удалить', icon: <Trash2 size={15} />, hint: 'Del', danger: true, onSelect: () => requestDelete(items) },
+    )
+    return list
+  }
+
   async function archive(items: MessageSummary[]) {
     if (items.length === 0) return
     try {
@@ -893,9 +961,10 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               return (
                 <button
                   key={key}
-                  className={`message-row ${selectedKey === key ? 'selected' : ''} ${checked.has(key) ? 'checked' : ''} ${m.unread ? 'unread' : ''}`}
+                  className={`message-row ${selectedKey === key ? 'selected' : ''} ${checked.has(key) ? 'checked' : ''} ${m.unread ? 'unread' : ''} ${rowMenu?.items.some((x) => messageKey(x) === key) ? 'menu-target' : ''}`}
                   onClick={(e) => onRowClick(e, m)}
                   onDoubleClick={() => openInWindow(m)}
+                  onContextMenu={(e) => openRowMenu(e, m)}
                   title="Двойной щелчок — открыть в отдельном окне"
                   onPointerDown={(e) => startMessageDrag(e, m)}
                   onDragStart={(e) => e.preventDefault()}
@@ -1033,6 +1102,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
         />
       )}
 
+      {rowMenu && <ContextMenu x={rowMenu.x} y={rowMenu.y} items={rowMenuItems(rowMenu.items)} onClose={() => setRowMenu(null)} />}
       {dragInfo && <div className="mail-drag-ghost" style={{ left: dragInfo.x + 12, top: dragInfo.y + 8 }}>
         <Mail size={14} /> {dragInfo.count === 1 ? '1 письмо' : `${dragInfo.count} ${pluralLetters(dragInfo.count)}`}
       </div>}

@@ -842,6 +842,39 @@ try:
     W(d, 15).until(lambda d: not row('E2E window'))
     ok('message window: archive closes window, main list refreshed')
 
+    # Контекстное меню письма (правая кнопка), как в Outlook.
+    M = imap()
+    for subj in ('E2E ctx one', 'E2E ctx two'):
+        msg = EmailMessage(); msg['From'] = 'Коллега <colleague@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = subj; msg.set_content('текст')
+        M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+    M.logout()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: row('E2E ctx one') and row('E2E ctx two'))
+    def menu_pick(r, label):
+        ActionChains(d).context_click(r).perform()
+        items = W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.context-menu button'))
+        [b for b in items if b.find_element(By.CSS_SELECTOR, '.context-label').text == label][0].click()
+        W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.context-menu'))
+    ActionChains(d).context_click(row('E2E ctx one')[0]).perform()
+    labels = [b.find_element(By.CSS_SELECTOR, '.context-label').text for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button')]
+    assert {'Ответить', 'Ответить всем', 'Переслать', 'Удалить', 'В архив', 'Пометить как важное', 'Поставить флажок'} <= set(labels), labels
+    d.save_screenshot(f'{OUT}/27-context-menu.png')
+    d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.context-menu'))
+    menu_pick(row('E2E ctx one')[0], 'Ответить')
+    W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Re: E2E ctx one')
+    assert 'colleague@nrcki.ru' in d.find_element(By.CSS_SELECTOR, '.compose-modal .recipient-field input').get_attribute('value')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    menu_pick(row('E2E ctx one')[0], 'Пометить как важное')
+    W(d, 10).until(lambda d: '$label1' in (flags_of('INBOX', 'E2E ctx one') or ''))
+    ok('context menu: items like Outlook; reply to an unopened message; mark important')
+    row('E2E ctx one')[0].click()
+    ActionChains(d).key_down(Keys.CONTROL).click(row('E2E ctx two')[0]).key_up(Keys.CONTROL).perform()
+    menu_pick(row('E2E ctx two')[0], 'Удалить (2)')
+    W(d, 10).until(lambda d: not row('E2E ctx one') and not row('E2E ctx two'))
+    W(d, 10).until(lambda d: {'E2E ctx one', 'E2E ctx two'} <= set(subjects('Trash')))
+    ok('context menu on several selected messages: delete both to Trash')
+
     # Предпросмотр вложений: картинка (миниатюра и просмотр), PDF (pdf.js), текст в cp1251.
     import zlib, struct
     def png(w, h, rgb):
