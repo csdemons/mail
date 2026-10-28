@@ -700,3 +700,15 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .viewer-nav:hover { background: rgba(0, 0, 0, .65); }
 .viewer-nav.prev { left: 10px; }
 .viewer-nav.next { right: 10px; }
+
+/* HTML-письма */
+.message-html { display: block; width: 100%; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.theme-dark .message-html { border-color: #3a4558; }
+.html-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--hover); font-size: 12px; color: var(--muted, #667085); }
+.html-bar.remote { background: #fff7e6; color: #8a5300; }
+.theme-dark .html-bar.remote { background: #3a2c12; color: #f5c46b; }
+.html-bar span { flex: 1; min-width: 180px; }
+.html-bar .text-button { padding: 4px 8px; font-size: 12px; }
+.html-foot { display: flex; justify-content: flex-end; }
+.html-foot .text-button { font-size: 12px; padding: 4px 8px; color: var(--muted, #667085); }
+.message-window .message-html { border: 0; border-radius: 0; }

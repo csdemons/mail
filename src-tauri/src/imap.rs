@@ -463,6 +463,10 @@ pub struct MessageDetail {
     /// Reply-To, если отличается от отправителя.
     pub reply_to: Option<String>,
     pub body_text: String,
+    /// Очищенный HTML (если письмо в HTML): встроенные картинки уже внутри.
+    pub body_html: Option<String>,
+    /// Сколько картинок из интернета не показано (загружаются по кнопке).
+    pub remote_images: usize,
     pub attachments: Vec<AttachmentInfo>,
 }
 
@@ -757,11 +761,14 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
         None => (None, None, None),
     };
 
-    let (cc, body_text, attachments) = match parsed.as_ref() {
+    let (cc, body_text, body_html, remote_images, attachments) = match parsed.as_ref() {
         Some(msg) => {
+            let rendered = crate::html::html_part(msg).map(|h| crate::html::render(msg, h, None));
+            let inline = rendered.as_ref().map(|r| r.inline.clone()).unwrap_or_default();
             let attachments: Vec<AttachmentInfo> = msg
                 .attachments()
                 .enumerate()
+                .filter(|(index, _)| !inline.contains(index))
                 .map(|(index, part)| AttachmentInfo {
                     index,
                     name: attachment_name(part, index),
@@ -778,10 +785,12 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
             (
                 addresses(msg.cc()),
                 msg.body_text(0).map(|b| b.into_owned()).unwrap_or_default(),
+                rendered.as_ref().map(|r| r.html.clone()),
+                rendered.as_ref().map_or(0, |r| r.remote.len()),
                 attachments,
             )
         }
-        None => (Vec::new(), String::from_utf8_lossy(body).into_owned(), Vec::new()),
+        None => (Vec::new(), String::from_utf8_lossy(body).into_owned(), None, 0, Vec::new()),
     };
 
     let mut summary = summary;
@@ -794,8 +803,26 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
         references,
         reply_to,
         body_text: body_text.replace("\r\n", "\n"),
+        body_html,
+        remote_images,
         attachments,
     })
+}
+
+/// HTML письма вместе с картинками из интернета (по кнопке «Показать картинки»).
+pub async fn message_html_with_remote(conn: &mut Connection, folder: &str, uid: u32) -> Result<(String, Vec<String>)> {
+    let raw = raw_message(conn, folder, uid).await?;
+    let msg = MessageParser::default().parse(&raw).ok_or(AppError::NotFound)?;
+    let html = crate::html::html_part(&msg).ok_or(AppError::NotFound)?;
+    Ok((html.to_string(), crate::html::render(&msg, html, None).remote))
+}
+
+/// Повторная отрисовка с загруженными картинками (без обращения к IMAP).
+pub async fn rerender_html(conn: &mut Connection, folder: &str, uid: u32, remote: &std::collections::HashMap<String, String>) -> Result<String> {
+    let raw = raw_message(conn, folder, uid).await?;
+    let msg = MessageParser::default().parse(&raw).ok_or(AppError::NotFound)?;
+    let html = crate::html::html_part(&msg).ok_or(AppError::NotFound)?;
+    Ok(crate::html::render(&msg, html, Some(remote)).html)
 }
 
 /// Возвращает (имя файла, содержимое) вложения.

@@ -1,6 +1,7 @@
 #[doc(hidden)]
 pub mod dav;
 mod error;
+mod html;
 #[doc(hidden)]
 pub mod nextcloud;
 #[doc(hidden)]

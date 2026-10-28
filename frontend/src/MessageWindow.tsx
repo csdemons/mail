@@ -6,6 +6,7 @@ import {
 import { api, errorText, formatFullDate } from './api'
 import { AttachmentList } from './AttachmentViewer'
 import Composer from './Composer'
+import MessageBody from './MessageBody'
 import { trashFor } from './FolderPicker'
 import { buildDraft, ensureArchive, initials, senderLabel } from './mailActions'
 import type { Contact, Draft, Folder, MessageDetail, Settings } from './types'
@@ -171,7 +172,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
           </div>
         </div>
         {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} />}
-        <article className="message-body plain" style={{ fontSize: font }}>{detail.bodyText || '(пустое письмо)'}</article>
+        <MessageBody detail={detail} scale={font / 15} onNotice={setNotice} />
       </div> : <div className="empty-reader">
         {error ? <><strong>Не удалось открыть письмо</strong><span>{error}</span></> : <span>Загрузка письма…</span>}
       </div>}

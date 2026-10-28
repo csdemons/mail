@@ -165,8 +165,12 @@ try:
 
     # 5. HTML-письмо → текст
     [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'Только HTML' in r.get_attribute('textContent')][0].click()
-    W(d, 20).until(lambda d: 'Привет, мир!' in d.find_element(By.CSS_SELECTOR, '.message-body').text)
-    assert 'alert' not in d.find_element(By.CSS_SELECTOR, '.message-body').text; ok('HTML rendered as text, script dropped')
+    frame = W(d, 20).until(lambda d: d.find_element(By.CSS_SELECTOR, 'iframe.message-html'))
+    d.switch_to.frame(frame)
+    W(d, 10).until(lambda d: 'Привет, мир!' in d.find_element(By.TAG_NAME, 'body').text)
+    assert d.find_elements(By.TAG_NAME, 'b') and not d.find_elements(By.TAG_NAME, 'script')
+    d.switch_to.default_content()
+    ok('HTML mail rendered as HTML in sandboxed frame, script dropped')
 
     # 6. флажок
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Флажок"]').click(); time.sleep(1.5)
@@ -835,6 +839,46 @@ try:
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop'))
     assert d.find_elements(By.CSS_SELECTOR, '.reader-title-row')
     ok('viewer: Esc closes preview, message stays open')
+
+    # HTML-рассылка: встроенный логотип (cid) внутри письма, а не вложением; картинка из интернета — по кнопке.
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.image import MIMEImage
+    from email.mime.text import MIMEText
+    rel = MIMEMultipart('related')
+    rel.attach(MIMEText('<html><head><style>.hdr { background: #003366; color: #ffffff; padding: 12px }</style></head><body>'
+                        '<table width="600" bgcolor="#f0f0f0"><tr><td class="hdr"><img src="cid:logo@rrcki" width="120" alt="logo"> Новости НИЦ</td></tr>'
+                        '<tr><td><p style="color:#990000">Вёрстка <b>рассылки</b></p><img id="remote" src="https://localhost:8443/e2e/remote.png" alt="r">'
+                        '<p><a href="https://example.org/novosti">Подробнее</a></p></td></tr></table></body></html>', 'html', 'utf-8'))
+    logo = MIMEImage(png(120, 40, (0, 51, 102)), 'png'); logo.add_header('Content-ID', '<logo@rrcki>'); logo.add_header('Content-Disposition', 'inline', filename='logo.png')
+    rel.attach(logo)
+    rel['Subject'] = 'E2E html'; rel['From'] = 'Рассылка <news@nrcki.ru>'; rel['To'] = 'test@rrcki.ru'
+    M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), rel.as_bytes()); M.logout()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: row('E2E html'))
+    row('E2E html')[0].click()
+    frame = W(d, 20).until(lambda d: d.find_element(By.CSS_SELECTOR, 'iframe.message-html'))
+    assert not d.find_elements(By.CSS_SELECTOR, '.attachment-card'), 'inline logo must not be listed as attachment'
+    W(d, 10).until(lambda d: 'скрыты (1)' in d.find_element(By.CSS_SELECTOR, '.html-bar.remote').get_attribute('textContent'))
+    assert nc_mock('GET', '/test/state').get('remote_png', 0) == 0, 'remote image must not load by itself'
+    d.switch_to.frame(frame)
+    W(d, 10).until(lambda d: d.execute_script("const i = document.querySelector('img[alt=logo]'); return i && i.complete && i.naturalWidth") == 120)
+    assert d.execute_script("return getComputedStyle(document.querySelector('.hdr')).backgroundColor") == 'rgb(0, 51, 102)'
+    assert d.execute_script("return document.querySelector('img[alt=r]') !== null && !document.querySelector('img[alt=r]').getAttribute('src')")
+    d.switch_to.default_content()
+    h = d.execute_script("return arguments[0].getBoundingClientRect().height", frame)
+    assert h > 120, h
+    d.save_screenshot(f'{OUT}/24-html-mail.png')
+    ok('HTML mail: styles and inline cid logo inside the letter, not an attachment; remote image blocked')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.html-bar.remote button') if 'Показать' in b.text][0].click()
+    W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.html-bar.remote'))
+    frame = d.find_element(By.CSS_SELECTOR, 'iframe.message-html'); d.switch_to.frame(frame)
+    W(d, 10).until(lambda d: d.execute_script("const i = document.querySelector('img[alt=r]'); return i && i.complete && i.naturalWidth") == 40)
+    d.switch_to.default_content()
+    assert nc_mock('GET', '/test/state').get('remote_png', 0) == 1
+    ok('HTML mail: «Показать картинки» loads remote image via the app')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.html-foot button') if 'как текст' in b.text][0].click()
+    W(d, 5).until(lambda d: 'Вёрстка рассылки' in d.find_element(By.CSS_SELECTOR, '.message-body.plain').get_attribute('textContent'))
+    ok('HTML mail: plain-text view toggle')
 
     # Фильтры почты (SOGo): адрес сервера SOGo — мок на 8444.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()

@@ -121,6 +121,7 @@ export const api = {
     invoke<MessagePage>('list_messages', { folder, beforeUid, limit }),
   createFolder: (name: string) => invoke<void>('create_folder', { name }),
   openMessageWindow: (folder: string, uid: number, title: string) => invoke<void>('open_message_window', { folder, uid, title }),
+  messageHtmlRemote: (folder: string, uid: number) => invoke<string>('message_html_remote', { folder, uid }),
   attachmentData: (folder: string, uid: number, index: number) => invoke<{ name: string; data: string }>('attachment_data', { folder, uid, index }),
   closeWindow: () => invoke<void>('close_window'),
   moveMessages: (folder: string, uids: number[], target: string) => invoke<void>('move_messages', { folder, uids, target }),

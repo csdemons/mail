@@ -968,6 +968,15 @@ pub async fn save_attachment(
     Ok(Some(path.display().to_string()))
 }
 
+/// HTML письма с картинками из интернета. Картинки загружает программа (не страница),
+/// IMAP-соединение во время загрузки не занято.
+#[tauri::command]
+pub async fn message_html_remote(state: State<'_, AppState>, folder: String, uid: u32) -> Result<String> {
+    let (_, urls) = with_conn!(state, c => imap::message_html_with_remote(c, &folder, uid))?;
+    let images = crate::html::fetch_remote(&urls).await;
+    with_conn!(state, c => imap::rerender_html(c, &folder, uid, &images))
+}
+
 /// Вложение для предпросмотра в окне программы (картинки, PDF, текст).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1688,6 +1697,7 @@ macro_rules! app_commands {
             crate::commands::create_folder,
             crate::commands::open_message_window,
             crate::commands::attachment_data,
+            crate::commands::message_html_remote,
             crate::commands::close_window,
             crate::commands::mail_filters_get,
             crate::commands::mail_filters_save,

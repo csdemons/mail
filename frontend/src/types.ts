@@ -75,6 +75,10 @@ export interface MessageDetail extends MessageSummary {
   references: string | null
   replyTo: string | null
   bodyText: string
+  /** Очищенный HTML письма (встроенные картинки уже внутри) или null для текстовых писем. */
+  bodyHtml: string | null
+  /** Сколько картинок из интернета скрыто. */
+  remoteImages: number
   attachments: AttachmentInfo[]
 }
 

@@ -144,6 +144,16 @@ class H(BaseHTTPRequestHandler):
         p, q = u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
         base = f'https://localhost:{self.server.server_port}'
 
+        # --- Внешняя картинка для HTML-письма (зелёный PNG 40×30)
+        if method == 'GET' and p == '/e2e/remote.png':
+            import zlib, struct
+            raw = b''.join(b'\x00' + bytes((30, 180, 60)) * 40 for _ in range(30))
+            ch = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+            body = b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', 40, 30, 8, 2, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw)) + ch(b'IEND', b'')
+            state['remote_png'] = state.get('remote_png', 0) + 1
+            self.send_response(200); self.send_header('Content-Type', 'image/png'); self.send_header('Content-Length', str(len(body))); self.end_headers()
+            return self.wfile.write(body)
+
         # --- Login Flow v2 (без авторизации)
         if method == 'POST' and p == '/index.php/login/v2':
             return self.send(200, {'poll': {'token': 'poll-token', 'endpoint': f'{base}/login/v2/poll'},
@@ -170,7 +180,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs'])} | {'messages': state['messages'],
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0)} | {'messages': state['messages'],
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:

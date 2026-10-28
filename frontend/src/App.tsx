@@ -24,6 +24,7 @@ import ContactsView from './ContactsView'
 import CalendarView from './CalendarView'
 import MailFilters from './MailFilters'
 import { AttachmentList } from './AttachmentViewer'
+import MessageBody from './MessageBody'
 import { buildDraft, ensureArchive } from './mailActions'
 import FolderPicker, { trashFor } from './FolderPicker'
 
@@ -890,7 +891,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               onCloud={ncStatus?.connected ? (i, name) => void saveToNextcloud(i, name) : undefined}
               cloudTitle={`Сохранить в Nextcloud (${NC_MAIL_DIR})`}
             />}
-            <article className="message-body plain">{detail.bodyText || '(пустое письмо)'}</article>
+            <MessageBody detail={detail} onNotice={setNotice} />
             <div className="reader-actions">
               <button className="primary-button" onClick={() => openComposer('reply')}><Reply size={16} /> Ответить</button>
               <button className="secondary-button" onClick={() => openComposer('replyAll')}><ReplyAll size={16} /> Ответить всем</button>
