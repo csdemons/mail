@@ -2,13 +2,16 @@ import { useMemo, useState } from 'react'
 import { Folder as FolderIcon, Search, X } from 'lucide-react'
 import type { Folder } from './types'
 
-/** Корень пространства общих ящиков (не выбираемая папка верхнего уровня, например «shared»). */
+/** Корень пространства общих ящиков — как в бэкенде (`is_shared_root`). */
+const SHARED_ROOTS = new Set(['shared', 'shared folders', 'other users', 'public folders'])
+const isSharedRoot = (f: Folder) => f.parent === null && !f.selectable && SHARED_ROOTS.has(f.id.toLowerCase())
+
+/** Подключённый ящик (shared/<ящик>), к которому относится папка; null — свой ящик. */
 function sharedMailbox(folders: Folder[], folder: Folder): string | null {
   const byId = new Map(folders.map((f) => [f.id, f]))
   const chain: Folder[] = []
   for (let f: Folder | undefined = folder; f; f = f.parent ? byId.get(f.parent) : undefined) chain.unshift(f)
-  const top = chain[0]
-  if (chain.length < 2 || top.selectable || top.role !== 'other') return null
+  if (chain.length < 2 || !isSharedRoot(chain[0])) return null
   return chain[1].id
 }
 
@@ -24,7 +27,7 @@ export function trashFor(folders: Folder[], folderId: string): Folder | null {
 
 /** Папки своего ящика (фильтры сервера раскладывают письма только в них). */
 export function personalFolders(folders: Folder[]): Folder[] {
-  return folders.filter((f) => sharedMailbox(folders, f) === null && !(f.parent === null && !f.selectable && f.role === 'other' && folders.some((c) => c.parent === f.id && sharedMailbox(folders, c) !== null)))
+  return folders.filter((f) => !isSharedRoot(f) && sharedMailbox(folders, f) === null)
 }
 
 interface Props {
