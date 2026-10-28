@@ -948,6 +948,8 @@ try:
     def new_mail(subj):
         m = EmailMessage(); m['From'] = 'Коллега <colleague@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj; m.set_content('x')
         M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), m.as_bytes()); M.logout()
+    # После закрытых окон редактора в Xvfb (без оконного менеджера) фокус не возвращается — задаём явно.
+    d.execute_script('document.hasFocus = () => true')
     new_mail('E2E notify in-app')
     W(d, 40).until(lambda d: any('Новое письмо от Коллега: E2E notify in-app' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
     assert 'E2E notify in-app' not in notified(), 'window in front: in-app notice, not a system one'
