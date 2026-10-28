@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BookUser, Building2, Mail, Pencil, Phone, Plus, RefreshCw, Search, StickyNote, Trash2 } from 'lucide-react'
+import { BookUser, Building2, Loader2, Mail, MapPin, Pencil, Phone, Plus, RefreshCw, Search, StickyNote, Trash2 } from 'lucide-react'
 
 import { api, errorText } from './api'
 import type { Contact, ContactsResult } from './types'
@@ -27,6 +27,8 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
   // Результаты поиска на сервере: корпоративная книга (LDAP) целиком не загружается.
   const [remote, setRemote] = useState<Contact[]>([])
   const [searching, setSearching] = useState(false)
+  // Подробности корпоративных контактов (поиск отдаёт только имя и почту).
+  const [details, setDetails] = useState<Record<string, Contact | 'loading' | 'none'>>({})
 
   useEffect(() => {
     const q = query.trim()
@@ -67,12 +69,25 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
+    const found = new Set(remote.map((c) => c.id))
     return all.filter((c) =>
       (!book || c.book === book) &&
-      (!q || [c.fullName, c.org ?? '', c.title ?? '', ...c.emails, ...c.phones].join(' ').toLowerCase().includes(q)))
-  }, [all, query, book])
+      // Найденное сервером показываем как есть: он ищет и по полям, которых нет в списке.
+      (!q || found.has(c.id) || [c.fullName, c.org ?? '', c.title ?? '', ...c.emails, ...c.phones].join(' ').toLowerCase().includes(q)))
+  }, [all, remote, query, book])
 
-  const selected = all.find((c) => c.id === selectedId)
+  const base = all.find((c) => c.id === selectedId)
+  const extra = base ? details[base.id] : undefined
+  const selected = base && extra && typeof extra === 'object' ? { ...base, ...extra, id: base.id, book: base.book } : base
+
+  useEffect(() => {
+    if (!base || base.editable || details[base.id]) return
+    setDetails((d) => ({ ...d, [base.id]: 'loading' }))
+    api.contactDetails(base.href, base.id)
+      .then((c) => setDetails((d) => ({ ...d, [base.id]: c })))
+      .catch(() => setDetails((d) => ({ ...d, [base.id]: 'none' })))
+  }, [base, details])
+  const selectedBook = data?.books.find((b) => b.name === book)
   const canCreate = Boolean(data?.books.some((b) => b.writable))
 
   async function remove(c: Contact) {
@@ -130,7 +145,9 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
             </button>
           ))}
           {searching && <div className="folder-placeholder">Поиск в корпоративной книге…</div>}
-          {data && !loading && !searching && visible.length === 0 && <div className="empty-state"><BookUser size={30} /><strong>Контакты не найдены</strong>{query.trim().length < 2 && <span>Корпоративная книга ищется по имени или e-mail — начните вводить.</span>}</div>}
+          {data && !loading && !searching && visible.length === 0 && (selectedBook && !selectedBook.writable && query.trim().length < 2
+            ? <div className="empty-state"><Search size={30} /><strong>{selectedBook.name}</strong><span>Сотрудники показываются по поиску: введите фамилию, имя, e-mail или отдел.</span></div>
+            : <div className="empty-state"><BookUser size={30} /><strong>Контакты не найдены</strong>{query.trim().length < 2 && <span>Корпоративная книга ищется по имени или e-mail — начните вводить.</span>}</div>)}
         </div>
         <div className="list-footer"><span>{visible.length} из {data?.contacts.length ?? 0}</span><span>CardDAV</span></div>
       </main>
@@ -151,6 +168,8 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
             ))}
             {selected.phones.map((p) => <div key={p} className="contact-line"><Phone size={16} /><span>{p}</span></div>)}
             {selected.org && <div className="contact-line"><Building2 size={16} /><span>{selected.org}</span></div>}
+            {selected.address && <div className="contact-line"><MapPin size={16} /><span>{selected.address}</span></div>}
+            {extra === 'loading' && <div className="contact-line muted"><Loader2 size={16} className="spin" /><span>Загрузка подробностей…</span></div>}
             {selected.note && <div className="contact-line"><StickyNote size={16} /><span className="contact-note">{selected.note}</span></div>}
             {selected.editable
               ? <div className="reader-actions">

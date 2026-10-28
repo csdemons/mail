@@ -136,6 +136,18 @@ impl SogoSession {
         Ok(parse_search(&v))
     }
 
+    /// Сырой ответ карточки контакта веб-интерфейса SOGo (`…/Contacts/<книга>/<id>/view`).
+    pub async fn view_raw(&self, source: &str, id: &str) -> Result<(StatusCode, String)> {
+        let url = self.url(&format!("Contacts/{source}/{id}/view"))?;
+        let mut req = http()?.get(url).header("Cookie", &self.cookie).header("Accept", "application/json");
+        if let Some(x) = &self.xsrf {
+            req = req.header("X-XSRF-TOKEN", x);
+        }
+        let resp = req.send().await.map_err(net)?;
+        let status = resp.status();
+        Ok((status, resp.text().await.map_err(net)?))
+    }
+
     pub async fn logout(&self) {
         if let (Ok(url), Ok(client)) = (self.url("logoff"), http()) {
             let _ = client.get(url).header("Cookie", &self.cookie).send().await;
@@ -192,9 +204,47 @@ pub fn parse_search(v: &Value) -> Vec<Contact> {
             org: first(c, &["c_o", "o", "org"]),
             title: first(c, &["c_title", "title"]),
             note: None,
+            address: None,
         });
     }
     out
+}
+
+/// Карточка из веб-API SOGo: поля называются по-разному в разных версиях —
+/// берём всё, что похоже на телефоны, должность, организацию и адрес.
+pub fn parse_view(v: &Value, base: Contact) -> Contact {
+    let mut c = base;
+    let name = first(v, &["c_cn", "cn", "fn", "displayname"]);
+    if let Some(n) = name { c.full_name = n; }
+    let mut emails = strings(v.get("emails").unwrap_or(&Value::Null));
+    emails.extend(strings(v.get("c_mail").unwrap_or(&Value::Null)));
+    for e in emails {
+        if !c.emails.iter().any(|x| x.eq_ignore_ascii_case(&e)) { c.emails.push(e); }
+    }
+    let mut phones = strings(v.get("phones").unwrap_or(&Value::Null));
+    for k in ["c_telephonenumber", "telephonenumber", "mobile", "c_mobile", "homephone", "pager", "facsimiletelephonenumber"] {
+        phones.extend(strings(v.get(k).unwrap_or(&Value::Null)));
+    }
+    for p in phones {
+        if !c.phones.contains(&p) { c.phones.push(p); }
+    }
+    if let Some(t) = first(v, &["title", "c_title"]) { c.title = Some(t); }
+    let orgs = strings(v.get("orgs").unwrap_or(&Value::Null));
+    let mut org_parts: Vec<String> = first(v, &["c_o", "o", "org"]).into_iter().collect();
+    org_parts.extend(orgs);
+    for k in ["ou", "c_ou", "department", "division"] {
+        org_parts.extend(strings(v.get(k).unwrap_or(&Value::Null)));
+    }
+    org_parts.dedup();
+    if !org_parts.is_empty() { c.org = Some(org_parts.join(", ")); }
+    if let Some(a) = v.get("addresses").and_then(Value::as_array).and_then(|a| a.first()) {
+        let line = ["street", "street2", "locality", "region", "postalcode", "country"].iter()
+            .filter_map(|k| a.get(*k).and_then(Value::as_str)).map(str::trim).filter(|x| !x.is_empty())
+            .collect::<Vec<_>>().join(", ");
+        if !line.is_empty() { c.address = Some(line); }
+    }
+    if let Some(n) = first(v, &["notes", "note", "description"]) { c.note = Some(n); }
+    c
 }
 
 #[cfg(test)]
@@ -216,6 +266,22 @@ mod tests {
         assert_eq!(c[1].emails, vec!["petrova@nrcki.ru", "anna@nrcki.ru"]);
         assert_eq!(c[2].emails, vec!["sidorov@nrcki.ru"]);
         assert!(c.iter().all(|x| !x.editable && x.href.starts_with("sogo:")));
+    }
+
+    #[test]
+    fn parses_sogo_view() {
+        let base = parse_search(&json!({"contacts": [{"c_name": "ivanov", "c_cn": "Иванов", "c_mail": "ivanov@nrcki.ru"}]})).remove(0);
+        let c = parse_view(&json!({
+            "c_cn": "Иванов Иван Иванович", "emails": [{"type": "work", "value": "ivanov@nrcki.ru"}],
+            "phones": [{"type": "work", "value": "+7 495 000-00-01"}, {"type": "cell", "value": "+7 900 000-00-00"}],
+            "title": "Ведущий инженер", "orgs": [{"value": "УИТ"}], "c_o": "НИЦ КИ",
+            "addresses": [{"street": "пл. Курчатова, 1", "locality": "Москва"}]
+        }), base);
+        assert_eq!(c.full_name, "Иванов Иван Иванович");
+        assert_eq!(c.emails, vec!["ivanov@nrcki.ru"]);
+        assert_eq!(c.phones.len(), 2);
+        assert_eq!((c.title.as_deref(), c.org.as_deref()), (Some("Ведущий инженер"), Some("НИЦ КИ, УИТ")));
+        assert_eq!(c.address.as_deref(), Some("пл. Курчатова, 1, Москва"));
     }
 
     #[test]

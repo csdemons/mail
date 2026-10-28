@@ -106,6 +106,7 @@ export interface Contact {
   org: string | null
   title: string | null
   note: string | null
+  address: string | null
 }
 
 export interface ContactsResult {

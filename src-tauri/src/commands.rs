@@ -365,6 +365,26 @@ pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> 
                             }
                             Err(e) => extra.push_str(&format!("allContactSearch: ошибка: {e}\n")),
                         }
+                        // Подробности первого найденного: веб-API SOGo и vCard по CardDAV.
+                        if let Ok(hit) = session.search(&probe).await.map(|l| l.into_iter().next()) {
+                            if let Some((source, sid)) = hit.as_ref().and_then(|h| h.id.strip_prefix("sogo:")).and_then(|r| r.split_once(':')) {
+                                match session.view_raw(source, sid).await {
+                                    Ok((st, text)) => {
+                                        let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                                        extra.push_str(&format!("view {source}/{sid} → {st}: {}\n", one.chars().take(500).collect::<String>()));
+                                    }
+                                    Err(e) => extra.push_str(&format!("view: ошибка: {e}\n")),
+                                }
+                                if let Ok(mut dc) = dav::DavClient::new(&creds.username, &creds.password) {
+                                    let vcf = format!("{}Contacts/{source}/{}", p.dav_base().trim_end_matches('/').to_string() + "/SOGo/dav/" + &creds.username + "/", urlencoding_segment(&format!("{sid}.vcf")));
+                                    match dc.get(&vcf).await {
+                                        Ok((text, _)) => extra.push_str(&format!("GET {vcf} → ok, {} байт, поля: {}\n", text.len(),
+                                            text.lines().filter_map(|l| l.split([':', ';']).next()).filter(|k| !k.is_empty() && !k.starts_with(' ')).collect::<Vec<_>>().join(","))),
+                                        Err(e) => extra.push_str(&format!("GET {vcf} → {e}\n")),
+                                    }
+                                }
+                            }
+                        }
                         session.logout().await;
                     }
                     Err(e) => extra.push_str(&format!("вход: {e}\n")),
@@ -618,11 +638,23 @@ pub async fn search_contacts(state: State<'_, AppState>, query: String) -> Resul
     if gal_empty && is_sogo {
         match sogo_search(&state, &base, &query).await {
             Ok(list) => {
-                for c in list {
+                for mut c in list {
                     let dup = out.iter().any(|o| o.emails.iter().any(|e| c.emails.iter().any(|x| x.eq_ignore_ascii_case(e))));
-                    if !dup {
-                        out.push(c);
+                    if dup {
+                        continue;
                     }
+                    // «sogo:<книга>:<id>» → адрес vCard в найденной книге (gal/<id>.vcf),
+                    // чтобы подробности загрузить по CardDAV.
+                    if let Some((source, id)) = c.id.strip_prefix("sogo:").and_then(|r| r.split_once(':')) {
+                        if let Some(b) = books.iter().find(|b| b.url.trim_end_matches('/').rsplit('/').next() == Some(source)) {
+                            let file = if id.ends_with(".vcf") { id.to_string() } else { format!("{id}.vcf") };
+                            if let Ok(u) = url::Url::parse(&b.url).and_then(|u| u.join(&urlencoding_segment(&file))) {
+                                c.href = u.to_string();
+                            }
+                            c.book = b.name.clone();
+                        }
+                    }
+                    out.push(c);
                 }
             }
             Err(e) => log::warn!("поиск через веб-API SOGo: {e}"),
@@ -636,35 +668,83 @@ pub async fn search_contacts(state: State<'_, AppState>, query: String) -> Resul
     Ok(out)
 }
 
-async fn sogo_search(state: &AppState, base: &url::Url, query: &str) -> Result<Vec<dav::Contact>> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    for attempt in 0..2 {
-        let cached = state.sogo.lock().await.clone();
-        let session = match cached {
-            Some(Ok(s)) if attempt == 0 => s,
-            Some(Err(e)) => return Err(AppError::Other(e)),
-            _ => {
-                let mut log = Vec::new();
-                match sogo::login(base, &creds.username, &creds.password, &mut log).await {
-                    Ok(s) => {
-                        *state.sogo.lock().await = Some(Ok(s.clone()));
-                        s
-                    }
-                    Err(e) => {
-                        *state.sogo.lock().await = Some(Err(e.to_string()));
-                        return Err(e);
+/// Кодирует имя файла для пути URL (пробелы, «@», кириллица).
+fn urlencoding_segment(name: &str) -> String {
+    let mut u = url::Url::parse("https://x/").expect("static");
+    u.path_segments_mut().expect("base").push(name);
+    u.path().trim_start_matches('/').to_string()
+}
+
+/// Подробная карточка контакта: для корпоративной книги поиск отдаёт только
+/// имя и почту — дозапрашиваем vCard по CardDAV, а если не вышло, карточку из
+/// веб-API SOGo.
+#[tauri::command]
+pub async fn contact_details(state: State<'_, AppState>, href: String, id: String) -> Result<dav::Contact> {
+    let (mut client, _) = dav_client(&state).await?;
+    let books = state.books.lock().await.clone().unwrap_or_default();
+    let mut found: Option<dav::Contact> = None;
+    if let Ok(book) = owning_collection(&books, &href) {
+        if let Ok((data, etag)) = client.get(&href).await {
+            let origin = dav::Origin { href: href.clone(), etag, editable: book.writable };
+            found = dav::parse_vcards(&data, &book.name, &origin).into_iter().next();
+        }
+    }
+    let rich = |c: &dav::Contact| !c.phones.is_empty() || c.title.is_some() || c.address.is_some();
+    if found.as_ref().is_some_and(rich) {
+        let mut c = found.expect("checked");
+        c.id = id;
+        return Ok(c);
+    }
+    if let Some((source, sid)) = id.strip_prefix("sogo:").and_then(|r| r.split_once(':')) {
+        let (_, base) = dav_client(&state).await?;
+        if let Ok(session) = sogo_session(&state, &base, false).await {
+            if let Ok((st, text)) = session.view_raw(source, sid).await {
+                if st.is_success() {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                        let base_contact = found.clone().unwrap_or_else(|| dav::Contact {
+                            id: id.clone(), book: "Корпоративная адресная книга".into(), href: href.clone(), etag: None, editable: false,
+                            full_name: String::new(), emails: vec![], phones: vec![], org: None, title: None, note: None, address: None,
+                        });
+                        let mut c = sogo::parse_view(&v, base_contact);
+                        c.id = id;
+                        return Ok(c);
                     }
                 }
             }
-        };
-        match session.search(query).await {
-            Ok(list) => return Ok(list),
-            // Сессия истекла — войти заново один раз.
-            Err(_) if attempt == 0 => continue,
-            Err(e) => return Err(e),
         }
     }
-    Ok(Vec::new())
+    found.map(|mut c| { c.id = id; c }).ok_or_else(|| AppError::Other("Сервер не отдал подробности контакта".into()))
+}
+
+/// Сессия веб-API SOGo из кэша или новым входом (`fresh` — войти заново).
+async fn sogo_session(state: &AppState, base: &url::Url, fresh: bool) -> Result<sogo::SogoSession> {
+    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let cached = state.sogo.lock().await.clone();
+    match cached {
+        Some(Ok(s)) if !fresh => Ok(s),
+        Some(Err(e)) if !fresh => Err(AppError::Other(e)),
+        _ => {
+            let mut log = Vec::new();
+            match sogo::login(base, &creds.username, &creds.password, &mut log).await {
+                Ok(s) => {
+                    *state.sogo.lock().await = Some(Ok(s.clone()));
+                    Ok(s)
+                }
+                Err(e) => {
+                    *state.sogo.lock().await = Some(Err(e.to_string()));
+                    Err(e)
+                }
+            }
+        }
+    }
+}
+
+async fn sogo_search(state: &AppState, base: &url::Url, query: &str) -> Result<Vec<dav::Contact>> {
+    match sogo_session(state, base, false).await?.search(query).await {
+        Ok(list) => Ok(list),
+        // Сессия истекла — войти заново один раз.
+        Err(_) => sogo_session(state, base, true).await?.search(query).await,
+    }
 }
 
 /// Проверяет, что адрес записи лежит внутри найденной коллекции: frontend не
@@ -1285,6 +1365,7 @@ macro_rules! app_commands {
             crate::commands::send_message,
             crate::commands::list_contacts,
             crate::commands::search_contacts,
+            crate::commands::contact_details,
             crate::commands::list_events,
             crate::commands::create_event,
             crate::commands::update_event,

@@ -43,6 +43,7 @@ export const api = {
   updateProgress: () => invoke<{ done: number; total: number }>('update_progress'),
   installUpdate: () => invoke<InstallResult>('install_update'),
   searchContacts: (query: string) => invoke<Contact[]>('search_contacts', { query }),
+  contactDetails: (href: string, id: string) => invoke<Contact>('contact_details', { href, id }),
   listEvents: (start: Date, end: Date) =>
     invoke<EventsResult>('list_events', { start: start.toISOString(), end: end.toISOString() }),
   createEvent: (calendarUrl: string, input: EventInput) => invoke<void>('create_event', { calendarUrl, input }),

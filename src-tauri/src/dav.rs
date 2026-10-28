@@ -474,6 +474,8 @@ pub struct Contact {
     pub org: Option<String>,
     pub title: Option<String>,
     pub note: Option<String>,
+    /// Адрес (ADR) одной строкой.
+    pub address: Option<String>,
 }
 
 fn unescape(v: &str) -> String {
@@ -501,6 +503,7 @@ pub fn parse_vcards(data: &str, book: &str, origin: &Origin) -> Vec<Contact> {
             org: None,
             title: None,
             note: None,
+            address: None,
         };
         let mut n_value = None;
         for p in &card.properties {
@@ -513,6 +516,11 @@ pub fn parse_vcards(data: &str, book: &str, origin: &Origin) -> Vec<Contact> {
                 "ORG" => c.org = Some(unescape(&v.replace(';', ", ")).trim_matches([',', ' ']).to_string()),
                 "TITLE" => c.title = Some(unescape(v)),
                 "NOTE" => c.note = Some(unescape(v)),
+                "ADR" if c.address.is_none() => {
+                    // ADR: п/я;доп.;улица;город;регион;индекс;страна
+                    let a = v.split(';').map(|x| unescape(x.trim())).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(", ");
+                    if !a.is_empty() { c.address = Some(a); }
+                }
                 _ => {}
             }
         }
