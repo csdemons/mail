@@ -24,6 +24,8 @@ echo '{"url": "https://localhost:8443/updates/latest.json"}' > "$XDG_CONFIG_HOME
 export RRCKI_E2E_ALLOW_LOCAL_IMAGES=1  # картинки письма с мок-сервера на localhost
 export RRCKI_E2E_NO_UIDPLUS=1  # проверяем безопасный EXPUNGE без UIDPLUS
 export RRCKI_E2E_UPDATE_PUBKEY=$(openssl pkey -in "$(dirname "$0")/../servers/update-test-key.pem" -pubout -outform DER | tail -c 32 | base64)
+export RRCKI_E2E_POLL_SECS=8  # фоновая проверка почты/чата для уведомлений
+export RRCKI_E2E_NOTIFY_LOG="$E2E_HOME/notify.log"
 export RRCKI_E2E_VARIANT=test
 tauri-driver >/tmp/tauri-driver.log 2>&1 &
 TD=$!

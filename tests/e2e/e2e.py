@@ -906,6 +906,26 @@ try:
     W(d, 5).until(lambda d: 'Вёрстка рассылки' in d.find_element(By.CSS_SELECTOR, '.message-body.plain').get_attribute('textContent'))
     ok('HTML mail: plain-text view toggle')
 
+    # Уведомления о новой почте и сообщениях чата.
+    notify_log = os.environ['RRCKI_E2E_NOTIFY_LOG']
+    def notified():
+        return open(notify_log, encoding='utf-8').read() if os.path.exists(notify_log) else ''
+    def new_mail(subj):
+        m = EmailMessage(); m['From'] = 'Коллега <colleague@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj; m.set_content('x')
+        M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), m.as_bytes()); M.logout()
+    new_mail('E2E notify in-app')
+    W(d, 40).until(lambda d: any('Новое письмо от Коллега: E2E notify in-app' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    assert 'E2E notify in-app' not in notified(), 'window in front: in-app notice, not a system one'
+    ok('new mail while the window is active: in-app notice, list refreshed')
+    d.execute_script('document.hasFocus = () => false')
+    new_mail('E2E notify system')
+    W(d, 40).until(lambda d: 'Новое письмо — Коллега\tE2E notify system' in notified())
+    nc_mock('POST', '/test/inject?token=abc123&text=' + __import__('urllib.parse').parse.quote('Уведомление из чата'))
+    W(d, 40).until(lambda d: 'Чат: УИТ — общий\tИванов Иван: Уведомление из чата' in notified())
+    d.execute_script('delete document.hasFocus')
+    print('   notify log:', notified().strip().replace('\n', ' | '))
+    ok('window in background: system notifications for new mail and chat message')
+
     # Фильтры почты (SOGo): адрес сервера SOGo — мок на 8444.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     dav = [i for i in d.find_elements(By.CSS_SELECTOR, '.settings-modal .login-field input') if 'автоопределение' in (i.get_attribute('placeholder') or '')][0]

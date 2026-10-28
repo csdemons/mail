@@ -583,6 +583,44 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
     }
 }
 
+/// Новые непрочитанные письма папки с UID больше `after_uid` (новые сверху, не больше
+/// `limit`) и последний UID папки — для уведомлений. Флаг \\Seen не меняется.
+pub async fn new_unseen(conn: &mut Connection, folder: &str, after_uid: u32, limit: u32) -> Result<(Vec<MessageSummary>, u32)> {
+    let mailbox = conn.select(folder).await?;
+    let last_uid = mailbox.uid_next.map(|n| n.saturating_sub(1)).unwrap_or(0);
+    if limit == 0 || mailbox.exists == 0 {
+        return Ok((Vec::new(), last_uid));
+    }
+    let mut uids: Vec<u32> = conn
+        .session
+        .uid_search(format!("UNSEEN UID {}:*", after_uid.saturating_add(1)))
+        .await?
+        .into_iter()
+        .filter(|u| *u > after_uid)
+        .collect();
+    uids.sort_unstable_by(|a, b| b.cmp(a));
+    uids.truncate(limit.min(10) as usize);
+    let last_uid = last_uid.max(uids.first().copied().unwrap_or(0));
+    if uids.is_empty() {
+        return Ok((Vec::new(), last_uid));
+    }
+    let fetches: Vec<Fetch> = conn
+        .session
+        .uid_fetch(uid_set(&uids), "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])")
+        .await?
+        .try_collect()
+        .await?;
+    let parser = MessageParser::default();
+    let mut items: Vec<MessageSummary> = fetches
+        .iter()
+        .filter(|f| f.uid.is_some_and(|u| u > after_uid))
+        .map(|f| summary_from(folder, f, f.header().and_then(|h| parser.parse_headers(h)).as_ref()))
+        .filter(|m| m.unread)
+        .collect();
+    items.sort_by_key(|m| std::cmp::Reverse(m.uid));
+    Ok((items, last_uid))
+}
+
 /// Страница писем, новые сверху. Курсор — UID: `before_uid` = UID последнего
 /// уже показанного письма. В отличие от номеров сообщений UID не сдвигаются,
 /// когда в папку приходят или из неё удаляются письма, поэтому догрузка не

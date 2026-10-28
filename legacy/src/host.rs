@@ -60,3 +60,29 @@ pub fn close_message_windows(app: &AppHandle) {
         }
     }
 }
+
+/// E2E: в отладочной сборке уведомления можно писать в файл (в Xvfb нет службы уведомлений).
+fn notify_test_log(title: &str, body: &str) -> bool {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("RRCKI_E2E_NOTIFY_LOG") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{title}\t{body}");
+        }
+        return true;
+    }
+    let _ = (title, body);
+    false
+}
+
+/// Всплывающее уведомление ОС.
+pub fn notify(app: &AppHandle, title: &str, body: &str) -> Result<()> {
+    if notify_test_log(title, body) {
+        return Ok(());
+    }
+    tauri::api::notification::Notification::new(&app.config().tauri.bundle.identifier)
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| AppError::Other(format!("Уведомление не показано: {e}")))
+}

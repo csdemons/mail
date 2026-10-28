@@ -27,7 +27,9 @@ import MailFilters from './MailFilters'
 import { AttachmentList } from './AttachmentViewer'
 import MessageBody from './MessageBody'
 import { buildDraft, ensureArchive } from './mailActions'
-import FolderPicker, { trashFor } from './FolderPicker'
+import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
+import { appInFront, loadPrefs, notify, savePrefs } from './notifications'
+import type { NotifyPrefs } from './notifications'
 
 const ROLE_LABELS: Partial<Record<FolderRole, string>> = {
   inbox: 'Входящие',
@@ -162,14 +164,52 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     return () => clearTimeout(t)
   }, [notice])
 
-  // Счётчик непрочитанного в чате, пока открыт другой раздел.
+  // Уведомления: настройки, интервал проверки, текущий раздел/папка для фоновых проверок.
+  const [prefs, setPrefs] = useState<NotifyPrefs>(loadPrefs)
+  const prefsRef = useRef(prefs)
+  prefsRef.current = prefs
+  const pollSecs = useRef(60)
+  const moduleRef = useRef(module)
+  moduleRef.current = module
+  useEffect(() => { api.notifyPollSecs().then((s) => { pollSecs.current = Math.max(5, s) }).catch(() => undefined) }, [])
+
+  function updatePrefs(patch: Partial<NotifyPrefs>) {
+    setPrefs((p) => {
+      const next = { ...p, ...patch }
+      savePrefs(next)
+      return next
+    })
+  }
+
+  // Чат: счётчик непрочитанного и уведомления о новых сообщениях (в любом разделе).
+  const roomSeen = useRef(new Map<string, { unread: number; activity: number }>())
   useEffect(() => {
-    if (!ncStatus?.connected || module === 'chat') return
-    const tick = () => api.talkRooms().then((r) => setChatUnread(r.reduce((n, x) => n + x.unread, 0))).catch(() => undefined)
+    if (!ncStatus?.connected) return
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    async function tick() {
+      try {
+        const rooms = await api.talkRooms()
+        if (stopped) return
+        if (moduleRef.current !== 'chat') setChatUnread(rooms.reduce((n, x) => n + x.unread, 0))
+        const first = roomSeen.current.size === 0
+        for (const r of rooms) {
+          const prev = roomSeen.current.get(r.token)
+          roomSeen.current.set(r.token, { unread: r.unread, activity: r.lastActivity })
+          if (first || !prev || r.unread <= prev.unread) continue
+          if (!prefsRef.current.chat) continue
+          const text = prefsRef.current.preview ? (r.lastMessage ?? 'Новое сообщение') : 'Новое сообщение'
+          if (!appInFront()) notify(`Чат: ${r.name}`, text)
+          else if (moduleRef.current !== 'chat') setNotice(`Чат «${r.name}»: ${text}`)
+        }
+      } catch { /* сеть — попробуем в следующий раз */ }
+      finally {
+        if (!stopped) timer = setTimeout(tick, Math.min(pollSecs.current, 30) * 1000)
+      }
+    }
     void tick()
-    const t = setInterval(tick, 60000)
-    return () => clearInterval(t)
-  }, [ncStatus?.connected, module])
+    return () => { stopped = true; if (timer) clearTimeout(timer) }
+  }, [ncStatus?.connected])
 
   useEffect(() => {
     api.getProfile().then((p) => {
@@ -244,6 +284,73 @@ export default function App({ account, initialNotice, onLogout }: Props) {
 
   useEffect(() => { void loadFolders() }, [loadFolders])
   useEffect(() => { void loadFirstPage(folderId, false) }, [folderId, loadFirstPage])
+
+  // Новая почта: «Входящие» (свои и, по настройке, подключённых ящиков) проверяются по UID —
+  // надёжно; остальные папки (куда раскладывают фильтры) — по росту числа непрочитанных.
+  const folderIdRef = useRef(folderId)
+  folderIdRef.current = folderId
+  const unseenSeen = useRef(new Map<string, number>())
+  const lastUid = useRef(new Map<string, number>())
+  useEffect(() => {
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const skip = new Set(['trash', 'junk', 'sent', 'drafts'])
+    function announce(f: Folder, all: Folder[], items: MessageSummary[], count: number) {
+      const p = prefsRef.current
+      const where = f.role === 'inbox' && !sharedMailboxOf(all, f) ? '' : ` («${f.path}»)`
+      if (appInFront()) {
+        const m = items[0]
+        setNotice(count > 1 ? `Новых писем: ${count}${where}` : `Новое письмо от ${senderLabel(m)}${p.preview && m.subject ? `: ${m.subject}` : ''}`)
+        return
+      }
+      if (count > 3) {
+        notify(`Новых писем: ${count}${where}`, items.slice(0, 3).map((m) => senderLabel(m)).join(', '))
+        return
+      }
+      for (const m of items.slice(0, 3)) {
+        notify(`Новое письмо — ${senderLabel(m)}${where}`, p.preview ? (m.subject || '(без темы)') : 'Откройте Atom Mail, чтобы прочитать')
+      }
+    }
+    async function tick() {
+      try {
+        const list = await api.listFolders()
+        if (stopped) return
+        setFolders(list)
+        const p = prefsRef.current
+        for (const f of list) {
+          if (!f.selectable || skip.has(f.role)) continue
+          const shared = sharedMailboxOf(list, f) !== null
+          if (shared && !p.shared) { unseenSeen.current.set(f.id, f.unseen); continue }
+          const prev = unseenSeen.current.get(f.id)
+          unseenSeen.current.set(f.id, f.unseen)
+          const known = lastUid.current.get(f.id)
+          const isInbox = f.role === 'inbox'
+          // Не «Входящие»: смотрим только если непрочитанных стало больше.
+          if (!isInbox && (prev === undefined || f.unseen <= prev)) continue
+          if (isInbox && known === undefined) {
+            // Первая проверка — запоминаем последний UID, без уведомлений.
+            const base = await api.pollNewMail(f.id, 0, 0)
+            lastUid.current.set(f.id, base.lastUid)
+            continue
+          }
+          const after = known ?? 0
+          const growth = prev === undefined ? 0 : Math.max(0, f.unseen - prev)
+          const limit = after ? 5 : Math.min(growth, 5)
+          if (limit === 0) continue
+          const r = await api.pollNewMail(f.id, after, limit)
+          lastUid.current.set(f.id, Math.max(after, r.lastUid))
+          if (r.items.length === 0) continue
+          if (f.id === folderIdRef.current) void loadFirstPage(f.id, true)
+          if (p.mail) announce(f, list, r.items, Math.max(r.items.length, growth))
+        }
+      } catch { /* сеть — попробуем в следующий раз */ }
+      finally {
+        if (!stopped) timer = setTimeout(tick, pollSecs.current * 1000)
+      }
+    }
+    timer = setTimeout(tick, 3000)
+    return () => { stopped = true; if (timer) clearTimeout(timer) }
+  }, [loadFirstPage])
 
   // Действия в окне письма (ответ, флажок, архив, удаление) видны в списке после возврата.
   useEffect(() => {
@@ -965,6 +1072,14 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             <div className="settings-actions"><button className="primary-button" disabled={profileBusy} onClick={() => void saveProfile()}>Сохранить</button></div>
           </div>
           {ncStatus && <div className="settings-section"><strong>Nextcloud (Deck, Talk)</strong><NcConnect status={ncStatus} onChange={setNcStatus} compact /></div>}
+          <div className="settings-section notify-settings">
+            <strong>Уведомления</strong>
+            <label><input type="checkbox" checked={prefs.mail} onChange={(e) => updatePrefs({ mail: e.target.checked })} /> О новых письмах</label>
+            <label><input type="checkbox" checked={prefs.shared} disabled={!prefs.mail} onChange={(e) => updatePrefs({ shared: e.target.checked })} /> Включая подключённые (общие) ящики</label>
+            <label><input type="checkbox" checked={prefs.chat} onChange={(e) => updatePrefs({ chat: e.target.checked })} /> О сообщениях в чате</label>
+            <label><input type="checkbox" checked={prefs.preview} onChange={(e) => updatePrefs({ preview: e.target.checked })} /> Показывать тему письма и текст сообщения</label>
+            <button className="text-button" onClick={() => notify('Atom Mail', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
+          </div>
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">
             <button className="secondary-button" onClick={() => { setShowSettings(false); setFilterSeed(null); setShowFilters(true) }}><ListFilter size={16} /> Фильтры почты</button>

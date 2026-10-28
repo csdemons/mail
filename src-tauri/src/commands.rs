@@ -1005,6 +1005,40 @@ pub async fn save_attachment(
     Ok(Some(path.display().to_string()))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewMail {
+    items: Vec<imap::MessageSummary>,
+    last_uid: u32,
+}
+
+/// Новые непрочитанные письма папки после `after_uid` (для уведомлений).
+#[tauri::command]
+pub async fn poll_new_mail(state: State<'_, AppState>, folder: String, after_uid: u32, limit: u32) -> Result<NewMail> {
+    let (items, last_uid) = with_conn!(state, c => imap::new_unseen(c, &folder, after_uid, limit))?;
+    Ok(NewMail { items, last_uid })
+}
+
+/// Всплывающее уведомление ОС. Текст ограничен — уведомления не для длинных писем.
+#[tauri::command]
+pub async fn notify(app: AppHandle, title: String, body: String) -> Result<()> {
+    let cut = |s: &str, n: usize| -> String {
+        let t: String = s.chars().take(n).collect();
+        if s.chars().count() > n { format!("{t}…") } else { t }
+    };
+    host::notify(&app, &cut(&title, 80), &cut(&body, 240))
+}
+
+/// Как часто проверять почту и чат для уведомлений (секунды).
+#[tauri::command]
+pub fn notify_poll_secs() -> u32 {
+    #[cfg(debug_assertions)]
+    if let Some(s) = std::env::var("RRCKI_E2E_POLL_SECS").ok().and_then(|v| v.parse().ok()) {
+        return s;
+    }
+    60
+}
+
 /// Аватар Nextcloud: `kind` = "user" (ID пользователя) или "room" (токен беседы Talk).
 #[tauri::command]
 pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> Result<Option<String>> {
@@ -1752,6 +1786,9 @@ macro_rules! app_commands {
             crate::commands::attachment_data,
             crate::commands::message_html_remote,
             crate::commands::nc_avatar,
+            crate::commands::poll_new_mail,
+            crate::commands::notify,
+            crate::commands::notify_poll_secs,
             crate::commands::close_window,
             crate::commands::mail_filters_get,
             crate::commands::mail_filters_save,

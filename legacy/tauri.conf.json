@@ -7,17 +7,28 @@
   },
   "package": {
     "productName": "RRCKI Mail",
-    "version": "0.9.2"
+    "version": "0.10.0"
   },
   "tauri": {
     "allowlist": {
       "all": false,
-      "dialog": { "all": false, "open": true, "save": true }
+      "dialog": {
+        "all": false,
+        "open": true,
+        "save": true
+      },
+      "notification": {
+        "all": true
+      }
     },
     "bundle": {
       "active": false,
       "identifier": "ru.rrcki.mail",
-      "icon": ["../src-tauri/icons/32x32.png", "../src-tauri/icons/128x128.png", "../src-tauri/icons/icon.ico"]
+      "icon": [
+        "../src-tauri/icons/32x32.png",
+        "../src-tauri/icons/128x128.png",
+        "../src-tauri/icons/icon.ico"
+      ]
     },
     "security": {
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"

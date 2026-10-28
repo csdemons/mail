@@ -732,3 +732,8 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .deck-filter-count { white-space: nowrap; }
 .sender-avatar.deck-avatar { width: 20px; height: 20px; font-size: 9px; margin-left: -4px; border: 1px solid var(--surface); }
 .deck-chip .sender-avatar.deck-avatar { margin-left: 0; border: 0; }
+
+/* Настройки уведомлений */
+.notify-settings { display: flex; flex-direction: column; gap: 6px; }
+.notify-settings label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.notify-settings .text-button { align-self: flex-start; padding-left: 0; }

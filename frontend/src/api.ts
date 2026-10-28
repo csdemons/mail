@@ -121,6 +121,10 @@ export const api = {
     invoke<MessagePage>('list_messages', { folder, beforeUid, limit }),
   createFolder: (name: string) => invoke<void>('create_folder', { name }),
   openMessageWindow: (folder: string, uid: number, title: string) => invoke<void>('open_message_window', { folder, uid, title }),
+  pollNewMail: (folder: string, afterUid: number, limit: number) =>
+    invoke<{ items: MessageSummary[]; lastUid: number }>('poll_new_mail', { folder, afterUid, limit }),
+  notify: (title: string, body: string) => invoke<void>('notify', { title, body }),
+  notifyPollSecs: () => invoke<number>('notify_poll_secs'),
   ncAvatar: (kind: 'user' | 'room', id: string) => invoke<string | null>('nc_avatar', { kind, id }),
   messageHtmlRemote: (folder: string, uid: number) => invoke<string>('message_html_remote', { folder, uid }),
   attachmentData: (folder: string, uid: number, index: number) => invoke<{ name: string; data: string }>('attachment_data', { folder, uid, index }),
