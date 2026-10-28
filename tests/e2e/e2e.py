@@ -999,7 +999,7 @@ try:
     # Фильтры почты (SOGo): адрес сервера SOGo — мок на 8444.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     dav = [i for i in d.find_elements(By.CSS_SELECTOR, '.settings-modal .login-field input') if 'автоопределение' in (i.get_attribute('placeholder') or '')][0]
-    clear(dav); dav.send_keys('https://localhost:8444/')
+    set_value(d, dav, 'https://localhost:8444/')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if b.text == 'Сохранить'][0].click()
     time.sleep(1)
     [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if 'Фильтры почты' in b.text][0].click()
