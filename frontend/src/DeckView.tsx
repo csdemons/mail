@@ -1,15 +1,61 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarClock, CheckCircle2, ExternalLink, FileText, ListChecks, Lock, MessageSquare, Paperclip, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { CalendarClock, CheckCircle2, ExternalLink, FileText, Filter, ListChecks, Lock, MessageSquare, Paperclip, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
 import { addItem, checklistProgress, parseChecklist, removeItem, renameItem, toggleItem } from './checklist'
+import Avatar from './Avatar'
 import type { DeckAttachment, DeckBoard, DeckBoardDetails, DeckCard, DeckComment, DeckLabel, DeckStack, DeckUser } from './types'
 
 const LAST_BOARD_KEY = 'rrcki-mail.deck-board'
+const FILTER_KEY = 'rrcki-mail.deck-filter.'
 
-function initials(name: string) {
-  const p = name.trim().split(/\s+/)
-  return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '?'
+/** Фильтр карточек, как в веб-Deck: исполнитель, метка, срок, выполненные, текст. */
+interface CardFilter {
+  /** 'all' | 'me' | 'none' | 'u:<uid>' */
+  who: string
+  label: number
+  due: 'all' | 'overdue' | 'today' | 'week' | 'none'
+  hideDone: boolean
+  q: string
+}
+const NO_FILTER: CardFilter = { who: 'all', label: 0, due: 'all', hideDone: false, q: '' }
+
+function loadFilter(boardId: number | null): CardFilter {
+  if (boardId === null) return NO_FILTER
+  try {
+    const raw = localStorage.getItem(FILTER_KEY + boardId)
+    if (raw) return { ...NO_FILTER, ...(JSON.parse(raw) as Partial<CardFilter>), q: '' }
+  } catch { /* нет хранилища */ }
+  return NO_FILTER
+}
+
+function isFiltered(f: CardFilter) {
+  return f.who !== 'all' || f.label !== 0 || f.due !== 'all' || f.hideDone || f.q.trim() !== ''
+}
+
+function cardMatches(c: DeckCard, f: CardFilter, me: string): boolean {
+  if (f.hideDone && c.done) return false
+  if (f.who === 'me' && !c.assigned.some((a) => a.uid === me)) return false
+  if (f.who === 'none' && c.assigned.length > 0) return false
+  if (f.who.startsWith('u:') && !c.assigned.some((a) => a.uid === f.who.slice(2))) return false
+  if (f.label && !c.labels.some((l) => l.id === f.label)) return false
+  if (f.due !== 'all') {
+    const d = c.duedate ? new Date(c.duedate) : null
+    const valid = d !== null && !Number.isNaN(d.getTime())
+    if (f.due === 'none') {
+      if (valid) return false
+    } else {
+      if (!valid || !d) return false
+      const now = new Date()
+      const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime()
+      if (f.due === 'overdue' && (c.done || d.getTime() >= now.getTime())) return false
+      if (f.due === 'today' && d.getTime() >= endOfDay) return false
+      if (f.due === 'week' && d.getTime() >= endOfDay + 6 * 86400000) return false
+    }
+  }
+  const q = f.q.trim().toLowerCase()
+  if (q && !`${c.title} ${c.description} ${c.labels.map((l) => l.title).join(' ')} ${c.assigned.map((a) => a.name).join(' ')}`.toLowerCase().includes(q)) return false
+  return true
 }
 
 function dueInfo(card: DeckCard) {
@@ -48,6 +94,11 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   const columnsRef = useRef<HTMLDivElement>(null)
   const moveRef = useRef<(card: DeckCard, stack: number) => Promise<void>>(async () => {})
 
+  const [filter, setFilter] = useState<CardFilter>(() => loadFilter(boardId))
+  const [details, setDetails] = useState<DeckBoardDetails | null>(null)
+  const [me, setMe] = useState('')
+  useEffect(() => { api.ncStatus().then((s) => setMe(s.uid || s.login)).catch(() => undefined) }, [])
+
   const board = boards?.find((b) => b.id === boardId) ?? null
   const editable = Boolean(board?.canEdit)
 
@@ -78,8 +129,36 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
     if (boardId === null) return
     try { localStorage.setItem(LAST_BOARD_KEY, String(boardId)) } catch { /* не критично */ }
     setSelected(null)
+    setFilter(loadFilter(boardId))
+    setDetails(null)
+    api.deckBoardDetails(boardId).then(setDetails).catch(() => undefined)
     void loadStacks(boardId)
   }, [boardId, loadStacks])
+
+  function updateFilter(patch: Partial<CardFilter>) {
+    setFilter((f) => {
+      const next = { ...f, ...patch }
+      try { if (boardId !== null) localStorage.setItem(FILTER_KEY + boardId, JSON.stringify({ ...next, q: '' })) } catch { /* не критично */ }
+      return next
+    })
+  }
+
+  // Участники доски и все, кто назначен на карточки (на случай, если участник ушёл с доски).
+  const people = useMemo(() => {
+    const map = new Map<string, DeckUser>()
+    for (const u of details?.users ?? []) map.set(u.uid, u)
+    for (const c of stacks.flatMap((s) => s.cards)) for (const a of c.assigned) if (!map.has(a.uid)) map.set(a.uid, a)
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+  }, [details, stacks])
+  const labels = useMemo(() => {
+    const map = new Map<number, DeckLabel>()
+    for (const l of details?.labels ?? []) map.set(l.id, l)
+    for (const c of stacks.flatMap((s) => s.cards)) for (const l of c.labels) if (!map.has(l.id)) map.set(l.id, l)
+    return [...map.values()]
+  }, [details, stacks])
+  const filtered = isFiltered(filter)
+  const totalCards = stacks.reduce((n, s) => n + s.cards.length, 0)
+  const shownCards = filtered ? stacks.reduce((n, s) => n + s.cards.filter((c) => cardMatches(c, filter, me)).length, 0) : totalCards
 
   async function addCard(stackId: number) {
     if (!board || !newTitle.trim()) { setAdding(null); return }
@@ -217,6 +296,33 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           {board && <button className="icon-button soft" aria-label="Обновить" onClick={() => void loadStacks(board.id)}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button>}
           {editable && <button className="secondary-button" onClick={() => void addStack()}><Plus size={15} /> Колонка</button>}
         </div>
+        {board && <div className="deck-filters" role="search" aria-label="Фильтр карточек">
+          <Filter size={15} className="muted" />
+          <select aria-label="Исполнитель" value={filter.who} onChange={(e) => updateFilter({ who: e.target.value })} className={filter.who !== 'all' ? 'active' : ''}>
+            <option value="all">Все исполнители</option>
+            <option value="me">Мои карточки</option>
+            <option value="none">Без исполнителя</option>
+            {people.length > 0 && <option disabled>──────────</option>}
+            {people.map((u) => <option key={u.uid} value={`u:${u.uid}`}>{u.name}</option>)}
+          </select>
+          <select aria-label="Метка" value={filter.label} onChange={(e) => updateFilter({ label: Number(e.target.value) })} className={filter.label ? 'active' : ''}>
+            <option value={0}>Все метки</option>
+            {labels.map((l) => <option key={l.id} value={l.id}>{l.title}</option>)}
+          </select>
+          <select aria-label="Срок" value={filter.due} onChange={(e) => updateFilter({ due: e.target.value as CardFilter['due'] })} className={filter.due !== 'all' ? 'active' : ''}>
+            <option value="all">Любой срок</option>
+            <option value="overdue">Просрочено</option>
+            <option value="today">Сегодня</option>
+            <option value="week">На 7 дней</option>
+            <option value="none">Без срока</option>
+          </select>
+          <label className="deck-filter-check"><input type="checkbox" checked={filter.hideDone} onChange={(e) => updateFilter({ hideDone: e.target.checked })} /> Скрыть выполненные</label>
+          <label className="search-box deck-search"><Search size={15} /><input aria-label="Поиск карточек" value={filter.q} onChange={(e) => updateFilter({ q: e.target.value })} placeholder="Поиск по карточкам" /></label>
+          {filtered && <>
+            <span className="muted deck-filter-count">Показано {shownCards} из {totalCards}</span>
+            <button className="text-button" onClick={() => updateFilter(NO_FILTER)}><X size={14} /> Сбросить</button>
+          </>}
+        </div>}
         {error && <div className="inline-warning" role="alert">Deck: {error}</div>}
         <div className="deck-columns" ref={columnsRef}>
           {stacks.map((s) => (
@@ -225,9 +331,9 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
               data-stack={s.id}
               className={`deck-column ${dropStack === s.id && dragging?.stackId !== s.id ? 'drop' : ''}`}
             >
-              <header><strong>{s.title}</strong><span>{s.cards.length}</span></header>
+              <header><strong>{s.title}</strong><span>{filtered ? `${s.cards.filter((c) => cardMatches(c, filter, me)).length}/${s.cards.length}` : s.cards.length}</span></header>
               <div className="deck-cards">
-                {s.cards.map((c) => {
+                {(filtered ? s.cards.filter((c) => cardMatches(c, filter, me)) : s.cards).map((c) => {
                   const due = dueInfo(c)
                   return (
                     <button
@@ -249,7 +355,7 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
                         {c.commentsUnread > 0 && <span><MessageSquare size={12} /> {c.commentsUnread}</span>}
                         {(() => { const p = checklistProgress(c.description); return p.total > 0 && <span className={p.done === p.total ? 'all-done' : ''} title="Подзадачи"><ListChecks size={12} /> {p.done}/{p.total}</span> })()}
                         {c.attachmentCount > 0 && <span><Paperclip size={12} /> {c.attachmentCount}</span>}
-                        <span className="deck-people">{c.assigned.map((a) => <i key={a.uid} title={a.name}>{initials(a.name)}</i>)}</span>
+                        <span className="deck-people">{c.assigned.map((a) => <Avatar key={a.uid} id={a.uid} name={a.name} className="deck-avatar" />)}</span>
                       </div>
                     </button>
                   )
@@ -433,7 +539,7 @@ function CardPanel({ board, card, stacks, onClose, onChanged, onRefresh, onMove 
         <div className="deck-people-row">
           <span className="muted">Исполнители</span>
           <div className="deck-chips">
-            {assigned.map((u) => <span key={u.uid} className="deck-chip"><i>{initials(u.name)}</i>{u.name}{!ro && <button aria-label={`Снять ${u.name}`} onClick={() => void toggleUser(u)}><X size={11} /></button>}</span>)}
+            {assigned.map((u) => <span key={u.uid} className="deck-chip"><Avatar id={u.uid} name={u.name} className="deck-avatar" />{u.name}{!ro && <button aria-label={`Снять ${u.name}`} onClick={() => void toggleUser(u)}><X size={11} /></button>}</span>)}
             {!ro && <button className="deck-chip add" onClick={() => setPicker(picker === 'users' ? null : 'users')}><Plus size={12} /> {assigned.length ? '' : 'Назначить'}</button>}
           </div>
           {picker === 'users' && details && (
@@ -503,7 +609,7 @@ function CardPanel({ board, card, stacks, onClose, onChanged, onRefresh, onMove 
             {comments?.length === 0 && <div className="muted">Комментариев пока нет.</div>}
             {comments?.map((c) => (
               <div key={c.id} className={`deck-comment ${c.own ? 'own' : ''}`}>
-                <div className="sender-avatar">{initials(c.author)}</div>
+                <Avatar id={c.authorId} name={c.author} />
                 <div>
                   <div className="deck-comment-head"><b>{c.author}</b><span>{c.created ? new Date(c.created).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span>
                     {c.own && <button aria-label="Удалить комментарий" title="Удалить" onClick={() => void deleteComment(c)}><Trash2 size={12} /></button>}</div>

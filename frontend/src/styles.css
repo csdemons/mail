@@ -712,3 +712,23 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .html-foot { display: flex; justify-content: flex-end; }
 .html-foot .text-button { font-size: 12px; padding: 4px 8px; color: var(--muted, #667085); }
 .message-window .message-html { border: 0; border-radius: 0; }
+
+/* Логотип НИЦ «Курчатовский институт» */
+.brand-logo { width: 32px; height: 32px; object-fit: contain; flex: none; }
+.login-brand .brand-logo { width: 40px; height: 40px; }
+.about-block .brand-logo { width: 34px; height: 34px; }
+.splash .brand-logo { width: 56px; height: 56px; }
+
+/* Аватары Nextcloud */
+.sender-avatar.has-image { background: transparent; overflow: hidden; }
+.sender-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+
+/* Deck: фильтр карточек и аватары */
+.deck-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 14px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.deck-filters select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; max-width: 220px; }
+.deck-filters select.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
+.deck-filter-check { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.deck-search { width: 220px; flex: 0 1 220px; }
+.deck-filter-count { white-space: nowrap; }
+.sender-avatar.deck-avatar { width: 20px; height: 20px; font-size: 9px; margin-left: -4px; border: 1px solid var(--surface); }
+.deck-chip .sender-avatar.deck-avatar { margin-left: 0; border: 0; }

@@ -968,6 +968,17 @@ pub async fn save_attachment(
     Ok(Some(path.display().to_string()))
 }
 
+/// Аватар Nextcloud: `kind` = "user" (ID пользователя) или "room" (токен беседы Talk).
+#[tauri::command]
+pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> Result<Option<String>> {
+    let nc = nc(&state).await?;
+    match kind.as_str() {
+        "user" => nc.user_avatar(&id, 64).await,
+        "room" => nc.room_avatar(&id).await,
+        _ => Ok(None),
+    }
+}
+
 /// HTML письма с картинками из интернета. Картинки загружает программа (не страница),
 /// IMAP-соединение во время загрузки не занято.
 #[tauri::command]
@@ -1007,6 +1018,8 @@ pub struct NcStatus {
     url: String,
     connected: bool,
     login: String,
+    /// ID пользователя Nextcloud («Мои карточки» в Deck, свои сообщения в Talk).
+    uid: String,
 }
 
 async fn nc_status_of(state: &AppState) -> NcStatus {
@@ -1015,7 +1028,8 @@ async fn nc_status_of(state: &AppState) -> NcStatus {
     NcStatus {
         url: profile.as_ref().map(|p| p.nextcloud_url.clone()).unwrap_or_else(|| settings::DEFAULT_NEXTCLOUD_URL.into()),
         connected: nc.is_some(),
-        login: nc.map(|(c, _)| c.login).unwrap_or_default(),
+        login: nc.as_ref().map(|(c, _)| c.login.clone()).unwrap_or_default(),
+        uid: nc.map(|(_, u)| u).unwrap_or_default(),
     }
 }
 
@@ -1507,7 +1521,7 @@ pub async fn open_message_window(app: AppHandle, folder: String, uid: u32, title
     // Одно окно на письмо: повторный вызов поднимает уже открытое.
     let label = format!("msg-{:x}", folder.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)) ^ u64::from(uid));
     let title: String = title.chars().take(120).collect();
-    let title = if title.trim().is_empty() { "Письмо — RRCKI Mail".to_string() } else { format!("{title} — RRCKI Mail") };
+    let title = if title.trim().is_empty() { "Письмо — Atom Mail".to_string() } else { format!("{title} — Atom Mail") };
     crate::host::open_window(&app, &label, &title, &format!("window.__RRCKI_MESSAGE = {params};"))
 }
 
@@ -1698,6 +1712,7 @@ macro_rules! app_commands {
             crate::commands::open_message_window,
             crate::commands::attachment_data,
             crate::commands::message_html_remote,
+            crate::commands::nc_avatar,
             crate::commands::close_window,
             crate::commands::mail_filters_get,
             crate::commands::mail_filters_save,

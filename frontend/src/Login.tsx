@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { LockKeyhole, Mail, ServerCog } from 'lucide-react'
+import { LockKeyhole, ServerCog } from 'lucide-react'
 
 import { api, errorText } from './api'
+import kurchatovLogo from './assets/kurchatov-logo.png'
 import type { LoginResult, Settings } from './types'
 
 const DEFAULT_HOST = 'rp.nrcki.ru'
@@ -59,8 +60,8 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
-          <div className="brand-mark"><Mail size={19} fill="currentColor" /></div>
-          <span>RRCKI Mail</span>
+          <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
+          <span>Atom Mail</span>
         </div>
         <h1>Вход в почту</h1>
         <p className="login-hint">Используйте корпоративную учётную запись почтового сервера.</p>
@@ -118,7 +119,7 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
           <LockKeyhole size={16} /> {busy ? 'Подключение…' : 'Войти'}
         </button>
         <p className="login-note">Соединение защищено TLS. Пароль не передаётся никуда, кроме почтового сервера.</p>
-        <p className="login-version">RRCKI Mail{version ? ` ${version}` : ''} · НИЦ «Курчатовский институт»</p>
+        <p className="login-version">Atom Mail{version ? ` ${version}` : ''} · НИЦ «Курчатовский институт»</p>
       </form>
     </div>
   )

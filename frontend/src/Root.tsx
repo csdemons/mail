@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Mail } from 'lucide-react'
 
 import { api, errorText } from './api'
 import App from './App'
 import MessageWindow from './MessageWindow'
 import Login from './Login'
 import UpdateNotice from './UpdateNotice'
+import kurchatovLogo from './assets/kurchatov-logo.png'
 import type { Account, Settings } from './types'
 
 type State =
@@ -43,7 +43,7 @@ function MainRoot() {
   if (state.kind === 'starting') {
     return (
       <div className="splash">
-        <div className="brand-mark"><Mail size={19} fill="currentColor" /></div>
+        <img className="brand-logo" src={kurchatovLogo} alt="" />
         <span>Подключение к почте…</span>
       </div>
     )

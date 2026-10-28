@@ -45,7 +45,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
     api.listFolders().then(setFolders).catch(() => undefined)
     api.getMessage(folder, uid).then((m) => {
       setDetail(m)
-      document.title = `${m.subject || '(без темы)'} — RRCKI Mail`
+      document.title = `${m.subject || '(без темы)'} — Atom Mail`
       if (m.unread) {
         api.setFlag(folder, uid, 'seen', true).then(() => setDetail((d) => d && { ...d, unread: false })).catch(() => undefined)
       }

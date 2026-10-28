@@ -50,6 +50,16 @@ fn http(timeout: Duration) -> Result<Client> {
         .map_err(|e| AppError::Other(format!("HTTP-клиент: {e}")))
 }
 
+/// Один сегмент пути URL (ID пользователя может содержать пробелы, @, кириллицу).
+fn seg(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'@' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 fn net_error(e: reqwest::Error) -> AppError {
     let mut detail = e.to_string();
     let mut src = std::error::Error::source(&e);
@@ -198,6 +208,49 @@ impl Nc {
         let id = d["id"].as_str().unwrap_or(&self.creds.login).to_string();
         let name = d["displayname"].as_str().or(d["display-name"].as_str()).unwrap_or(&id).to_string();
         Ok((id, name))
+    }
+
+    /// Картинка (аватар) по пути Nextcloud → `data:`-URL. `None` — картинки нет.
+    pub async fn image(&self, path: &str) -> Result<Option<String>> {
+        use base64::Engine as _;
+        let url = self.creds.base.join(path).map_err(|e| AppError::Other(e.to_string()))?;
+        let resp = self
+            .client
+            .get(url)
+            .basic_auth(&self.creds.login, Some(&self.creds.app_password))
+            .header("OCS-APIRequest", "true")
+            .send()
+            .await
+            .map_err(net_error)?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let ct = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !ct.starts_with("image/") {
+            return Ok(None);
+        }
+        let bytes = resp.bytes().await.map_err(net_error)?;
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Ok(None);
+        }
+        Ok(Some(format!("data:{ct};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes))))
+    }
+
+    /// Аватар пользователя (тот же, что в веб-интерфейсе; без своего — цветная буква Nextcloud).
+    pub async fn user_avatar(&self, uid: &str, size: u32) -> Result<Option<String>> {
+        let path = format!("index.php/avatar/{}/{size}", seg(uid));
+        self.image(&path).await
+    }
+
+    /// Аватар беседы Talk (группы; у личной беседы — аватар собеседника).
+    pub async fn room_avatar(&self, token: &str) -> Result<Option<String>> {
+        let path = format!("ocs/v2.php/apps/spreed/api/v1/room/{}/avatar", seg(token));
+        self.image(&path).await
     }
 
     pub async fn revoke(&self) {
@@ -527,6 +580,8 @@ pub struct TalkRoom {
     pub last_activity: i64,
     pub last_message: Option<String>,
     pub read_only: bool,
+    /// Личная беседа: ID собеседника (для аватара).
+    pub peer: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -751,6 +806,7 @@ impl Nc {
                 if who.is_empty() { t } else { format!("{who}: {t}") }
             }),
             read_only: int(&r["readOnly"]) == 1,
+            peer: (int(&r["type"]) == 1).then(|| text(&r["name"])).filter(|n| !n.is_empty()),
         }).filter(|r| r.kind != 4).collect()).unwrap_or_default();
         rooms.sort_by_key(|r| std::cmp::Reverse(r.last_activity));
         Ok(rooms)
@@ -1160,6 +1216,12 @@ impl Nc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encodes_path_segment() {
+        assert_eq!(seg("ivanov@nrcki.ru"), "ivanov@nrcki.ru");
+        assert_eq!(seg("Иван Петров/../x"), "%D0%98%D0%B2%D0%B0%D0%BD%20%D0%9F%D0%B5%D1%82%D1%80%D0%BE%D0%B2%2F..%2Fx");
+    }
 
     #[test]
     fn normalizes_base_url() {

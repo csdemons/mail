@@ -42,7 +42,7 @@ state = {
          'labels': [{'id': 1, 'title': 'Срочно', 'color': 'e9322d', 'boardId': 1}],
          'assignedUsers': [{'participant': {'uid': 'ivanov', 'displayname': 'Иванов Иван'}}], 'commentsUnread': 1, 'attachmentCount': 0},
         {'id': 2, 'stackId': 11, 'title': 'Настроить брокер X2Go', 'description': '', 'type': 'plain', 'order': 0,
-         'duedate': None, 'done': None, 'archived': False, 'owner': UID, 'labels': [], 'assignedUsers': [], 'commentsUnread': 0},
+         'duedate': None, 'done': None, 'archived': False, 'owner': UID, 'labels': [], 'assignedUsers': [{'participant': {'uid': UID, 'displayname': 'Тестовый Пользователь'}}], 'commentsUnread': 0},
         {'id': 3, 'stackId': 20, 'title': 'Плановые работы 1 ноября', 'description': '', 'type': 'plain', 'order': 0,
          'duedate': None, 'done': None, 'archived': False, 'owner': 'admin', 'labels': [], 'assignedUsers': [], 'commentsUnread': 0},
     ],
@@ -143,6 +143,22 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         p, q = u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
         base = f'https://localhost:{self.server.server_port}'
+
+        # --- Аватары: пользователя (PNG) и беседы Talk (SVG)
+        if method == 'GET' and p.startswith('/index.php/avatar/'):
+            import zlib, struct
+            uid = unquote(p.split('/')[3])
+            color = {'ivanov': (200, 60, 60), 'petrova': (60, 140, 200)}.get(uid, (90, 90, 90))
+            raw = b''.join(b'\x00' + bytes(color) * 8 for _ in range(8))
+            ch = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+            body = b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', 8, 8, 8, 2, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw)) + ch(b'IEND', b'')
+            state['avatars'] = state.get('avatars', 0) + 1
+            self.send_response(200); self.send_header('Content-Type', 'image/png'); self.send_header('Content-Length', str(len(body))); self.end_headers()
+            return self.wfile.write(body)
+        if method == 'GET' and p.startswith('/ocs/v2.php/apps/spreed/api/v1/room/') and p.endswith('/avatar'):
+            body = b'<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#0a7"/></svg>'
+            self.send_response(200); self.send_header('Content-Type', 'image/svg+xml'); self.send_header('Content-Length', str(len(body))); self.end_headers()
+            return self.wfile.write(body)
 
         # --- Внешняя картинка для HTML-письма (зелёный PNG 40×30)
         if method == 'GET' and p == '/e2e/remote.png':

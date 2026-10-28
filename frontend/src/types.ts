@@ -181,6 +181,8 @@ export interface NcStatus {
   url: string
   connected: boolean
   login: string
+  /** ID пользователя Nextcloud. */
+  uid: string
 }
 
 export interface DeckBoard {
@@ -231,6 +233,8 @@ export interface TalkRoom {
   lastActivity: number
   lastMessage: string | null
   readOnly: boolean
+  /** Личная беседа: ID собеседника. */
+  peer: string | null
 }
 
 export interface TalkMessage {

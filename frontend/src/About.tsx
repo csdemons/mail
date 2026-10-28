@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Mail } from 'lucide-react'
 
 import { api, VARIANT_LABEL } from './api'
+import kurchatovLogo from './assets/kurchatov-logo.png'
 import type { AppInfo } from './types'
 
 /** Блок «О программе» в настройках. */
@@ -11,9 +11,9 @@ export default function About() {
   return (
     <div className="settings-section about-block">
       <div className="about-head">
-        <div className="brand-mark"><Mail size={18} fill="currentColor" /></div>
+        <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
         <div>
-          <strong>RRCKI Mail{info ? ` ${info.version}` : ''}</strong>
+          <strong>Atom Mail{info ? ` ${info.version}` : ''}</strong>
           <span>{info ? VARIANT_LABEL[info.variant] ?? info.variant : ''}</span>
         </div>
       </div>

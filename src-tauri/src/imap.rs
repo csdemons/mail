@@ -1012,7 +1012,7 @@ pub async fn raw_command(conn: &mut Connection, command: &str) -> Vec<String> {
 pub async fn diagnostics(conn: &mut Connection, folder: Option<&str>) -> Result<String> {
     use std::fmt::Write;
     let mut r = String::new();
-    let _ = writeln!(r, "RRCKI Mail {} — диагностика IMAP", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(r, "Atom Mail {} — диагностика IMAP", env!("CARGO_PKG_VERSION"));
 
     let caps = conn.capabilities().await.unwrap_or_else(|e| vec![format!("ошибка: {e}")]);
     let _ = writeln!(r, "\n## CAPABILITY\n{}", caps.join(" "));

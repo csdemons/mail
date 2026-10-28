@@ -13,6 +13,7 @@ import type {
   Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
 } from './types'
 import About from './About'
+import kurchatovLogo from './assets/kurchatov-logo.png'
 import Composer from './Composer'
 import { CHECK_UPDATE_EVENT } from './UpdateNotice'
 import DeckView from './DeckView'
@@ -646,8 +647,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     <div className={`app-shell ${dark ? 'theme-dark' : ''}`}>
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark"><Mail size={19} fill="currentColor" /></div>
-          <span>RRCKI Mail</span>
+          <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
+          <span>Atom Mail</span>
         </div>
         <button className="account-switch" onClick={() => setShowAccountMenu(!showAccountMenu)}>
           <div className="account-avatar"><Users size={20} /></div>

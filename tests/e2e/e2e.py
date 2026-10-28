@@ -106,7 +106,7 @@ try:
     err = wait(d, '.login-error').text
     assert 'Неверный логин или пароль' in err, err; ok(f'wrong password -> «{err}»')
     ver = __import__('json').load(open(os.path.join(os.path.dirname(__file__), '../../src-tauri/tauri.conf.json')))['version']
-    W(d, 10).until(lambda d: f'RRCKI Mail {ver}' in d.find_element(By.CSS_SELECTOR, '.login-version').get_attribute('textContent'))
+    W(d, 10).until(lambda d: f'Atom Mail {ver}' in d.find_element(By.CSS_SELECTOR, '.login-version').get_attribute('textContent'))
     ok(f'login screen shows version {ver}')
     d.save_screenshot(f'{OUT}/01-login-error.png')
 
@@ -133,7 +133,7 @@ try:
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.update-card'))
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     about = W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.about-block'))
-    W(d, 10).until(lambda d: f'RRCKI Mail {ver}' in d.find_element(By.CSS_SELECTOR, '.about-block').get_attribute('textContent'))
+    W(d, 10).until(lambda d: f'Atom Mail {ver}' in d.find_element(By.CSS_SELECTOR, '.about-block').get_attribute('textContent'))
     t = about.get_attribute('textContent')
     assert 'НИЦ «Курчатовский институт»' in t and 'Юшков Дмитрий Олегович' in t, t; ok('settings: version and «О программе»')
     d.save_screenshot(f'{OUT}/12-about.png')
@@ -461,6 +461,24 @@ try:
     W(d, 20).until(lambda d: 'Проверить резервные копии' in d.find_elements(By.CSS_SELECTOR, '.deck-column')[1].get_attribute('textContent'))
     assert not d.find_elements(By.CSS_SELECTOR, '.deck-panel'), 'drag must not open the card'
     ok('card dragged to «В работе» with the mouse')
+    # Фильтр карточек: исполнитель, метка, сброс.
+    from selenium.webdriver.support.ui import Select
+    shown = lambda: sorted(c.find_element(By.CSS_SELECTOR, '.deck-card-title').get_attribute('textContent').strip() for c in d.find_elements(By.CSS_SELECTOR, '.deck-columns .deck-card'))
+    Select(d.find_element(By.CSS_SELECTOR, '.deck-filters select[aria-label="Исполнитель"]')).select_by_visible_text('Мои карточки')
+    W(d, 5).until(lambda d: shown() == ['Настроить брокер X2Go'])
+    Select(d.find_element(By.CSS_SELECTOR, '.deck-filters select[aria-label="Исполнитель"]')).select_by_visible_text('Иванов Иван')
+    W(d, 5).until(lambda d: shown() == ['Обновить RuPost'])
+    Select(d.find_element(By.CSS_SELECTOR, '.deck-filters select[aria-label="Исполнитель"]')).select_by_visible_text('Без исполнителя')
+    W(d, 5).until(lambda d: shown() == ['Проверить резервные копии'])
+    Select(d.find_element(By.CSS_SELECTOR, '.deck-filters select[aria-label="Исполнитель"]')).select_by_visible_text('Все исполнители')
+    Select(d.find_element(By.CSS_SELECTOR, '.deck-filters select[aria-label="Метка"]')).select_by_visible_text('Срочно')
+    W(d, 5).until(lambda d: shown() == ['Обновить RuPost'] and 'Показано 1 из 3' in d.find_element(By.CSS_SELECTOR, '.deck-filters').get_attribute('textContent'))
+    d.save_screenshot(f'{OUT}/25-deck-filter.png')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-filters button') if 'Сбросить' in b.text][0].click()
+    W(d, 5).until(lambda d: len(shown()) == 3)
+    ok('deck filter: my cards, by assignee, unassigned, by label, reset')
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.deck-card .sender-avatar.has-image img'))
+    ok('deck: assignee avatars loaded from Nextcloud')
     [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'Проверить резервные копии' in c.get_attribute('textContent')][0].click()
     panel = wait(d, '.deck-panel')
     set_value(d, panel.find_element(By.CSS_SELECTOR, 'textarea'), 'Veeam + NAS')
@@ -492,6 +510,9 @@ try:
     msgs = [m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')]
     assert '@Тестовый Пользователь' in msgs[0] and 'План работ.xlsx' in msgs[1], msgs
     assert [f.get_attribute('textContent') for f in d.find_elements(By.CSS_SELECTOR, '.talk-msg .talk-file span')] == ['План работ.xlsx']
+    W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row .sender-avatar.has-image img')) == 2)
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-msg .sender-avatar.has-image img'))
+    ok('talk: room and author avatars loaded from Nextcloud')
     assert not any('reaction' in m for m in msgs); ok('history: mentions and files rendered, reaction events hidden')
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.rail-badge')); ok('chat badge cleared after reading')
     box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')

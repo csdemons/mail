@@ -7,12 +7,8 @@ import {
 import { api, errorText, formatSize } from './api'
 import { EmojiPicker, QUICK_REACTIONS } from './Emoji'
 import TalkText from './TalkText'
+import Avatar from './Avatar'
 import type { DeckBoard, DeckStack, NcUser, PickedFile, TalkMention, TalkMessage, TalkRoom } from './types'
-
-function initials(name: string) {
-  const p = name.trim().split(/\s+/)
-  return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '?'
-}
 
 function timeOf(ts: number) {
   const d = new Date(ts * 1000)
@@ -280,7 +276,9 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
           {rooms === null && !error && <div className="empty-state"><span>Загрузка бесед…</span></div>}
           {visibleRooms.map((r) => (
             <button key={r.token} className={`message-row room-row ${r.token === token ? 'selected' : ''} ${r.unread ? 'unread' : ''}`} onClick={() => setToken(r.token)}>
-              <div className="sender-avatar">{r.kind === 1 ? initials(r.name) : <Users size={16} />}</div>
+              {r.kind === 1 && r.peer
+                ? <Avatar id={r.peer} name={r.name} />
+                : <Avatar kind="room" id={r.token} name={r.name} fallback={r.kind === 1 ? undefined : <Users size={16} />} />}
               <div className="message-summary">
                 <div className="message-topline"><span className="sender-name">{r.name}</span>{r.unread > 0 && <b className={`folder-count ${r.unreadMention ? 'mention' : ''}`}>{r.unread}</b>}</div>
                 <div className="message-preview">{r.lastMessage ?? ''}</div>
@@ -306,7 +304,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                 <div key={m.id} className="talk-system">{m.text} · {timeOf(m.timestamp)}</div>
               ) : (
                 <div key={m.id} className={`talk-msg ${m.own ? 'own' : ''} ${m.deleted ? 'deleted' : ''}`} data-id={m.id}>
-                  {!m.own && <div className="sender-avatar">{initials(m.author)}</div>}
+                  {!m.own && <Avatar id={m.authorId} name={m.author} />}
                   <div className="talk-bubble">
                     {!m.own && <div className="talk-author">{m.author}</div>}
                     {m.parentText && !m.deleted && <div className="talk-quote"><b>{m.parentAuthor}</b> {m.parentText}</div>}
@@ -369,7 +367,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                       <div className="talk-mentions popover">
                         {mentions.map((mn, i) => (
                           <button type="button" key={mn.insert} className={i === mentionSel ? 'active' : ''} onMouseDown={(e) => { e.preventDefault(); pickMention(mn) }}>
-                            <span className="sender-avatar">{mn.source === 'calls' ? <Users size={13} /> : initials(mn.label)}</span>{mn.source === 'calls' ? 'Все участники' : mn.label}
+                            {mn.source === 'calls' ? <span className="sender-avatar"><Users size={13} /></span> : <Avatar id={mn.source === 'users' ? mn.insert.replace(/^@"?|"$/g, '') : null} name={mn.label} />}{mn.source === 'calls' ? 'Все участники' : mn.label}
                           </button>
                         ))}
                       </div>
@@ -527,7 +525,7 @@ function NewChat({ onClose, onCreated }: { onClose: () => void; onCreated: (toke
         <div className="talk-user-list">
           {found.filter((u) => !picked.some((p) => p.id === u.id)).map((u) => (
             <button key={u.id} className="message-row" onClick={() => { setPicked((l) => [...l, u]); setQ('') }}>
-              <div className="sender-avatar">{initials(u.label)}</div>
+              <Avatar id={u.id} name={u.label} />
               <div className="message-summary"><span className="sender-name">{u.label}</span>{u.sub && <span className="message-preview">{u.sub}</span>}</div>
             </button>
           ))}

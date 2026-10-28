@@ -125,7 +125,7 @@ pub fn build(msg: Outgoing) -> Result<Message> {
         .from(from)
         .subject(msg.subject)
         .date_now()
-        .user_agent(format!("RRCKI Mail {}", env!("CARGO_PKG_VERSION")));
+        .user_agent(format!("Atom Mail {}", env!("CARGO_PKG_VERSION")));
     for to in &msg.to {
         builder = builder.to(parse_mailbox(to)?);
     }
