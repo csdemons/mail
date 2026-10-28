@@ -33,7 +33,15 @@ jobs:
         run: |
           app=$(node -p "require('./src-tauri/tauri.conf.json').version")
           grep -q "^## $app\$" CHANGELOG.md || { echo "CHANGELOG.md: нет раздела $app"; exit 1; }
-      - run: npm ci
+      - name: npm ci (с повтором при зависании)
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            timeout 420 npm ci --no-audit --no-fund && exit 0
+            echo "npm ci — попытка $i не удалась"; sleep 15
+          done
+          exit 1
       - run: npm --prefix frontend run typecheck
       - run: npm --prefix frontend run build
       - run: cargo clippy --all-targets -- -D warnings
@@ -66,7 +74,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libsecret-1-dev rpm
-      - run: npm ci
+      - name: npm ci (с повтором при зависании)
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            timeout 420 npm ci --no-audit --no-fund && exit 0
+            echo "npm ci — попытка $i не удалась"; sleep 15
+          done
+          exit 1
       - run: npx tauri build --bundles ${{ matrix.bundles }}
       - uses: actions/upload-artifact@v4
         with:
@@ -99,7 +115,15 @@ jobs:
       - name: Cross toolchain
         timeout-minutes: 20
         run: sudo apt-get update && sudo apt-get install -y mingw-w64 nsis
-      - run: npm ci
+      - name: npm ci (с повтором при зависании)
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            timeout 420 npm ci --no-audit --no-fund && exit 0
+            echo "npm ci — попытка $i не удалась"; sleep 15
+          done
+          exit 1
       - run: npm --prefix frontend run build
       - name: Build (x86_64-win7-windows-gnu, std from source)
         working-directory: src-tauri
@@ -144,7 +168,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: legacy }
-      - run: npm ci
+      - name: npm ci (с повтором при зависании)
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            timeout 420 npm ci --no-audit --no-fund && exit 0
+            echo "npm ci — попытка $i не удалась"; sleep 15
+          done
+          exit 1
       - name: Frontend (Tauri 1 IPC)
         run: npm --prefix frontend run build:legacy
       - name: Version from src-tauri/tauri.conf.json
