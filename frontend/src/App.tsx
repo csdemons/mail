@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Star, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter,
+  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink,
 } from 'lucide-react'
 
 import {
@@ -23,6 +23,7 @@ import type { NcStatus } from './types'
 import ContactsView from './ContactsView'
 import CalendarView from './CalendarView'
 import MailFilters from './MailFilters'
+import { buildDraft, ensureArchive } from './mailActions'
 import FolderPicker, { trashFor } from './FolderPicker'
 
 const ROLE_LABELS: Partial<Record<FolderRole, string>> = {
@@ -86,7 +87,17 @@ interface Props {
 }
 
 export default function App({ account, initialNotice, onLogout }: Props) {
-  const [dark, setDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
+  const [dark, setDark] = useState(() => {
+    try {
+      const saved = localStorage.getItem('rrcki-mail.theme')
+      if (saved) return saved === 'dark'
+    } catch { /* нет хранилища */ }
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  })
+  // Тема запоминается — окна писем открываются в той же теме.
+  useEffect(() => {
+    try { localStorage.setItem('rrcki-mail.theme', dark ? 'dark' : 'light') } catch { /* нет хранилища */ }
+  }, [dark])
   const [foldersOpen, setFoldersOpen] = useState(true)
   const [readerOpen, setReaderOpen] = useState(true)
   const [showAccountMenu, setShowAccountMenu] = useState(false)
@@ -115,6 +126,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const [dragInfo, setDragInfo] = useState<{ x: number; y: number; count: number; over: string | null } | null>(null)
   const msgDrag = useRef<{ x0: number; y0: number; items: MessageSummary[]; active: boolean } | null>(null)
   const suppressRowClick = useRef(false)
+  /** Было открыто отдельное окно письма — при возврате в главное окно список обновляется. */
+  const windowOpened = useRef(false)
   const [detail, setDetail] = useState<MessageDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
@@ -229,6 +242,19 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   useEffect(() => { void loadFolders() }, [loadFolders])
   useEffect(() => { void loadFirstPage(folderId, false) }, [folderId, loadFirstPage])
 
+  // Действия в окне письма (ответ, флажок, архив, удаление) видны в списке после возврата.
+  useEffect(() => {
+    let last = 0
+    function onFocus() {
+      if (!windowOpened.current || Date.now() - last < 3000) return
+      last = Date.now()
+      void loadFolders()
+      void loadFirstPage(folderId, true)
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [folderId, loadFirstPage, loadFolders])
+
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
@@ -303,9 +329,9 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     }
   }
 
-  async function toggleFlag(message: MessageSummary, flag: 'seen' | 'flagged') {
+  async function toggleFlag(message: MessageSummary, flag: 'seen' | 'flagged' | 'important') {
     const key = messageKey(message)
-    const field = flag === 'seen' ? 'unread' : 'flagged'
+    const field = flag === 'seen' ? 'unread' : flag
     const before = message[field]
     const after = !before
     patchMessage(key, { [field]: after })
@@ -381,7 +407,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
       const filterMatch =
         filter === 'Все' ? true :
         filter === 'Непрочитанные' ? m.unread :
-        filter === 'Помеченные' ? m.flagged :
+        filter === 'Важные' ? m.important :
+        filter === 'С флажком' ? m.flagged :
         m.hasAttachments
       if (!filterMatch) return false
       if (!q) return true
@@ -492,7 +519,18 @@ export default function App({ account, initialNotice, onLogout }: Props) {
       if (module !== 'mail' || draft || showSettings || showFilters || movePicker || confirmDelete) return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
-      if (e.key === 'Delete') {
+      const ctrl = e.ctrlKey || e.metaKey
+      if (ctrl && e.key.toLowerCase() === 'r') {
+        // Ctrl+R в WebView перезагрузил бы окно — здесь это «Ответить», как в Outlook.
+        e.preventDefault()
+        if (detail) openComposer(e.shiftKey ? 'replyAll' : 'reply')
+      } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        if (detail) openComposer('forward')
+      } else if (e.key === 'Enter' && selected && checked.size === 0 && (t === document.body || t?.classList.contains('message-row'))) {
+        e.preventDefault()
+        openInWindow(selected)
+      } else if (e.key === 'Delete') {
         e.preventDefault()
         requestDelete(actionTargets(), e.shiftKey)
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
@@ -552,37 +590,33 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     }
   }
 
-  function openComposer(mode: 'new' | 'reply' | 'forward') {
-    const m = mode === 'new' ? null : detail
-    const withPrefix = (prefix: string, subj: string) =>
-      new RegExp(`^${prefix}:`, 'i').test(subj.trim()) ? subj.trim() : `${prefix}: ${subj.trim()}`
-    if (!m) {
+  function openComposer(mode: 'new' | 'reply' | 'replyAll' | 'forward') {
+    if (mode === 'new' || !detail) {
       startDraft({ mode: 'new', to: '', cc: '', subject: '', body: '', inReplyTo: null, references: null })
       return
     }
-    const sender = m.fromName ? `${m.fromName} <${m.fromAddress}>` : m.fromAddress
-    const header = `${formatFullDate(m.date)}, ${senderLabel(m)} пишет:`
-    if (mode === 'reply') {
-      startDraft({
-        mode,
-        to: m.replyTo ?? sender,
-        cc: '',
-        subject: withPrefix('Re', m.subject),
-        body: `\n\n${header}\n${m.bodyText.split('\n').map((l) => `> ${l}`).join('\n')}`,
-        inReplyTo: m.messageId,
-        references: [m.references, m.messageId].filter(Boolean).join(' ') || null,
-      })
-    } else {
-      startDraft({
-        mode,
-        to: '',
-        cc: '',
-        subject: withPrefix('Fwd', m.subject),
-        body: `\n\n---------- Пересланное сообщение ----------\nОт: ${sender}\nДата: ${formatFullDate(m.date)}\nТема: ${m.subject}\nКому: ${m.to.join(', ')}\n\n${m.bodyText}`,
-        inReplyTo: null,
-        references: null,
-      })
+    startDraft(buildDraft(mode, detail, account.username))
+  }
+
+  async function archive(items: MessageSummary[]) {
+    if (items.length === 0) return
+    try {
+      const target = await ensureArchive(folders, items[0].folder)
+      if (target.id === items[0].folder) {
+        setNotice('Письмо уже в архиве.')
+        return
+      }
+      if (target.created) await loadFolders()
+      await moveTo(items, target.id)
+    } catch (error) {
+      setNotice(`Не удалось архивировать: ${errorText(error)}`)
     }
+  }
+
+  function openInWindow(m: MessageSummary) {
+    api.openMessageWindow(m.folder, m.uid, m.subject || '(без темы)')
+      .then(() => { windowOpened.current = true })
+      .catch((error) => setNotice(`Не удалось открыть окно: ${errorText(error)}`))
   }
 
   async function saveProfile() {
@@ -721,13 +755,14 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             </button>
           </div>
           <div className="filter-row">
-            {(['Все', 'Непрочитанные', 'Помеченные', 'С вложениями'] as MailFilter[]).map((item) => (
+            {(['Все', 'Непрочитанные', 'Важные', 'С флажком', 'С вложениями'] as MailFilter[]).map((item) => (
               <button key={item} className={`filter-chip ${filter === item ? 'active' : ''}`} onClick={() => setFilter(item)}>{item}</button>
             ))}
           </div>
           <div className="message-list-header"><span>{listTitle}</span><span>{total} {pluralLetters(total)}</span></div>
           {checked.size > 0 && <div className="bulk-bar">
             <span>Отмечено: {checked.size}</span>
+            <button className="text-button" onClick={() => void archive(actionTargets())}><Archive size={15} /> В архив</button>
             <button className="text-button" onClick={() => setMovePicker(actionTargets())}><FolderInput size={15} /> Переместить</button>
             <button className="text-button danger-text" onClick={() => requestDelete(actionTargets())}><Trash2 size={15} /> Удалить</button>
             <button className="icon-button soft" aria-label="Снять отметку" onClick={() => setChecked(new Set())}><X size={15} /></button>
@@ -749,6 +784,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
                   key={key}
                   className={`message-row ${selectedKey === key ? 'selected' : ''} ${checked.has(key) ? 'checked' : ''} ${m.unread ? 'unread' : ''}`}
                   onClick={(e) => onRowClick(e, m)}
+                  onDoubleClick={() => openInWindow(m)}
+                  title="Двойной щелчок — открыть в отдельном окне"
                   onPointerDown={(e) => startMessageDrag(e, m)}
                   onDragStart={(e) => e.preventDefault()}
                 >
@@ -758,7 +795,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
                     <div className="message-subject">{m.subject || '(без темы)'}</div>
                     <div className="message-meta">
                       {m.hasAttachments && <Paperclip size={13} />}
-                      {m.flagged && <Star size={13} className="flag-mark" fill="currentColor" />}
+                      {m.important && <CircleAlert size={13} className="important-mark" />}
+                      {m.flagged && <Flag size={13} className="flag-mark" fill="currentColor" />}
                       {m.answered && <Reply size={13} />}
                       {m.unread && <span className="unread-dot" />}
                     </div>
@@ -800,12 +838,21 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             <button className="icon-button soft mobile-back" onClick={() => setReaderOpen(false)} aria-label="Назад"><ChevronLeft /></button>
             <div className="reader-toolbar-spacer" />
             {selected && <>
-              <button className={`icon-button ${selected.flagged ? 'starred' : ''}`} aria-label="Пометить" title="Пометить" onClick={() => void toggleFlag(selected, 'flagged')}>
-                <Star size={19} fill={selected.flagged ? 'currentColor' : 'none'} />
+              <button className="icon-button" aria-label="Ответить" title="Ответить" disabled={!detail} onClick={() => openComposer('reply')}><Reply size={18} /></button>
+              <button className="icon-button" aria-label="Ответить всем" title="Ответить всем" disabled={!detail} onClick={() => openComposer('replyAll')}><ReplyAll size={18} /></button>
+              <button className="icon-button" aria-label="Переслать" title="Переслать" disabled={!detail} onClick={() => openComposer('forward')}><Forward size={18} /></button>
+              <span className="toolbar-sep" />
+              <button className={`icon-button ${selected.important ? 'important-on' : ''}`} aria-label="Важное" aria-pressed={selected.important} title={selected.important ? 'Снять «Важное»' : 'Пометить как важное'} onClick={() => void toggleFlag(selected, 'important')}>
+                <CircleAlert size={18} />
+              </button>
+              <button className={`icon-button ${selected.flagged ? 'flag-on' : ''}`} aria-label="Флажок" aria-pressed={selected.flagged} title={selected.flagged ? 'Снять флажок' : 'Поставить флажок (к исполнению)'} onClick={() => void toggleFlag(selected, 'flagged')}>
+                <Flag size={18} fill={selected.flagged ? 'currentColor' : 'none'} />
               </button>
               <button className="icon-button" aria-label="Непрочитанное" title={selected.unread ? 'Отметить прочитанным' : 'Отметить непрочитанным'} onClick={() => void toggleFlag(selected, 'seen')}>
                 <Mail size={18} />
               </button>
+              <span className="toolbar-sep" />
+              <button className="icon-button" aria-label="Архивировать" title="В архив" onClick={() => void archive([selected])}><Archive size={18} /></button>
               <button className="icon-button" aria-label="Переместить в папку" title="Переместить в папку…" onClick={() => setMovePicker([selected])}>
                 <FolderInput size={18} />
               </button>
@@ -815,6 +862,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               <button className="icon-button danger-icon" aria-label="Удалить письмо" title="Удалить (Del)" onClick={() => requestDelete([selected])}>
                 <Trash2 size={18} />
               </button>
+              <span className="toolbar-sep" />
+              <button className="icon-button" aria-label="Открыть в новом окне" title="Открыть в отдельном окне" onClick={() => openInWindow(selected)}><ExternalLink size={18} /></button>
             </>}
             <button className="icon-button soft" aria-label="Скрыть чтение" onClick={() => setReaderOpen(false)}><PanelRightClose size={18} /></button>
           </div>
@@ -845,6 +894,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             <article className="message-body plain">{detail.bodyText || '(пустое письмо)'}</article>
             <div className="reader-actions">
               <button className="primary-button" onClick={() => openComposer('reply')}><Reply size={16} /> Ответить</button>
+              <button className="secondary-button" onClick={() => openComposer('replyAll')}><ReplyAll size={16} /> Ответить всем</button>
               <button className="secondary-button" onClick={() => openComposer('forward')}><Forward size={16} /> Переслать</button>
             </div>
           </div> : <div className="empty-reader">
@@ -869,7 +919,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           onSent={(text) => {
             setDraft(null)
             setNotice(text)
-            if (draft.mode === 'reply' && detail) patchMessage(messageKey(detail), { answered: true })
+            if ((draft.mode === 'reply' || draft.mode === 'replyAll') && detail) patchMessage(messageKey(detail), { answered: true })
           }}
         />
       )}

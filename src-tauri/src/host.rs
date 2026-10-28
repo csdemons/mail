@@ -43,3 +43,20 @@ pub fn open_url(app: &AppHandle, url: &str) -> Result<()> {
         .open_url(url, None::<&str>)
         .map_err(|e| AppError::Other(format!("Не удалось открыть браузер: {e}")))
 }
+
+/// Отдельное окно приложения (тот же интерфейс); `init` выполняется до загрузки страницы.
+pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Result<()> {
+    if let Some(w) = app.get_webview_window(label) {
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
+        .title(title)
+        .inner_size(920.0, 820.0)
+        .min_inner_size(480.0, 400.0)
+        .initialization_script(init)
+        .build()
+        .map_err(|e| AppError::Other(format!("Не удалось открыть окно: {e}")))?;
+    Ok(())
+}

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use tauri::api::dialog::FileDialogBuilder;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::error::{AppError, Result};
 
@@ -34,4 +34,20 @@ pub async fn save_file(_app: &AppHandle, name: &str) -> Option<PathBuf> {
 
 pub fn open_url(_app: &AppHandle, url: &str) -> Result<()> {
     open::that_detached(url).map_err(|e| AppError::Other(format!("Не удалось открыть браузер: {e}")))
+}
+
+pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Result<()> {
+    if let Some(w) = app.get_window(label) {
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    tauri::WindowBuilder::new(app, label, tauri::WindowUrl::App("index.html".into()))
+        .title(title)
+        .inner_size(920.0, 820.0)
+        .min_inner_size(480.0, 400.0)
+        .initialization_script(init)
+        .build()
+        .map_err(|e| AppError::Other(format!("Не удалось открыть окно: {e}")))?;
+    Ok(())
 }

@@ -7,7 +7,7 @@ const SHARED_ROOTS = new Set(['shared', 'shared folders', 'other users', 'public
 const isSharedRoot = (f: Folder) => f.parent === null && !f.selectable && SHARED_ROOTS.has(f.id.toLowerCase())
 
 /** Подключённый ящик (shared/<ящик>), к которому относится папка; null — свой ящик. */
-function sharedMailbox(folders: Folder[], folder: Folder): string | null {
+export function sharedMailboxOf(folders: Folder[], folder: Folder): string | null {
   const byId = new Map(folders.map((f) => [f.id, f]))
   const chain: Folder[] = []
   for (let f: Folder | undefined = folder; f; f = f.parent ? byId.get(f.parent) : undefined) chain.unshift(f)
@@ -19,15 +19,15 @@ function sharedMailbox(folders: Folder[], folder: Folder): string | null {
 export function trashFor(folders: Folder[], folderId: string): Folder | null {
   const folder = folders.find((f) => f.id === folderId)
   if (!folder) return null
-  const box = sharedMailbox(folders, folder)
-  return folders.find((f) => f.role === 'trash' && f.selectable && sharedMailbox(folders, f) === box && (box !== null || f.system))
-    ?? folders.find((f) => f.role === 'trash' && f.selectable && sharedMailbox(folders, f) === box)
+  const box = sharedMailboxOf(folders, folder)
+  return folders.find((f) => f.role === 'trash' && f.selectable && sharedMailboxOf(folders, f) === box && (box !== null || f.system))
+    ?? folders.find((f) => f.role === 'trash' && f.selectable && sharedMailboxOf(folders, f) === box)
     ?? null
 }
 
 /** Папки своего ящика (фильтры сервера раскладывают письма только в них). */
 export function personalFolders(folders: Folder[]): Folder[] {
-  return folders.filter((f) => !isSharedRoot(f) && sharedMailbox(folders, f) === null)
+  return folders.filter((f) => !isSharedRoot(f) && sharedMailboxOf(folders, f) === null)
 }
 
 interface Props {

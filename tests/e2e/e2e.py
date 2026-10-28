@@ -169,7 +169,7 @@ try:
     assert 'alert' not in d.find_element(By.CSS_SELECTOR, '.message-body').text; ok('HTML rendered as text, script dropped')
 
     # 6. флажок
-    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Пометить"]').click(); time.sleep(1.5)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Флажок"]').click(); time.sleep(1.5)
     assert '\\Flagged' in server_flags(122); ok('\\Flagged set on server')
 
     # 7. кириллическая папка: раскрыть «Проекты», открыть «2026»
@@ -722,6 +722,67 @@ try:
     W(d, 10).until(lambda d: not row('E2E удалить C'))
     W(d, 10).until(lambda d: 'E2E удалить C' not in subjects('Trash'))
     ok('Del in Trash: confirmation, permanently expunged')
+
+    # Ответить всем, «Важное», архив, отдельное окно письма.
+    def flags_of(folder, subj):
+        M = imap(); M.select(f'"{folder}"')
+        _, ids = M.search(None, 'SUBJECT', f'"{subj}"')
+        if not ids[0]: M.logout(); return None
+        _, data = M.fetch(ids[0].split()[-1], '(FLAGS)'); M.logout(); return data[0].decode()
+    M = imap()
+    for subj in ('E2E reply-all', 'E2E window'):
+        msg = EmailMessage(); msg['From'] = 'Начальник <boss@nrcki.ru>'; msg['To'] = 'test@rrcki.ru, Петров <petrov@nrcki.ru>'
+        msg['Cc'] = 'Сидоров <sidorov@nrcki.ru>, test@rrcki.ru'; msg['Subject'] = subj; msg['Message-ID'] = f'<{subj.replace(" ", "-")}@nrcki.ru>'; msg.set_content('Длинный текст письма.\n' * 200)
+        M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+    M.logout()
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Входящие' in f.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: row('E2E reply-all') and row('E2E window'))
+    row('E2E reply-all')[0].click()
+    W(d, 10).until(lambda d: 'E2E reply-all' in d.find_element(By.CSS_SELECTOR, '.reader-title-row').get_attribute('textContent'))
+    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Ответить всем"]').click()
+    wait(d, '.compose-modal')
+    fields = d.find_elements(By.CSS_SELECTOR, '.compose-modal .recipient-field input')
+    to_v, cc_v = fields[0].get_attribute('value'), fields[1].get_attribute('value')
+    assert 'boss@nrcki.ru' in to_v and 'petrov@nrcki.ru' in to_v and 'test@rrcki.ru' not in to_v, to_v
+    assert 'sidorov@nrcki.ru' in cc_v and 'test@rrcki.ru' not in cc_v, cc_v
+    assert 'Re: E2E reply-all' == d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value')
+    ok('reply all: sender + recipients, own address excluded, Cc kept')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Важное"]').click()
+    W(d, 10).until(lambda d: '$label1' in (flags_of('INBOX', 'E2E reply-all') or ''))
+    W(d, 5).until(lambda d: row('E2E reply-all')[0].find_elements(By.CSS_SELECTOR, '.important-mark'))
+    ok('important: $label1 keyword set on server, mark in list')
+    d.save_screenshot(f'{OUT}/20-reader-toolbar.png')
+    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Архивировать"]').click()
+    W(d, 15).until(lambda d: not row('E2E reply-all'))
+    W(d, 10).until(lambda d: 'E2E reply-all' in subjects('Archive'))
+    W(d, 10).until(lambda d: any('Архив' in f.get_attribute('textContent') for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item')))
+    ok('archive: «Archive» created on server, message moved')
+    # Отдельное окно письма.
+    main = d.current_window_handle
+    row('E2E window')[0].click()
+    W(d, 10).until(lambda d: 'E2E window' in d.find_element(By.CSS_SELECTOR, '.reader-title-row').get_attribute('textContent'))
+    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Открыть в новом окне"]').click()
+    W(d, 15).until(lambda d: len(d.window_handles) == 2)
+    d.switch_to.window([h for h in d.window_handles if h != main][0])
+    W(d, 20).until(lambda d: 'E2E window' in d.find_element(By.CSS_SELECTOR, '.message-window .reader-title-row').get_attribute('textContent'))
+    d.find_element(By.CSS_SELECTOR, '.message-window button[aria-label="Крупнее"]').click()
+    assert d.execute_script("return getComputedStyle(document.querySelector('.message-window .message-body')).fontSize") == '16px'
+    d.save_screenshot(f'{OUT}/21-message-window.png')
+    d.find_element(By.CSS_SELECTOR, '.message-window button[aria-label="Флажок"]').click()
+    W(d, 10).until(lambda d: '\\Flagged' in (flags_of('INBOX', 'E2E window') or ''))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.message-window-toolbar button') if 'Всем' in b.text][0].click()
+    to_v = wait(d, '.compose-modal .recipient-field input').get_attribute('value')
+    assert 'boss@nrcki.ru' in to_v and 'petrov@nrcki.ru' in to_v, to_v
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    ok('message window: opens separately, font size, flag, reply all')
+    d.find_element(By.CSS_SELECTOR, '.message-window button[aria-label="Архивировать"]').click()
+    W(d, 15).until(lambda d: len(d.window_handles) == 1)
+    d.switch_to.window(main)
+    W(d, 10).until(lambda d: 'E2E window' in subjects('Archive'))
+    d.execute_script("window.dispatchEvent(new Event('focus'))")
+    W(d, 15).until(lambda d: not row('E2E window'))
+    ok('message window: archive closes window, main list refreshed')
 
     # Фильтры почты (SOGo): адрес сервера SOGo — мок на 8444.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()

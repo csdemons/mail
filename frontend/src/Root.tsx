@@ -3,6 +3,7 @@ import { Mail } from 'lucide-react'
 
 import { api, errorText } from './api'
 import App from './App'
+import MessageWindow from './MessageWindow'
 import Login from './Login'
 import UpdateNotice from './UpdateNotice'
 import type { Account, Settings } from './types'
@@ -13,6 +14,13 @@ type State =
   | { kind: 'ready'; account: Account; warning: string }
 
 export default function Root() {
+  // Окно отдельного письма: вход уже выполнен в главном окне (общее состояние бэкенда).
+  const msg = window.__RRCKI_MESSAGE
+  if (msg) return <MessageWindow folder={msg.folder} uid={msg.uid} />
+  return <MainRoot />
+}
+
+function MainRoot() {
   const [state, setState] = useState<State>({ kind: 'starting' })
 
   useEffect(() => {

@@ -19,6 +19,7 @@ interface Props {
 const TITLES: Record<Draft['mode'], string> = {
   new: 'Новое сообщение',
   reply: 'Ответить на письмо',
+  replyAll: 'Ответить всем',
   forward: 'Переслать письмо',
 }
 
@@ -160,12 +161,12 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
           <div><strong>{TITLES[draft.mode]}</strong><small>От: {from}</small></div>
           <button type="button" className="icon-button" disabled={busy} onClick={onClose} aria-label="Закрыть"><X size={18} /></button>
         </div>
-        <RecipientField label="Кому" value={to} onChange={setTo} contacts={contacts} autoFocus={draft.mode !== 'reply'} />
+        <RecipientField label="Кому" value={to} onChange={setTo} contacts={contacts} autoFocus={draft.mode !== 'reply' && draft.mode !== 'replyAll'} />
         {showCc
           ? <RecipientField label="Копия" value={cc} onChange={setCc} contacts={contacts} />
           : <button type="button" className="text-button add-cc" onClick={() => setShowCc(true)}>+ Копия</button>}
         <label className="compose-field"><span>Тема</span><input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
-        <RichEditor ref={editor} initialText={draft.body} autoFocus={draft.mode === 'reply'} onNotice={setError} />
+        <RichEditor ref={editor} initialText={draft.body} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} />
         {files.length > 0 && (
           <div className="compose-files">
             {files.map((f) => (

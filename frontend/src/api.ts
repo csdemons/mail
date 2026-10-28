@@ -119,6 +119,9 @@ export const api = {
   /** `beforeUid` — UID последнего показанного письма (курсор догрузки). */
   listMessages: (folder: string, beforeUid: number | null = null, limit = PAGE_SIZE) =>
     invoke<MessagePage>('list_messages', { folder, beforeUid, limit }),
+  createFolder: (name: string) => invoke<void>('create_folder', { name }),
+  openMessageWindow: (folder: string, uid: number, title: string) => invoke<void>('open_message_window', { folder, uid, title }),
+  closeWindow: () => invoke<void>('close_window'),
   moveMessages: (folder: string, uids: number[], target: string) => invoke<void>('move_messages', { folder, uids, target }),
   /** true — письма удалены безвозвратно (корзины нет или удаляли из неё). */
   deleteMessages: (folder: string, uids: number[], trash: string | null) => invoke<boolean>('delete_messages', { folder, uids, trash }),
@@ -127,7 +130,7 @@ export const api = {
   diagnostics: (folder: string | null) => invoke<string>('diagnostics', { folder }),
   getMessage: (folder: string, uid: number) =>
     invoke<MessageDetail>('get_message', { folder, uid }),
-  setFlag: (folder: string, uid: number, flag: 'seen' | 'flagged', value: boolean) =>
+  setFlag: (folder: string, uid: number, flag: 'seen' | 'flagged' | 'important', value: boolean) =>
     invoke<void>('set_flag', { folder, uid, flag, value }),
   saveAttachment: (folder: string, uid: number, index: number) =>
     invoke<string | null>('save_attachment', { folder, uid, index }),

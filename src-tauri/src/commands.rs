@@ -1456,6 +1456,31 @@ pub async fn mail_filters_save(state: State<'_, AppState>, filters: serde_json::
 // ---------------------------------------------------------------- перемещение и удаление писем
 
 #[tauri::command]
+pub async fn create_folder(state: State<'_, AppState>, name: String) -> Result<()> {
+    if name.trim().is_empty() || name.len() > 400 {
+        return Err(AppError::Other("Некорректное имя папки".into()));
+    }
+    with_conn!(state, c => imap::create_folder(c, &name))
+}
+
+/// Закрывает окно, из которого вызвана команда (окно письма после удаления/архивации).
+#[tauri::command]
+pub async fn close_window(window: tauri::Window) -> Result<()> {
+    window.close().map_err(|e| AppError::Other(format!("Не удалось закрыть окно: {e}")))
+}
+
+/// Открывает письмо в отдельном окне (удобно читать длинные письма).
+#[tauri::command]
+pub async fn open_message_window(app: AppHandle, folder: String, uid: u32, title: String) -> Result<()> {
+    let params = serde_json::json!({ "folder": folder, "uid": uid });
+    // Одно окно на письмо: повторный вызов поднимает уже открытое.
+    let label = format!("msg-{:x}", folder.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)) ^ u64::from(uid));
+    let title: String = title.chars().take(120).collect();
+    let title = if title.trim().is_empty() { "Письмо — RRCKI Mail".to_string() } else { format!("{title} — RRCKI Mail") };
+    crate::host::open_window(&app, &label, &title, &format!("window.__RRCKI_MESSAGE = {params};"))
+}
+
+#[tauri::command]
 pub async fn move_messages(state: State<'_, AppState>, folder: String, uids: Vec<u32>, target: String) -> Result<()> {
     with_conn!(state, c => imap::move_messages(c, &folder, &uids, &target))
 }
@@ -1638,6 +1663,9 @@ macro_rules! app_commands {
             crate::commands::nc_save_mail_attachment,
             crate::commands::app_info,
             crate::commands::move_messages,
+            crate::commands::create_folder,
+            crate::commands::open_message_window,
+            crate::commands::close_window,
             crate::commands::mail_filters_get,
             crate::commands::mail_filters_save,
             crate::commands::delete_messages,

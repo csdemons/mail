@@ -423,6 +423,8 @@ pub struct MessageSummary {
     pub date: Option<String>,
     pub unread: bool,
     pub flagged: bool,
+    /// «Важное»: ключевое слово `$label1` (метка «Важное» в SOGo/Thunderbird) или `$Important`.
+    pub important: bool,
     pub answered: bool,
     pub has_attachments: bool,
     pub size: u32,
@@ -566,6 +568,7 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
         date,
         unread: !has(&Flag::Seen),
         flagged: has(&Flag::Flagged),
+        important: fetch.flags().any(|f| matches!(f, Flag::Custom(k) if k.eq_ignore_ascii_case(IMPORTANT) || k.eq_ignore_ascii_case("$Important"))),
         answered: has(&Flag::Answered),
         has_attachments,
         size: fetch.size.unwrap_or(0),
@@ -821,7 +824,11 @@ pub async fn append_sent(conn: &mut Connection, raw: &[u8]) -> Result<String> {
 pub enum FlagKind {
     Seen,
     Flagged,
+    Important,
 }
+
+/// Ключевое слово «Важное» — совместимо с меткой «Важное» веб-почты SOGo.
+pub const IMPORTANT: &str = "$label1";
 
 pub async fn set_flag(
     conn: &mut Connection,
@@ -834,6 +841,8 @@ pub async fn set_flag(
     let name = match flag {
         FlagKind::Seen => "\\Seen",
         FlagKind::Flagged => "\\Flagged",
+        FlagKind::Important if value => IMPORTANT,
+        FlagKind::Important => "$label1 $Important",
     };
     let op = if value { "+FLAGS.SILENT" } else { "-FLAGS.SILENT" };
     let _: Vec<Fetch> = conn
@@ -846,6 +855,19 @@ pub async fn set_flag(
 }
 
 // ---------------------------------------------------------------- перемещение и удаление
+
+/// Создаёт папку (если её ещё нет) и подписывается на неё.
+pub async fn create_folder(conn: &mut Connection, name: &str) -> Result<()> {
+    if let Err(e) = conn.session.create(name).await {
+        // ALREADYEXISTS — не ошибка: папку могли создать в веб-почте.
+        let text = e.to_string();
+        if !text.to_ascii_uppercase().contains("ALREADYEXISTS") && !text.to_lowercase().contains("exists") {
+            return Err(e.into());
+        }
+    }
+    let _ = conn.session.subscribe(name).await;
+    Ok(())
+}
 
 fn uid_set(uids: &[u32]) -> String {
     uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")

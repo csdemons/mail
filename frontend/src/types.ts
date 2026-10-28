@@ -1,4 +1,4 @@
-export type MailFilter = 'Все' | 'Непрочитанные' | 'С вложениями' | 'Помеченные'
+export type MailFilter = 'Все' | 'Непрочитанные' | 'Важные' | 'С флажком' | 'С вложениями'
 
 export type FolderRole = 'inbox' | 'drafts' | 'sent' | 'archive' | 'junk' | 'trash' | 'other'
 
@@ -49,6 +49,8 @@ export interface MessageSummary {
   date: string | null
   unread: boolean
   flagged: boolean
+  /** «Важное» (метка $label1, как в веб-почте SOGo). */
+  important: boolean
   answered: boolean
   hasAttachments: boolean
   size: number
@@ -142,7 +144,7 @@ export interface EventsResult {
 }
 
 export interface Draft {
-  mode: 'new' | 'reply' | 'forward'
+  mode: 'new' | 'reply' | 'replyAll' | 'forward'
   to: string
   cc: string
   subject: string

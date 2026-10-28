@@ -651,3 +651,26 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .filter-header { width: 110px; }
 .filter-folder { padding: 7px 10px; flex: 1; justify-content: flex-start; overflow: hidden; text-overflow: ellipsis; }
 .filter-caption { font-size: 12px; font-weight: 600; color: var(--muted, #667085); }
+
+/* Ответ, флажок, «Важное», окно письма */
+.toolbar-sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; flex: none; }
+.icon-button.flag-on { color: #d92d20; }
+.icon-button.important-on { color: #e65100; }
+.theme-dark .icon-button.flag-on { color: #ff6b5f; }
+.theme-dark .icon-button.important-on { color: #ffa040; }
+.message-meta .flag-mark { color: #d92d20; }
+.message-meta .important-mark { color: #e65100; }
+.theme-dark .message-meta .flag-mark { color: #ff6b5f; }
+.theme-dark .message-meta .important-mark { color: #ffa040; }
+.reader-toolbar { flex-wrap: wrap; row-gap: 4px; }
+.reader-toolbar .icon-button:disabled { opacity: .4; }
+.message-window { display: flex; flex-direction: column; height: 100vh; }
+.message-window-toolbar { flex: none; gap: 6px; }
+.message-window-toolbar .secondary-button { padding: 7px 11px; }
+.message-window-content { flex: 1; overflow-y: auto; max-width: 980px; width: 100%; margin: 0 auto; }
+.message-window .message-body { line-height: 1.6; }
+.font-size-label { font-size: 12px; color: var(--muted, #667085); min-width: 18px; text-align: center; }
+@media print {
+  .message-window-toolbar, .toast { display: none !important; }
+  .message-window, .message-window-content { height: auto; overflow: visible; }
+}
