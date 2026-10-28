@@ -566,6 +566,63 @@ try:
     [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-new-modal button') if b.text == 'Написать'][0].click()
     W(d, 15).until(lambda d: 'Сидоров Олег' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').text)
     ok('new 1:1 conversation created and opened')
+
+    # 20. Файлы Nextcloud: папки, публичная ссылка, ссылка в письме, доступ сотруднику, загрузка, удаление.
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Файлы']]").click()
+    def file_row(name):
+        return [r for r in d.find_elements(By.CSS_SELECTOR, '.files-list .file-row') if name in r.get_attribute('textContent')]
+    W(d, 20).until(lambda d: file_row('Документы') and file_row('Talk'))
+    file_row('Документы')[0].find_element(By.CSS_SELECTOR, '.file-name.link').click()
+    W(d, 15).until(lambda d: file_row('Регламент.txt'))
+    file_row('Регламент.txt')[0].click()
+    panel = wait(d, '.file-panel')
+    [b for b in panel.find_elements(By.CSS_SELECTOR, '.share-add')][0].click()
+    [b for b in wait(d, '.share-form').find_elements(By.TAG_NAME, 'button') if 'Создать ссылку' in b.text][0].click()
+    W(d, 15).until(lambda d: any(x['share_type'] == 3 and x['path'] == '/Документы/Регламент.txt' for x in nc_mock('GET', '/test/state')['shares']))
+    W(d, 15).until(lambda d: 'https://localhost:8443/s/tok' in d.find_element(By.CSS_SELECTOR, '.file-panel .share-url').get_attribute('textContent'))
+    ok('public link created for a file')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.file-panel .file-actions button') if 'Отправить ссылкой' in b.text][0].click()
+    body = W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-body'))
+    W(d, 10).until(lambda d: 'https://localhost:8443/s/tok' in d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-body').get_attribute('innerHTML'))
+    assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Регламент.txt'
+    assert len([x for x in nc_mock('GET', '/test/state')['shares'] if x['share_type'] == 3]) == 1, 'existing link must be reused'
+    ok('«Отправить ссылкой»: new mail with the link, existing link reused')
+    # В том же письме — «Ссылка Nextcloud» из окна письма.
+    d.find_element(By.CSS_SELECTOR, '.nc-link-button').click()
+    W(d, 10).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.nc-picker-list .file-row') if 'Документы' in r.get_attribute('textContent')])
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.nc-picker-list .file-row') if 'Документы' in r.get_attribute('textContent')][0].click()
+    W(d, 10).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.nc-picker-list .file-row') if 'Регламент.txt' in r.get_attribute('textContent')])
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.nc-picker-list .file-row') if 'Регламент.txt' in r.get_attribute('textContent')][0].find_element(By.TAG_NAME, 'input').click()
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.nc-picker button') if 'Вставить' in b.get_attribute('textContent')][0].click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.nc-picker') and d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-body').get_attribute('innerHTML').count('/s/tok') >= 2)
+    ok('composer: link to a Nextcloud file inserted')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.compose-modal'))
+    # Доступ сотруднику.
+    file_row('Регламент.txt')[0].click()
+    panel = wait(d, '.file-panel')
+    panel.find_element(By.CSS_SELECTOR, '.share-section input[placeholder="Имя сотрудника"]').send_keys('Петр')
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.file-panel .share-user'))[0].click()
+    W(d, 10).until(lambda d: any(x['share_type'] == 0 and x['share_with'] == 'petrova' for x in nc_mock('GET', '/test/state')['shares']))
+    W(d, 10).until(lambda d: 'Петрова Анна' in d.find_element(By.CSS_SELECTOR, '.file-panel').get_attribute('textContent'))
+    ok('file shared with a colleague')
+    # Загрузка в текущую папку и удаление.
+    d.find_element(By.CSS_SELECTOR, '.files-upload').click()
+    W(d, 20).until(lambda d: '/Документы/отчёт-e2e.txt' in nc_mock('GET', '/test/state')['files'] and file_row('отчёт-e2e.txt'))
+    file_row('отчёт-e2e.txt')[0].click()
+    [b for b in wait(d, '.file-panel').find_elements(By.CSS_SELECTOR, '.file-actions button') if 'Удалить' in b.text][0].click()
+    accept_confirm(d)
+    W(d, 15).until(lambda d: '/Документы/отчёт-e2e.txt' not in nc_mock('GET', '/test/state')['files'] and not file_row('отчёт-e2e.txt'))
+    ok('file uploaded to the current folder and deleted')
+    d.save_screenshot(f'{OUT}/13-files.png')
+    # Вложение письма → Nextcloud (/Почта).
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Почта']]").click()
+    [f for f in W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, 'button.folder-item')) if 'Входящие' in f.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: any('Отчёт с вложением' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'Отчёт с вложением' in r.get_attribute('textContent')][0].click()
+    wait(d, '.attachment-cloud').click()
+    W(d, 20).until(lambda d: '/Почта/Отчёт за октябрь.txt' in nc_mock('GET', '/test/state')['files'])
+    ok('mail attachment saved to Nextcloud /Почта')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:

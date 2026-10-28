@@ -859,8 +859,14 @@ impl Nc {
         {
             let mut seg = url.path_segments_mut().map_err(|_| AppError::Other("Некорректный адрес Nextcloud".into()))?;
             seg.pop_if_empty().push(&self.me);
+            let mut any = false;
             for part in path.split('/').filter(|p| !p.is_empty()) {
                 seg.push(part);
+                any = true;
+            }
+            // Корень файлов — каталог: со слэшем на конце.
+            if !any {
+                seg.push("");
             }
         }
         Ok(url)
@@ -890,50 +896,264 @@ impl Nc {
     /// Имя не перезаписывает существующие файлы: «файл (1).pdf», «файл (2).pdf»…
     pub async fn talk_send_file(&self, token: &str, name: &str, data: Vec<u8>, caption: &str, reply_to: Option<i64>) -> Result<String> {
         let folder = self.talk_attachment_folder().await;
-        let mut acc = String::new();
-        for part in folder.split('/') {
-            acc.push('/');
-            acc.push_str(part);
-            let resp = self
-                .dav(Method::from_bytes(b"MKCOL").expect("MKCOL"), self.files_url(&acc)?)
-                .send()
-                .await
-                .map_err(net_error)?;
-            // 201 — создана, 405 — уже существует.
-            if !(resp.status().is_success() || resp.status() == StatusCode::METHOD_NOT_ALLOWED) {
-                return Err(status_error(resp.status(), "Папка вложений Talk"));
-            }
-        }
-        let mut stored = None;
-        for n in 0..100 {
-            let candidate = numbered_name(name, n);
-            let path = format!("{acc}/{candidate}");
-            let resp = self
-                .dav(Method::PUT, self.files_url(&path)?)
-                .header("If-None-Match", "*")
-                .header("Content-Type", mime_guess::from_path(name).first_or_octet_stream().essence_str())
-                .body(data.clone())
-                .send()
-                .await
-                .map_err(net_error)?;
-            match resp.status() {
-                s if s.is_success() => {
-                    stored = Some(path);
-                    break;
-                }
-                StatusCode::PRECONDITION_FAILED => continue,
-                StatusCode::INSUFFICIENT_STORAGE => return Err(AppError::Other("В Nextcloud закончилось место (квота)".into())),
-                StatusCode::PAYLOAD_TOO_LARGE => return Err(AppError::Other("Файл слишком большой для сервера Nextcloud".into())),
-                s => return Err(status_error(s, "Загрузка файла")),
-            }
-        }
-        let path = stored.ok_or_else(|| AppError::Other("Не удалось подобрать свободное имя файла".into()))?;
+        let path = self.upload_unique(&folder, name, data).await?;
         let mut meta = json!({ "messageType": "comment" });
         if !caption.trim().is_empty() { meta["caption"] = json!(caption.trim()); }
         if let Some(r) = reply_to { meta["replyTo"] = json!(r); }
         let body = json!({ "shareType": 10, "shareWith": token, "path": path, "talkMetaData": meta.to_string() });
         self.ocs(Method::POST, "ocs/v2.php/apps/files_sharing/api/v1/shares", &[("format", "json".into())], Some(body), "Публикация файла в беседе").await?;
         Ok(path)
+    }
+}
+
+// ---------------------------------------------------------------- Файлы
+
+/// Файл или папка в Nextcloud. `path` — от корня файлов пользователя, с «/».
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NcFile {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub size: i64,
+    pub modified: String,
+    pub mime: String,
+    pub file_id: Option<i64>,
+    pub shared: bool,
+    pub favorite: bool,
+    pub can_write: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NcShare {
+    pub id: String,
+    /// 0 — пользователь, 1 — группа, 3 — публичная ссылка, 4 — e-mail, 10 — Talk.
+    pub share_type: i64,
+    pub share_with: String,
+    pub share_with_name: String,
+    pub url: String,
+    pub expiration: String,
+    pub has_password: bool,
+    pub can_edit: bool,
+}
+
+/// Путь внутри файлов пользователя: только «/a/b», без «..» и пустых частей.
+pub fn clean_path(path: &str) -> Result<String> {
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.iter().any(|p| *p == ".." || *p == "." || p.contains('\\') || p.chars().any(char::is_control)) {
+        return Err(AppError::Other("Некорректный путь".into()));
+    }
+    Ok(format!("/{}", parts.join("/")))
+}
+
+fn valid_name(name: &str) -> Result<String> {
+    let n = name.trim();
+    if n.is_empty() || n == "." || n == ".." || n.contains(['/', '\\']) || n.chars().any(char::is_control) {
+        return Err(AppError::Other("Недопустимое имя".into()));
+    }
+    Ok(n.to_string())
+}
+
+const PROPFIND_FILES: &str = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/><d:getcontenttype/><oc:fileid/><oc:size/><oc:favorite/><oc:share-types/><oc:permissions/></d:prop></d:propfind>"#;
+
+/// Разбор ответа PROPFIND по файлам: `root` — путь URL каталога files/<uid>/.
+pub fn parse_file_list(xml: &str, root: &str) -> Result<Vec<NcFile>> {
+    let doc = roxmltree::Document::parse(xml).map_err(|e| AppError::Other(format!("Ответ WebDAV: {e}")))?;
+    let mut out = Vec::new();
+    for resp in doc.descendants().filter(|n| n.has_tag_name(("DAV:", "response"))) {
+        let href = resp.descendants().find(|n| n.has_tag_name(("DAV:", "href"))).and_then(|n| n.text()).unwrap_or_default();
+        let decoded = percent_encoding::percent_decode_str(href).decode_utf8_lossy().to_string();
+        let Some(rel) = decoded.strip_prefix(root) else { continue };
+        let path = format!("/{}", rel.trim_matches('/'));
+        // Только свойства со статусом 200.
+        let ok = resp.children().filter(|n| n.has_tag_name(("DAV:", "propstat"))).find(|ps| {
+            ps.descendants().find(|n| n.has_tag_name(("DAV:", "status"))).and_then(|n| n.text()).is_some_and(|t| t.contains(" 200"))
+        });
+        let Some(ps) = ok else { continue };
+        let prop = |ns: &str, name: &str| ps.descendants().find(|n| n.has_tag_name((ns, name))).and_then(|n| n.text()).unwrap_or_default().trim().to_string();
+        let is_dir = ps.descendants().any(|n| n.has_tag_name(("DAV:", "collection")));
+        let size_str = if is_dir { prop("http://owncloud.org/ns", "size") } else { prop("DAV:", "getcontentlength") };
+        let perms = prop("http://owncloud.org/ns", "permissions");
+        let shared = ps.descendants().find(|n| n.has_tag_name(("http://owncloud.org/ns", "share-types"))).is_some_and(|n| n.children().any(|c| c.is_element()));
+        out.push(NcFile {
+            name: path.rsplit('/').next().unwrap_or_default().to_string(),
+            path,
+            is_dir,
+            size: size_str.parse().unwrap_or(0),
+            modified: prop("DAV:", "getlastmodified"),
+            mime: if is_dir { String::new() } else { prop("DAV:", "getcontenttype") },
+            file_id: prop("http://owncloud.org/ns", "fileid").parse().ok(),
+            shared,
+            favorite: prop("http://owncloud.org/ns", "favorite") == "1",
+            can_write: perms.is_empty() || perms.contains('W') || perms.contains('C') || perms.contains('K'),
+        });
+    }
+    Ok(out)
+}
+
+fn parse_share(v: &Value) -> NcShare {
+    NcShare {
+        id: text(&v["id"]).or_int(&v["id"]),
+        share_type: int(&v["share_type"]),
+        share_with: text(&v["share_with"]),
+        share_with_name: v["share_with_displayname"].as_str().filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| text(&v["share_with"])),
+        url: text(&v["url"]),
+        expiration: text(&v["expiration"]),
+        has_password: v["password"].as_str().is_some_and(|p| !p.is_empty()) || v["share_with"].as_str().is_some_and(|p| !p.is_empty() && int(&v["share_type"]) == 3),
+        can_edit: int(&v["permissions"]) & 2 != 0,
+    }
+}
+
+impl Nc {
+    fn files_root_path(&self) -> Result<String> {
+        Ok(self.files_url("/")?.path().trim_end_matches('/').to_string() + "/")
+    }
+
+    pub async fn files_list(&self, path: &str) -> Result<Vec<NcFile>> {
+        let path = clean_path(path)?;
+        let resp = self
+            .dav(Method::from_bytes(b"PROPFIND").expect("PROPFIND"), self.files_url(&path)?)
+            .header("Depth", "1")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(PROPFIND_FILES)
+            .send()
+            .await
+            .map_err(net_error)?;
+        if resp.status().as_u16() != 207 {
+            return Err(status_error(resp.status(), "Файлы"));
+        }
+        let xml = resp.text().await.map_err(net_error)?;
+        let root = self.files_root_path()?;
+        let decoded_root = percent_encoding::percent_decode_str(&root).decode_utf8_lossy().to_string();
+        let mut list: Vec<NcFile> = parse_file_list(&xml, &decoded_root)?.into_iter().filter(|f| f.path != path).collect();
+        list.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        Ok(list)
+    }
+
+    /// Создаёт папку и все недостающие родительские.
+    pub async fn ensure_dir(&self, path: &str) -> Result<String> {
+        let path = clean_path(path)?;
+        let mut acc = String::new();
+        for part in path.split('/').filter(|p| !p.is_empty()) {
+            acc.push('/');
+            acc.push_str(part);
+            let resp = self.dav(Method::from_bytes(b"MKCOL").expect("MKCOL"), self.files_url(&acc)?).send().await.map_err(net_error)?;
+            // 201 — создана, 405 — уже существует.
+            if !(resp.status().is_success() || resp.status() == StatusCode::METHOD_NOT_ALLOWED) {
+                return Err(status_error(resp.status(), "Папка"));
+            }
+        }
+        Ok(path)
+    }
+
+    pub async fn files_mkdir(&self, parent: &str, name: &str) -> Result<String> {
+        let path = format!("{}/{}", clean_path(parent)?.trim_end_matches('/'), valid_name(name)?);
+        let resp = self.dav(Method::from_bytes(b"MKCOL").expect("MKCOL"), self.files_url(&path)?).send().await.map_err(net_error)?;
+        match resp.status() {
+            s if s.is_success() => Ok(path),
+            StatusCode::METHOD_NOT_ALLOWED => Err(AppError::Other("Папка с таким именем уже есть".into())),
+            s => Err(status_error(s, "Новая папка")),
+        }
+    }
+
+    /// Загружает файл в папку, не перезаписывая существующие: «файл (1).pdf»…
+    pub async fn upload_unique(&self, dir: &str, name: &str, data: Vec<u8>) -> Result<String> {
+        let dir = self.ensure_dir(dir).await?;
+        let name = valid_name(name)?;
+        for n in 0..100 {
+            let path = format!("{}/{}", dir.trim_end_matches('/'), numbered_name(&name, n));
+            let resp = self
+                .dav(Method::PUT, self.files_url(&path)?)
+                .header("If-None-Match", "*")
+                .header("Content-Type", mime_guess::from_path(&name).first_or_octet_stream().essence_str())
+                .body(data.clone())
+                .send()
+                .await
+                .map_err(net_error)?;
+            match resp.status() {
+                s if s.is_success() => return Ok(path),
+                StatusCode::PRECONDITION_FAILED => continue,
+                StatusCode::INSUFFICIENT_STORAGE => return Err(AppError::Other("В Nextcloud закончилось место (квота)".into())),
+                StatusCode::PAYLOAD_TOO_LARGE => return Err(AppError::Other("Файл слишком большой для сервера Nextcloud".into())),
+                s => return Err(status_error(s, "Загрузка файла")),
+            }
+        }
+        Err(AppError::Other("Не удалось подобрать свободное имя файла".into()))
+    }
+
+    pub async fn files_download(&self, path: &str) -> Result<Vec<u8>> {
+        let resp = self.dav(Method::GET, self.files_url(&clean_path(path)?)?).send().await.map_err(net_error)?;
+        if !resp.status().is_success() {
+            return Err(status_error(resp.status(), "Скачивание"));
+        }
+        Ok(resp.bytes().await.map_err(net_error)?.to_vec())
+    }
+
+    /// Удаление (в Nextcloud — в корзину).
+    pub async fn files_delete(&self, path: &str) -> Result<()> {
+        let path = clean_path(path)?;
+        if path == "/" { return Err(AppError::Other("Нельзя удалить корень".into())); }
+        let resp = self.dav(Method::DELETE, self.files_url(&path)?).send().await.map_err(net_error)?;
+        if !resp.status().is_success() {
+            return Err(status_error(resp.status(), "Удаление"));
+        }
+        Ok(())
+    }
+
+    pub async fn files_rename(&self, path: &str, new_name: &str) -> Result<String> {
+        let path = clean_path(path)?;
+        let parent = path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+        let target = format!("{parent}/{}", valid_name(new_name)?);
+        let resp = self
+            .dav(Method::from_bytes(b"MOVE").expect("MOVE"), self.files_url(&path)?)
+            .header("Destination", self.files_url(&target)?.as_str())
+            .header("Overwrite", "F")
+            .send()
+            .await
+            .map_err(net_error)?;
+        match resp.status() {
+            s if s.is_success() => Ok(target),
+            StatusCode::PRECONDITION_FAILED => Err(AppError::Other("Файл с таким именем уже есть".into())),
+            s => Err(status_error(s, "Переименование")),
+        }
+    }
+
+    pub async fn shares_list(&self, path: &str) -> Result<Vec<NcShare>> {
+        let q = [("path", clean_path(path)?), ("reshares", "true".into()), ("format", "json".into())];
+        let (_, _, d) = self.ocs(Method::GET, "ocs/v2.php/apps/files_sharing/api/v1/shares", &q, None, "Общий доступ").await?;
+        Ok(d.as_array().map(|a| a.iter().map(parse_share).collect()).unwrap_or_default())
+    }
+
+    /// Публичная ссылка (только чтение), с паролем и сроком при необходимости.
+    pub async fn share_link(&self, path: &str, password: Option<&str>, expire: Option<&str>) -> Result<NcShare> {
+        let mut body = json!({ "path": clean_path(path)?, "shareType": 3, "permissions": 1 });
+        if let Some(p) = password.filter(|p| !p.trim().is_empty()) { body["password"] = json!(p); }
+        if let Some(e) = expire.filter(|e| !e.trim().is_empty()) { body["expireDate"] = json!(e); }
+        let (_, _, d) = self.ocs(Method::POST, "ocs/v2.php/apps/files_sharing/api/v1/shares", &[("format", "json".into())], Some(body), "Публичная ссылка").await?;
+        Ok(parse_share(&d))
+    }
+
+    /// Существующая публичная ссылка без пароля или новая — для письма.
+    pub async fn link_for(&self, path: &str) -> Result<String> {
+        if let Some(s) = self.shares_list(path).await?.into_iter().find(|s| s.share_type == 3 && !s.has_password && !s.url.is_empty()) {
+            return Ok(s.url);
+        }
+        Ok(self.share_link(path, None, None).await?.url)
+    }
+
+    pub async fn share_user(&self, path: &str, uid: &str, can_edit: bool) -> Result<NcShare> {
+        let body = json!({ "path": clean_path(path)?, "shareType": 0, "shareWith": uid, "permissions": if can_edit { 31 } else { 1 } });
+        let (_, _, d) = self.ocs(Method::POST, "ocs/v2.php/apps/files_sharing/api/v1/shares", &[("format", "json".into())], Some(body), "Доступ сотруднику").await?;
+        Ok(parse_share(&d))
+    }
+
+    pub async fn share_delete(&self, id: &str) -> Result<()> {
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '_') {
+            return Err(AppError::Other("Некорректный идентификатор доступа".into()));
+        }
+        self.ocs(Method::DELETE, &format!("ocs/v2.php/apps/files_sharing/api/v1/shares/{id}"), &[("format", "json".into())], None, "Закрытие доступа").await?;
+        Ok(())
     }
 }
 
@@ -1008,6 +1228,23 @@ mod tests {
         }));
         assert_eq!(d.labels[0].title, "Срочно");
         assert_eq!(d.users.iter().map(|u| u.uid.as_str()).collect::<Vec<_>>(), vec!["admin", "ivanov", "petrova"]);
+    }
+
+    #[test]
+    fn parses_webdav_listing_and_paths() {
+        let xml = r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+          <d:response><d:href>/remote.php/dav/files/test%40rrcki.ru/Docs/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><oc:size>300</oc:size><oc:fileid>5</oc:fileid></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+          <d:response><d:href>/remote.php/dav/files/test%40rrcki.ru/Docs/%D0%9E%D1%82%D1%87%D1%91%D1%82%20(1).pdf</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>120</d:getcontentlength><d:getcontenttype>application/pdf</d:getcontenttype><oc:fileid>7</oc:fileid><oc:permissions>RGDNVW</oc:permissions><oc:share-types><oc:share-type>3</oc:share-type></oc:share-types></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat><d:propstat><d:prop><oc:favorite/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>
+          <d:response><d:href>/remote.php/dav/files/test%40rrcki.ru/Docs/Sub/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><oc:permissions>RGD</oc:permissions></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+        </d:multistatus>"#;
+        let f = parse_file_list(xml, "/remote.php/dav/files/test@rrcki.ru/").unwrap();
+        assert_eq!(f.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(), vec!["/Docs", "/Docs/Отчёт (1).pdf", "/Docs/Sub"]);
+        assert!(f[0].is_dir && f[0].size == 300);
+        assert_eq!((f[1].name.as_str(), f[1].size, f[1].file_id, f[1].shared, f[1].can_write), ("Отчёт (1).pdf", 120, Some(7), true, true));
+        assert!(!f[2].can_write);
+        assert_eq!(clean_path("Docs//a/").unwrap(), "/Docs/a");
+        assert!(clean_path("/Docs/../etc").is_err());
+        assert!(valid_name("a/b").is_err() && valid_name("  Отчёт.pdf ").unwrap() == "Отчёт.pdf");
     }
 
     #[test]

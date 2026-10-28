@@ -16,8 +16,10 @@ ids = itertools.count(100)
 UPDATE_BLOB = b'fake package for update test\n' * 4000
 
 state = {
-    'dirs': {'/'},
-    'files': {},
+    'dirs': {'/', '/Документы'},
+    'dir_ids': {},
+    'shares': [],
+    'files': {'/Документы/Регламент.txt': {'id': 4242, 'data': 'Регламент работ\n'.encode()}},
     'polls': 0,
     'revoked': False,
     'boards': [
@@ -112,7 +114,15 @@ class H(BaseHTTPRequestHandler):
     def ocs(self, data, code=200, headers=None):
         self.send(code, {'ocs': {'meta': {'status': 'ok', 'statuscode': code, 'message': 'OK'}, 'data': data}}, headers)
 
+    def peek_json(self):
+        b = self.body()
+        self._cached_body = b
+        return b
+
     def body(self):
+        if getattr(self, '_cached_body', None) is not None:
+            b, self._cached_body = self._cached_body, None
+            return b
         n = int(self.headers.get('Content-Length') or 0)
         raw = self.rfile.read(n) if n else b''
         if 'json' in (self.headers.get('Content-Type') or ''):
@@ -160,7 +170,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments')} | {'messages': state['messages'],
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs'])} | {'messages': state['messages'],
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:
@@ -280,8 +290,36 @@ class H(BaseHTTPRequestHandler):
                     return self.send(405)
                 state['dirs'].add(path)
                 return self.send(201)
+            if method == 'PROPFIND':
+                return self.propfind(path, F)
+            if method == 'GET':
+                f = state['files'].get(path)
+                if f is None:
+                    return self.send(404)
+                self.send_response(200); self.send_header('Content-Length', str(len(f['data']))); self.end_headers()
+                self.wfile.write(f['data']); return
+            if method == 'DELETE':
+                if path in state['dirs']:
+                    state['dirs'] = {d for d in state['dirs'] if d != path and not d.startswith(path + '/')}
+                    for k in [k for k in state['files'] if k.startswith(path + '/')]: del state['files'][k]
+                    return self.send(204)
+                if state['files'].pop(path, None) is None:
+                    return self.send(404)
+                return self.send(204)
+            if method == 'MOVE':
+                dest = '/' + unquote(urlparse(self.headers['Destination']).path[len(F):]).strip('/')
+                if dest in state['files'] or dest in state['dirs']:
+                    return self.send(412)
+                if path in state['files']:
+                    state['files'][dest] = state['files'].pop(path)
+                elif path in state['dirs']:
+                    state['dirs'] = {dest + d[len(path):] if d == path or d.startswith(path + '/') else d for d in state['dirs']}
+                    for k in [k for k in state['files'] if k.startswith(path + '/')]: state['files'][dest + k[len(path):]] = state['files'].pop(k)
+                else:
+                    return self.send(404)
+                return self.send(201)
             if method == 'PUT':
-                if path.rsplit('/', 1)[0] not in state['dirs']:
+                if path.rsplit('/', 1)[0] not in state['dirs'] and path.rsplit('/', 1)[0] != '':
                     return self.send(409)
                 n = int(self.headers.get('Content-Length') or 0)
                 data = self.rfile.read(n)
@@ -291,7 +329,30 @@ class H(BaseHTTPRequestHandler):
                 return self.send(201)
         if method == 'GET' and p == '/ocs/v2.php/cloud/capabilities':
             return self.ocs({'capabilities': {'spreed': {'config': {'attachments': {'allowed': True, 'folder': '/Talk'}}}}})
-        if method == 'POST' and p == '/ocs/v2.php/apps/files_sharing/api/v1/shares':
+        SH = '/ocs/v2.php/apps/files_sharing/api/v1/shares'
+        if method == 'GET' and p == SH:
+            return self.ocs([x for x in state['shares'] if x['path'] == q.get('path')])
+        if method == 'DELETE' and p.startswith(SH + '/'):
+            sid = p[len(SH) + 1:]
+            state['shares'] = [x for x in state['shares'] if x['id'] != sid]
+            return self.ocs([])
+        if method == 'POST' and p == SH and int(self.peek_json().get('shareType', -1)) in (0, 3):
+            b = self.body()
+            if b['path'] not in state['files'] and b['path'] not in state['dirs']:
+                return self.send(404, {'ocs': {'meta': {'status': 'failure', 'statuscode': 404, 'message': 'Wrong path'}}})
+            sid = str(next(ids))
+            if int(b['shareType']) == 3:
+                sh = {'id': sid, 'share_type': 3, 'path': b['path'], 'share_with': None, 'permissions': 1,
+                      'url': f'{base}/s/tok{sid}', 'token': f'tok{sid}', 'expiration': (b.get('expireDate') or '') and b['expireDate'] + ' 00:00:00',
+                      'password': 'hash' if b.get('password') else None}
+            else:
+                u = next((x for x in USERS if x['id'] == b['shareWith']), None)
+                if not u: return self.send(404, {})
+                sh = {'id': sid, 'share_type': 0, 'path': b['path'], 'share_with': u['id'], 'share_with_displayname': u['label'],
+                      'permissions': int(b.get('permissions', 1)), 'url': ''}
+            state['shares'].append(sh)
+            return self.ocs(sh)
+        if method == 'POST' and p == SH:
             b = self.body()
             f = state['files'].get(b.get('path'))
             if int(b.get('shareType', -1)) != 10 or f is None or b.get('shareWith') not in state['messages']:
@@ -420,6 +481,36 @@ class H(BaseHTTPRequestHandler):
     def do_PUT(self): self.route('PUT')
     def do_DELETE(self): self.route('DELETE')
     def do_MKCOL(self): self.route('MKCOL')
+    def do_PROPFIND(self): self.route('PROPFIND')
+    def do_MOVE(self): self.route('MOVE')
+
+    def propfind(self, path, prefix):
+        from urllib.parse import quote
+        n = int(self.headers.get('Content-Length') or 0)
+        if n: self.rfile.read(n)
+        if path not in state['dirs'] and path not in state['files']:
+            return self.send(404)
+        def entry(pth, is_dir):
+            href = prefix.rstrip('/') + quote(pth) + ('/' if is_dir and pth != '/' else '')
+            fid = state['dir_ids'].setdefault(pth, next(ids)) if is_dir else state['files'][pth]['id']
+            shared = any(x['path'] == pth for x in state['shares'])
+            props = f'<oc:fileid>{fid}</oc:fileid><oc:permissions>RGDNVCK</oc:permissions><d:getlastmodified>Tue, 27 Oct 2026 10:00:00 GMT</d:getlastmodified>'
+            props += '<oc:share-types>' + ('<oc:share-type>3</oc:share-type>' if shared else '') + '</oc:share-types>'
+            if is_dir:
+                size = sum(len(v['data']) for k, v in state['files'].items() if k.startswith(pth.rstrip('/') + '/'))
+                props += f'<d:resourcetype><d:collection/></d:resourcetype><oc:size>{size}</oc:size>'
+            else:
+                props += f'<d:resourcetype/><d:getcontentlength>{len(state["files"][pth]["data"])}</d:getcontentlength><d:getcontenttype>text/plain</d:getcontenttype>'
+            return f'<d:response><d:href>{href}</d:href><d:propstat><d:prop>{props}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+        items = [entry(path, path in state['dirs'])]
+        if path in state['dirs'] and self.headers.get('Depth') == '1':
+            base_ = path.rstrip('/') + '/'
+            children = {d for d in state['dirs'] if d.startswith(base_) and '/' not in d[len(base_):] and d != path}
+            items += [entry(d, True) for d in sorted(children)]
+            items += [entry(f, False) for f in sorted(state['files']) if f.startswith(base_) and '/' not in f[len(base_):]]
+        body = ('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">' + ''.join(items) + '</d:multistatus>').encode()
+        self.send_response(207); self.send_header('Content-Type', 'application/xml; charset=utf-8')
+        self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
 
 
 cert, key = sys.argv[1:3]

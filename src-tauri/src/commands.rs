@@ -1218,6 +1218,129 @@ pub async fn open_link(app: AppHandle, url: String) -> Result<()> {
     host::open_url(&app, parsed.as_str())
 }
 
+// ---------------------------------------------------------------- Файлы Nextcloud
+
+#[tauri::command]
+pub async fn nc_files_list(state: State<'_, AppState>, path: String) -> Result<Vec<nextcloud::NcFile>> {
+    nc(&state).await?.files_list(&path).await
+}
+
+#[tauri::command]
+pub async fn nc_files_mkdir(state: State<'_, AppState>, parent: String, name: String) -> Result<String> {
+    nc(&state).await?.files_mkdir(&parent, &name).await
+}
+
+/// Читает выбранные пользователем файлы (по id из `pick_attachments`).
+async fn read_picked(state: &AppState, ids: &[String]) -> Result<Vec<(String, String, Vec<u8>)>> {
+    let mut out = Vec::new();
+    for id in ids {
+        let path = state.picked.lock().await.get(id).cloned().ok_or_else(|| AppError::Other("Файл не найден, выберите его заново".into()))?;
+        let size = tokio::fs::metadata(&path).await?.len();
+        if size > MAX_TALK_FILE_MB * 1024 * 1024 {
+            return Err(AppError::Other(format!("Файл больше {MAX_TALK_FILE_MB} МБ")));
+        }
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+        out.push((id.clone(), name, tokio::fs::read(&path).await?));
+    }
+    Ok(out)
+}
+
+async fn nc_upload(state: &AppState) -> Result<nextcloud::Nc> {
+    let (creds, uid) = state.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён — подключите его в Настройках".into()))?;
+    nextcloud::Nc::upload(creds, &uid)
+}
+
+/// Загружает выбранные файлы в папку Nextcloud. Возвращает пути.
+#[tauri::command]
+pub async fn nc_files_upload(state: State<'_, AppState>, dir: String, attachments: Vec<String>) -> Result<Vec<String>> {
+    let files = read_picked(&state, &attachments).await?;
+    let client = nc_upload(&state).await?;
+    let mut paths = Vec::new();
+    for (id, name, data) in files {
+        paths.push(client.upload_unique(&dir, &name, data).await?);
+        state.picked.lock().await.remove(&id);
+    }
+    Ok(paths)
+}
+
+/// Скачивает файл: куда сохранить, выбирает пользователь в системном диалоге.
+#[tauri::command]
+pub async fn nc_files_download(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<Option<String>> {
+    let name = path.rsplit('/').next().unwrap_or("file").to_string();
+    let Some(target) = host::save_file(&app, &name).await else {
+        return Ok(None);
+    };
+    let data = nc_upload(&state).await?.files_download(&path).await?;
+    tokio::fs::write(&target, data).await?;
+    Ok(Some(target.display().to_string()))
+}
+
+#[tauri::command]
+pub async fn nc_files_delete(state: State<'_, AppState>, path: String) -> Result<()> {
+    nc(&state).await?.files_delete(&path).await
+}
+
+#[tauri::command]
+pub async fn nc_files_rename(state: State<'_, AppState>, path: String, name: String) -> Result<String> {
+    nc(&state).await?.files_rename(&path, &name).await
+}
+
+#[tauri::command]
+pub async fn nc_shares(state: State<'_, AppState>, path: String) -> Result<Vec<nextcloud::NcShare>> {
+    nc(&state).await?.shares_list(&path).await
+}
+
+#[tauri::command]
+pub async fn nc_share_link(state: State<'_, AppState>, path: String, password: Option<String>, expire: Option<String>) -> Result<nextcloud::NcShare> {
+    nc(&state).await?.share_link(&path, password.as_deref(), expire.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn nc_share_user(state: State<'_, AppState>, path: String, uid: String, can_edit: bool) -> Result<nextcloud::NcShare> {
+    nc(&state).await?.share_user(&path, &uid, can_edit).await
+}
+
+#[tauri::command]
+pub async fn nc_share_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    nc(&state).await?.share_delete(&id).await
+}
+
+/// Публичная ссылка на файл для письма (существующая без пароля или новая).
+#[tauri::command]
+pub async fn nc_link_for(state: State<'_, AppState>, path: String) -> Result<String> {
+    nc(&state).await?.link_for(&path).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadedLink {
+    name: String,
+    path: String,
+    url: String,
+}
+
+/// Файлы с компьютера → папка в Nextcloud → публичные ссылки (для больших вложений).
+#[tauri::command]
+pub async fn nc_upload_links(state: State<'_, AppState>, dir: String, attachments: Vec<String>) -> Result<Vec<UploadedLink>> {
+    let files = read_picked(&state, &attachments).await?;
+    let client = nc_upload(&state).await?;
+    let mut out = Vec::new();
+    for (id, name, data) in files {
+        let path = client.upload_unique(&dir, &name, data).await?;
+        let url = client.link_for(&path).await?;
+        state.picked.lock().await.remove(&id);
+        out.push(UploadedLink { name: path.rsplit('/').next().unwrap_or(&name).to_string(), path, url });
+    }
+    Ok(out)
+}
+
+/// Вложение письма → папка в Nextcloud. Возвращает путь.
+#[tauri::command]
+pub async fn nc_save_mail_attachment(state: State<'_, AppState>, folder: String, uid: u32, index: usize, dir: String) -> Result<String> {
+    let (name, data) = with_conn!(state, c => imap::get_attachment(c, &folder, uid, index))?;
+    nc_upload(&state).await?.upload_unique(&dir, &name, data).await
+}
+
 const MAX_TALK_FILE_MB: u64 = 512;
 
 /// Отправляет в беседу файл, выбранный через `pick_attachments`.
@@ -1405,6 +1528,19 @@ macro_rules! app_commands {
             crate::commands::nc_search_users,
             crate::commands::talk_create,
             crate::commands::open_link,
+            crate::commands::nc_files_list,
+            crate::commands::nc_files_mkdir,
+            crate::commands::nc_files_upload,
+            crate::commands::nc_files_download,
+            crate::commands::nc_files_delete,
+            crate::commands::nc_files_rename,
+            crate::commands::nc_shares,
+            crate::commands::nc_share_link,
+            crate::commands::nc_share_user,
+            crate::commands::nc_share_delete,
+            crate::commands::nc_link_for,
+            crate::commands::nc_upload_links,
+            crate::commands::nc_save_mail_attachment,
             crate::commands::app_info,
             crate::commands::check_update,
             crate::commands::update_progress,

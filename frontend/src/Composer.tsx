@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Paperclip, Send, X } from 'lucide-react'
+import { Cloud, Paperclip, Send, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
 import RichEditor, { type RichEditorHandle } from './RichEditor'
+import NcFilePicker from './NcFilePicker'
 import type { Contact, Draft, PickedFile } from './types'
 
 interface Props {
   from: string
   draft: Draft
   contacts: Contact[]
+  /** Nextcloud подключён — можно вставлять ссылки на файлы вместо вложений. */
+  ncConnected?: boolean
   onClose: () => void
   onSent: (notice: string) => void
 }
@@ -102,7 +105,8 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
   )
 }
 
-export default function Composer({ from, draft, contacts, onClose, onSent }: Props) {
+export default function Composer({ from, draft, contacts, ncConnected, onClose, onSent }: Props) {
+  const [ncPicker, setNcPicker] = useState(false)
   const [to, setTo] = useState(draft.to)
   const [cc, setCc] = useState(draft.cc)
   const [showCc, setShowCc] = useState(Boolean(draft.cc))
@@ -177,11 +181,14 @@ export default function Composer({ from, draft, contacts, onClose, onSent }: Pro
           <button type="button" className="text-button attach-button" disabled={busy} onClick={() => void attach()}>
             <Paperclip size={15} /> Вложить файл{files.length > 0 ? ` (${files.length}, ${formatSize(totalSize)})` : ''}
           </button>
+          {ncConnected && <button type="button" className="text-button nc-link-button" disabled={busy} onClick={() => setNcPicker(true)} title="Вставить ссылку на файл из Nextcloud или загрузить большой файл в облако"><Cloud size={15} /> Ссылка Nextcloud</button>}
+          <div className="reader-toolbar-spacer" />
           <button className="primary-button" type="submit" disabled={busy}>
             <Send size={16} /> {busy ? 'Отправка…' : 'Отправить'}
           </button>
         </div>
       </form>
+      {ncPicker && <NcFilePicker onClose={() => setNcPicker(false)} onPick={(links) => { setNcPicker(false); editor.current?.insertLinks(links) }} />}
     </div>
   )
 }

@@ -321,3 +321,34 @@ export interface DeckAttachment {
   mimetype: string
   fileId: number | null
 }
+
+export interface NcFile {
+  path: string
+  name: string
+  isDir: boolean
+  size: number
+  modified: string
+  mime: string
+  fileId: number | null
+  shared: boolean
+  favorite: boolean
+  canWrite: boolean
+}
+
+export interface NcShare {
+  id: string
+  /** 0 — сотрудник, 1 — группа, 3 — публичная ссылка, 4 — e-mail, 10 — Talk */
+  shareType: number
+  shareWith: string
+  shareWithName: string
+  url: string
+  expiration: string
+  hasPassword: boolean
+  canEdit: boolean
+}
+
+export interface UploadedLink {
+  name: string
+  path: string
+  url: string
+}

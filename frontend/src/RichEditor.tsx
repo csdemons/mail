@@ -16,6 +16,8 @@ export interface RichEditorHandle {
   html: () => string
   text: () => string
   focus: () => void
+  /** Вставляет ссылки на файлы (в место курсора или в конец текста). */
+  insertLinks: (links: { name: string; url: string }[]) => void
 }
 
 function escapeHtml(s: string) {
@@ -23,6 +25,11 @@ function escapeHtml(s: string) {
 }
 
 /** Текст черновика (ответ с цитатой «> ») → HTML: цитата становится blockquote. */
+/** Экранирует строку и делает ссылки кликабельными. */
+function linkify(line: string): string {
+  return escapeHtml(line).replace(/https?:\/\/[^\s<>"]+[^\s<>".,;:!?)]/g, (u) => `<a href="${u}">${u}</a>`)
+}
+
 export function textToHtml(text: string): string {
   if (!text) return ''
   const out: string[] = []
@@ -33,10 +40,10 @@ export function textToHtml(text: string): string {
   }
   for (const line of text.split('\n')) {
     if (/^>\s?/.test(line)) {
-      quote.push(escapeHtml(line.replace(/^>\s?/, '')) || '&nbsp;')
+      quote.push(linkify(line.replace(/^>\s?/, '')) || '&nbsp;')
     } else {
       flush()
-      out.push(`<div>${escapeHtml(line) || '<br>'}</div>`)
+      out.push(`<div>${linkify(line) || '<br>'}</div>`)
     }
   }
   flush()
@@ -60,6 +67,25 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
     html: () => editor.current?.innerHTML ?? '',
     text: () => (editor.current?.innerText ?? '').replace(/ /g, ' ').replace(/\n{3,}/g, '\n\n'),
     focus: () => editor.current?.focus(),
+    insertLinks: (links) => {
+      const el = editor.current
+      if (!el || links.length === 0) return
+      const html = links.map((l) => `<div>📎 <a href="${escapeHtml(l.url)}">${escapeHtml(l.name)}</a></div>`).join('')
+      el.focus()
+      const sel = window.getSelection()
+      if (saved.current && sel && el.contains(saved.current.startContainer)) {
+        sel.removeAllRanges()
+        sel.addRange(saved.current)
+      } else if (sel) {
+        // Курсор не в письме — в начало, над цитатой (если это ответ).
+        const r = document.createRange()
+        r.setStart(el, 0)
+        r.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(r)
+      }
+      document.execCommand('insertHTML', false, html)
+    },
   }))
 
   useEffect(() => {

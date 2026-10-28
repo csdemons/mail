@@ -3672,6 +3672,7 @@ dependencies = [
  "mime_guess",
  "native-tls",
  "open",
+ "percent-encoding",
  "reqwest",
  "roxmltree",
  "rrule",

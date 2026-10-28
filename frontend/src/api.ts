@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, Contact, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
+  Account, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
 } from './types'
@@ -93,6 +93,20 @@ export const api = {
   ncSearchUsers: (search: string) => invoke<NcUser[]>('nc_search_users', { search }),
   talkCreate: (users: string[], name: string | null) => invoke<string>('talk_create', { users, name }),
   openLink: (url: string) => invoke<void>('open_link', { url }),
+  ncFilesList: (path: string) => invoke<NcFile[]>('nc_files_list', { path }),
+  ncFilesMkdir: (parent: string, name: string) => invoke<string>('nc_files_mkdir', { parent, name }),
+  ncFilesUpload: (dir: string, attachments: string[]) => invoke<string[]>('nc_files_upload', { dir, attachments }),
+  ncFilesDownload: (path: string) => invoke<string | null>('nc_files_download', { path }),
+  ncFilesDelete: (path: string) => invoke<void>('nc_files_delete', { path }),
+  ncFilesRename: (path: string, name: string) => invoke<string>('nc_files_rename', { path, name }),
+  ncShares: (path: string) => invoke<NcShare[]>('nc_shares', { path }),
+  ncShareLink: (path: string, password: string | null, expire: string | null) => invoke<NcShare>('nc_share_link', { path, password, expire }),
+  ncShareUser: (path: string, uid: string, canEdit: boolean) => invoke<NcShare>('nc_share_user', { path, uid, canEdit }),
+  ncShareDelete: (id: string) => invoke<void>('nc_share_delete', { id }),
+  ncLinkFor: (path: string) => invoke<string>('nc_link_for', { path }),
+  ncUploadLinks: (dir: string, attachments: string[]) => invoke<UploadedLink[]>('nc_upload_links', { dir, attachments }),
+  ncSaveMailAttachment: (folder: string, uid: number, index: number, dir: string) =>
+    invoke<string>('nc_save_mail_attachment', { folder, uid, index, dir }),
   talkSendFile: (token: string, attachment: string, caption: string, replyTo: number | null = null) =>
     invoke<void>('talk_send_file', { token, attachment, caption, replyTo }),
   forgetAttachment: (attachment: string) => invoke<void>('forget_attachment', { attachment }),
@@ -160,3 +174,6 @@ export const VARIANT_LABEL: Record<string, string> = {
   appimage: 'Linux (AppImage)',
   unknown: 'сборка разработчика',
 }
+
+/** Папка в Nextcloud для файлов из почты (вложения, большие файлы по ссылке). */
+export const NC_MAIL_DIR = '/Почта'

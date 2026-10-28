@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   CornerUpLeft, FileText, KanbanSquare, MessageCircle, MessageSquarePlus, Paperclip, Pencil, Phone, RefreshCw,
   Search, Send, Smile, SmilePlus, Trash2, Users, X,
@@ -57,6 +57,16 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   // Номер «сессии» опроса: при смене беседы старый цикл останавливается.
   const pollSession = useRef(0)
   const stickToBottom = useRef(true)
+  // Куда поставить курсор после программной правки текста (упоминание, эмодзи).
+  const pendingCaret = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const el = inputRef.current
+    if (el && pendingCaret.current !== null) {
+      el.focus()
+      el.setSelectionRange(pendingCaret.current, pendingCaret.current)
+      pendingCaret.current = null
+    }
+  })
 
   const notify = useCallback((t: string) => { if (onNotice) onNotice(t); else setError(t) }, [onNotice])
 
@@ -146,9 +156,9 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     const shown = `@${label} `
     mentionMap.current.set(`@${label}`, mn.insert)
     const next = before + shown + draft.slice(caret)
+    pendingCaret.current = before.length + shown.length
     setDraft(next)
     setMentions([])
-    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(before.length + shown.length, before.length + shown.length) })
   }
 
   /** «@Имя» из подсказок → «@"id"» для Talk. */
@@ -165,8 +175,8 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     const start = el?.selectionStart ?? draft.length
     const end = el?.selectionEnd ?? draft.length
     const next = draft.slice(0, start) + e + draft.slice(end)
+    pendingCaret.current = start + e.length
     setDraft(next)
-    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(start + e.length, start + e.length) })
   }
 
   async function pickFiles() {

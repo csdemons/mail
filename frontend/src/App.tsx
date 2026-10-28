@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, ContactRound, Download,
+  Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
   Reply, Search, Send, Settings, ShieldCheck, SquarePen, Star, Stethoscope, Sun, Trash2, Users, X, Copy,
 } from 'lucide-react'
 
 import {
-  api, errorText, formatFullDate, formatListDate, formatSize, messageKey, PAGE_SIZE,
+  api, errorText, formatFullDate, formatListDate, formatSize, messageKey, NC_MAIL_DIR, PAGE_SIZE,
 } from './api'
 import type {
   Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
@@ -18,6 +18,7 @@ import { CHECK_UPDATE_EVENT } from './UpdateNotice'
 import DeckView from './DeckView'
 import TalkView from './TalkView'
 import NcConnect from './NcConnect'
+import FilesView from './FilesView'
 import type { NcStatus } from './types'
 import ContactsView from './ContactsView'
 import CalendarView from './CalendarView'
@@ -112,7 +113,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const [diagText, setDiagText] = useState<string | null>(null)
   const [diagBusy, setDiagBusy] = useState(false)
 
-  const [module, setModule] = useState<'mail' | 'calendar' | 'contacts' | 'deck' | 'chat'>('mail')
+  const [module, setModule] = useState<'mail' | 'calendar' | 'contacts' | 'deck' | 'chat' | 'files'>('mail')
   const [ncStatus, setNcStatus] = useState<NcStatus | null>(null)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -331,6 +332,26 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     }
   }
 
+  /** Новое письмо со ссылками на файлы Nextcloud. */
+  function sendLinks(links: { name: string; url: string }[]) {
+    const lines = links.map((l) => `${l.name}: ${l.url}`).join('\n')
+    startDraft({
+      mode: 'new', to: '', cc: '', inReplyTo: null, references: null,
+      subject: links.length === 1 ? links[0].name : `Файлы (${links.length})`,
+      body: `\n\n${links.length === 1 ? 'Ссылка на файл' : 'Ссылки на файлы'}:\n${lines}`,
+    })
+  }
+
+  async function saveToNextcloud(index: number, name: string) {
+    if (!detail) return
+    try {
+      const path = await api.ncSaveMailAttachment(detail.folder, detail.uid, index, NC_MAIL_DIR)
+      setNotice(`«${name}» сохранено в Nextcloud: ${path}`)
+    } catch (error) {
+      setNotice(`Не удалось сохранить в Nextcloud: ${errorText(error)}`)
+    }
+  }
+
   async function saveAttachment(index: number) {
     if (!detail) return
     try {
@@ -452,15 +473,17 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           <button className={`module ${module === 'contacts' ? 'active' : ''}`} onClick={() => setModule('contacts')}><ContactRound /><span>Контакты</span></button>
           <button className={`module ${module === 'deck' ? 'active' : ''}`} onClick={() => setModule('deck')}><FileText /><span>Задачи</span></button>
           <button className={`module ${module === 'chat' ? 'active' : ''}`} onClick={() => setModule('chat')}><MessageCircle /><span>Чат</span>{chatUnread > 0 && <b className="rail-badge">{chatUnread}</b>}</button>
+          <button className={`module ${module === 'files' ? 'active' : ''}`} onClick={() => setModule('files')}><Cloud /><span>Файлы</span></button>
           <div className="rail-spacer" />
         </nav>
 
         {module === 'calendar' && <CalendarView onNotice={setNotice} />}
-        {(module === 'deck' || module === 'chat') && ncStatus && !ncStatus.connected && (
+        {(module === 'deck' || module === 'chat' || module === 'files') && ncStatus && !ncStatus.connected && (
           <div className="module-view nc-gate"><NcConnect status={ncStatus} onChange={setNcStatus} /></div>
         )}
         {module === 'deck' && ncStatus?.connected && <DeckView onNotice={setNotice} />}
         {module === 'chat' && ncStatus?.connected && <TalkView onUnread={setChatUnread} onNotice={setNotice} />}
+        {module === 'files' && ncStatus?.connected && <FilesView onNotice={setNotice} onSendLinks={sendLinks} />}
         {module === 'contacts' && (
           <ContactsView
             onLoaded={(list) => { setContacts(list); contactsRequested.current = true }}
@@ -619,11 +642,14 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             </div>
             {detail.attachments.length > 0 && <div className="attachment-list">
               {detail.attachments.map((a) => (
-                <button key={a.index} className="attachment-card" title={`Сохранить ${a.name}`} onClick={() => void saveAttachment(a.index)}>
-                  <div className="attachment-icon"><FileText size={21} /></div>
-                  <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {a.contentType}</span></div>
-                  <Download size={17} />
-                </button>
+                <div key={a.index} className="attachment-item">
+                  <button className="attachment-card" title={`Сохранить ${a.name}`} onClick={() => void saveAttachment(a.index)}>
+                    <div className="attachment-icon"><FileText size={21} /></div>
+                    <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {a.contentType}</span></div>
+                    <Download size={17} />
+                  </button>
+                  {ncStatus?.connected && <button className="icon-button soft attachment-cloud" aria-label={`Сохранить ${a.name} в Nextcloud`} title={`Сохранить в Nextcloud (${NC_MAIL_DIR})`} onClick={() => void saveToNextcloud(a.index, a.name)}><Cloud size={17} /></button>}
+                </div>
               ))}
             </div>}
             <article className="message-body plain">{detail.bodyText || '(пустое письмо)'}</article>
@@ -648,6 +674,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
           from={profile?.displayName ? `${profile.displayName} <${account.username}>` : account.username}
           draft={draft}
           contacts={contacts}
+          ncConnected={Boolean(ncStatus?.connected)}
           onClose={() => setDraft(null)}
           onSent={(text) => {
             setDraft(null)

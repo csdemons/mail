@@ -39,6 +39,7 @@ rrule = "0.13"
 chrono-tz = "0.9"
 mime_guess = "2"
 ammonia = "4"
+percent-encoding = "2"
 sha2 = "0.10"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
