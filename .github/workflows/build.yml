@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Токен по умолчанию — только чтение; запись нужна лишь задаче релиза.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -17,12 +21,12 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22, cache: npm, cache-dependency-path: '**/package-lock.json' }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with: { toolchain: stable, components: clippy }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with: { workspaces: src-tauri }
       - name: System deps
         timeout-minutes: 20
@@ -42,8 +46,16 @@ jobs:
             echo "npm ci — попытка $i не удалась"; sleep 15
           done
           exit 1
+      - name: Known vulnerabilities in npm dependencies (production)
+        run: npm --prefix frontend audit --omit=dev --audit-level=high
       - run: npm --prefix frontend run typecheck
       - run: npm --prefix frontend run build
+      - name: Known vulnerabilities in Rust dependencies (RustSec)
+        timeout-minutes: 15
+        run: |
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+          (cd src-tauri && cargo audit)
+          (cd legacy && cargo audit)
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: src-tauri
       - run: cargo test
@@ -62,11 +74,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22, cache: npm, cache-dependency-path: '**/package-lock.json' }
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with: { toolchain: stable }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with: { workspaces: src-tauri }
       - name: System deps (Linux)
         timeout-minutes: 20
@@ -84,7 +97,7 @@ jobs:
           done
           exit 1
       - run: npx tauri build --bundles ${{ matrix.bundles }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: rrcki-mail-${{ matrix.name }}
           path: |
@@ -105,12 +118,12 @@ jobs:
     # Кросс-сборка MinGW на Linux — тот же путь, что проверен локально.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22, cache: npm, cache-dependency-path: '**/package-lock.json' }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: rust-src }
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with: { toolchain: stable, components: rust-src }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with: { workspaces: src-tauri, key: win7-gnu }
       - name: Cross toolchain
         timeout-minutes: 20
@@ -138,7 +151,7 @@ jobs:
           cd src-tauri/target/x86_64-win7-windows-gnu/release/bundle/nsis
           for f in *-setup.exe; do mv "$f" "$(echo "$f" | sed 's/^RRCKI Mail/rrcki-mail/; s/ /-/g; s/-setup\.exe$/-setup-windows8.exe/')"; done
           ls -la
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: rrcki-mail-windows8
           path: src-tauri/target/x86_64-win7-windows-gnu/release/bundle/nsis/*-windows8.exe
@@ -162,11 +175,12 @@ jobs:
             build-essential curl ca-certificates git pkg-config dpkg-dev file \
             libwebkit2gtk-4.0-dev libgtk-3-dev libsoup2.4-dev libssl-dev libdbus-1-dev librsvg2-dev
           dpkg -l libc6 'libwebkit2gtk-4.0*' | grep ^ii
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22 }
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with: { toolchain: stable }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with: { workspaces: legacy }
       - name: npm ci (с повтором при зависании)
         timeout-minutes: 25
@@ -192,7 +206,7 @@ jobs:
         run: |
           legacy/package-deb.sh "${{ steps.ver.outputs.version }}" dist-astra17
           objdump -T legacy/target/release/rrcki-mail | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: rrcki-mail-astra17
           path: dist-astra17/*.deb
@@ -208,7 +222,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Version and existing release
         id: ver
         env: { GH_TOKEN: '${{ github.token }}' }
@@ -220,7 +234,7 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: steps.ver.outputs.exists == 'false'
         with: { path: dist, merge-multiple: true }
       - name: File names without spaces
@@ -250,12 +264,40 @@ jobs:
       - name: latest.json (встроенное обновление)
         if: steps.ver.outputs.exists == 'false'
         run: python3 .github/latest_json.py "${{ steps.ver.outputs.version }}" dist notes.md "$GITHUB_REPOSITORY"
-      - uses: softprops/action-gh-release@v2
+      - name: SBOM (перечень компонентов) и SHA256SUMS
+        if: steps.ver.outputs.exists == 'false'
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          python3 .github/sbom_cargo.py src-tauri/Cargo.lock atom-mail "$v" > dist/sbom-rust.cdx.json
+          python3 .github/sbom_cargo.py legacy/Cargo.lock atom-mail-astra17 "$v" > dist/sbom-rust-astra17.cdx.json
+          (cd frontend && npm sbom --omit dev --sbom-format cyclonedx --package-lock-only) > dist/sbom-frontend.cdx.json
+          (cd dist && find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' ! -name '*.sig' -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+      - name: Подпись latest.json и SHA256SUMS.txt (Ed25519)
+        if: steps.ver.outputs.exists == 'false'
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::error::Нет секрета UPDATE_SIGNING_KEY — релиз без подписи не публикуется (клиенты его не примут)."
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/update-signing.pem"
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          pub=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)
+          grep -qF "\"$pub\"" src-tauri/src/updater.rs || { rm -f "$key"; echo "::error::Ключ подписи не соответствует открытому ключу в updater.rs"; exit 1; }
+          for f in latest.json SHA256SUMS.txt; do
+            openssl pkeyutl -sign -inkey "$key" -rawin -in "dist/$f" | base64 -w0 > "dist/$f.sig"
+            openssl pkeyutl -verify -pubin -inkey <(openssl pkey -in "$key" -pubout) -rawin -in "dist/$f" -sigfile <(base64 -d "dist/$f.sig")
+          done
+          rm -f "$key"
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         if: steps.ver.outputs.exists == 'false'
         with:
           tag_name: v${{ steps.ver.outputs.version }}
           target_commitish: ${{ github.sha }}
-          name: RRCKI Mail ${{ steps.ver.outputs.version }}
+          name: Atom Mail ${{ steps.ver.outputs.version }}
           body_path: notes.md
           files: dist/**/*
           fail_on_unmatched_files: true

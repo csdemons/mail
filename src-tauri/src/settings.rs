@@ -97,7 +97,24 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let raw = serde_json::to_vec_pretty(settings).map_err(|e| AppError::Other(e.to_string()))?;
-    std::fs::write(path, raw)?;
+    // Атомарно (временный файл + rename) и, в Linux, только для владельца:
+    // каталог 0700, файл 0600 — другие пользователи компьютера не читают и не меняют настройки.
+    let tmp = path.with_extension("json.tmp");
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        f.write_all(&raw)?;
+        f.sync_all()?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&tmp, raw)?;
+    std::fs::rename(&tmp, &path)?;
     Ok(())
 }
 

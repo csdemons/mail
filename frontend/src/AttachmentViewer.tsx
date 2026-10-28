@@ -201,11 +201,21 @@ function PdfView({ data }: { data: string }) {
     el.innerHTML = ''
     void (async () => {
       try {
-        const pdfjs = await import('pdfjs-dist/legacy/build/pdf')
-        const worker = (await import('pdfjs-dist/legacy/build/pdf.worker.min.js?url')).default
+        // Старые WebView (Windows 8 — Chromium 109) не знают Promise.withResolvers.
+        const P = Promise as unknown as { withResolvers?: () => unknown }
+        if (!P.withResolvers) {
+          P.withResolvers = () => {
+            let resolve: unknown, reject: unknown
+            const promise = new Promise((a, b) => { resolve = a; reject = b })
+            return { promise, resolve, reject }
+          }
+        }
+        const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+        const worker = (await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url')).default
         pdfjs.GlobalWorkerOptions.workerSrc = worker
-        // isEvalSupported: false — шрифты PDF не исполняются как код (CVE-2024-4367).
-        const doc = await pdfjs.getDocument({ data: bytesOf(data), isEvalSupported: false }).promise
+        // pdf.js 6: шрифты не компилируются в JS (eval не используется), XFA выключен.
+        const task = pdfjs.getDocument({ data: bytesOf(data), enableXfa: false })
+        const doc = await task.promise
         if (cancelled) return
         setState({ pages: doc.numPages, error: '' })
         const width = Math.min(el.clientWidth || 900, 1100) - 8
@@ -222,9 +232,9 @@ function PdfView({ data }: { data: string }) {
           canvas.height = vp.height
           canvas.style.width = `${vp.width / ratio}px`
           el.appendChild(canvas)
-          await page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp }).promise
+          await page.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport: vp }).promise
         }
-        void doc.destroy()
+        void task.destroy()
       } catch (e) {
         if (!cancelled) setState((s) => ({ ...s, error: errorText(e) }))
       }

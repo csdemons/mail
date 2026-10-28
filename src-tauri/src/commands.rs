@@ -1021,7 +1021,9 @@ pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> 
 #[tauri::command]
 pub async fn message_html_remote(state: State<'_, AppState>, folder: String, uid: u32) -> Result<String> {
     let (_, urls) = with_conn!(state, c => imap::message_html_with_remote(c, &folder, uid))?;
-    let images = crate::html::fetch_remote(&urls).await;
+    // Автотесты: картинка с мок-сервера на localhost. В релизной сборке — никогда.
+    let allow_local = cfg!(debug_assertions) && std::env::var_os("RRCKI_E2E_ALLOW_LOCAL_IMAGES").is_some();
+    let images = crate::html::fetch_remote(&urls, allow_local).await;
     with_conn!(state, c => imap::rerender_html(c, &folder, uid, &images))
 }
 

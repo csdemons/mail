@@ -10,9 +10,17 @@
 //!   пользователь получает путь к пакету и команду;
 //! - AppImage — файл заменяется на месте, без прав администратора.
 //!
-//! Администратор может переопределить адрес (внутреннее зеркало) или отключить
-//! проверку файлом `update.json`: `{"url": "https://…/latest.json", "disabled": false}`
-//! в `/etc/rrcki-mail/`, `%ProgramData%\RRCKI Mail\` или в каталоге настроек.
+//! Подлинность: `latest.json` подписан ключом Ed25519 (файл `latest.json.sig`
+//! рядом). Закрытый ключ есть только у сборки релизов (секрет CI), открытый
+//! встроен в программу. Без верной подписи обновление не предлагается; без
+//! SHA-256 у файла сборки — не скачивается. Версия ниже или равная текущей
+//! не ставится (защита от отката на старую уязвимую версию).
+//!
+//! Администратор может переопределить адрес (внутреннее зеркало: туда копируются
+//! `latest.json`, `latest.json.sig` и пакеты без изменений) или отключить проверку
+//! файлом `update.json`: `{"url": "https://…/latest.json", "disabled": false}` —
+//! только в `/etc/rrcki-mail/` или `%ProgramData%\RRCKI Mail\` (каталоги, куда
+//! пишет только администратор).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +33,60 @@ use sha2::{Digest, Sha256};
 use crate::error::{AppError, Result};
 
 pub const DEFAULT_MANIFEST_URL: &str = "https://github.com/csdemons/mail/releases/latest/download/latest.json";
+
+/// Открытые ключи подписи `latest.json` (Ed25519, base64 32 байт). Несколько —
+/// чтобы сменить ключ: новый добавляется заранее, старый убирается позже.
+const UPDATE_PUBLIC_KEYS: &[&str] = &["33ZHTEuD4Ay/xjPYiNVkj2P78SiAsyIDrToxdB1NFa4="];
+
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+
+fn decode_key(b64: &str) -> Option<ed25519_dalek::VerifyingKey> {
+    use base64::Engine as _;
+    let raw = base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()?;
+    ed25519_dalek::VerifyingKey::from_bytes(&raw.try_into().ok()?).ok()
+}
+
+fn trusted_keys() -> Vec<ed25519_dalek::VerifyingKey> {
+    #[allow(unused_mut)]
+    let mut keys: Vec<_> = UPDATE_PUBLIC_KEYS.iter().filter_map(|k| decode_key(k)).collect();
+    // E2E: мок-сервер подписывает тестовым ключом. В релизной сборке этого кода нет.
+    #[cfg(debug_assertions)]
+    if let Ok(k) = std::env::var("RRCKI_E2E_UPDATE_PUBKEY") {
+        keys.extend(decode_key(&k));
+    }
+    keys
+}
+
+/// Проверяет подпись (base64 64 байт) ровно над байтами `latest.json`.
+pub fn verify_manifest(body: &[u8], signature_b64: &str, keys: &[ed25519_dalek::VerifyingKey]) -> Result<()> {
+    use base64::Engine as _;
+    let bad = || AppError::Other("Подпись обновления не прошла проверку — обновление не предлагается".into());
+    let raw = base64::engine::general_purpose::STANDARD.decode(signature_b64.trim()).map_err(|_| bad())?;
+    let sig = ed25519_dalek::Signature::from_slice(&raw).map_err(|_| bad())?;
+    if keys.iter().any(|k| k.verify_strict(body, &sig).is_ok()) {
+        Ok(())
+    } else {
+        Err(bad())
+    }
+}
+
+fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Разбор подписанного манифеста: версия и у каждого файла — SHA-256.
+pub fn parse_manifest(body: &[u8]) -> Result<Manifest> {
+    let m: Manifest = serde_json::from_slice(body).map_err(|e| AppError::Other(format!("Некорректный latest.json: {e}")))?;
+    if parse_version(&m.version).iter().all(|&n| n == 0) {
+        return Err(AppError::Other("latest.json: нет версии".into()));
+    }
+    for (variant, a) in &m.assets {
+        if !is_sha256_hex(a.sha256.trim().trim_start_matches("sha256:")) {
+            return Err(AppError::Other(format!("latest.json: у файла «{variant}» нет корректной SHA-256")));
+        }
+    }
+    Ok(m)
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManifestAsset {
@@ -101,8 +163,14 @@ fn net(e: reqwest::Error) -> AppError {
     AppError::Other(format!("Сервер обновлений недоступен: {detail}"))
 }
 
-/// Системный, затем пользовательский `update.json` (пользовательский важнее).
+/// `update.json` администратора. Пользовательский каталог читается только в
+/// отладочной сборке (E2E) — в релизе пользователь не может подменить источник.
 pub fn load_config(user_config_dir: Option<&Path>) -> UpdateConfig {
+    #[cfg(not(debug_assertions))]
+    let user_config_dir: Option<&Path> = {
+        let _ = user_config_dir;
+        None
+    };
     let mut paths: Vec<PathBuf> = Vec::new();
     if cfg!(windows) {
         if let Ok(pd) = std::env::var("ProgramData") {
@@ -175,12 +243,32 @@ pub fn detect_variant(forced: Option<&str>) -> String {
     "unknown".into()
 }
 
-pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
-    let resp = http(Duration::from_secs(30))?.get(url).send().await.map_err(net)?;
+async fn fetch_small(client: &reqwest::Client, url: &str, what: &str) -> Result<Vec<u8>> {
+    let mut resp = client.get(url).send().await.map_err(net)?;
     if !resp.status().is_success() {
-        return Err(AppError::Other(format!("Сервер обновлений ответил HTTP {}", resp.status())));
+        return Err(AppError::Other(format!("Сервер обновлений: {what} — HTTP {}", resp.status())));
     }
-    resp.json::<Manifest>().await.map_err(|e| AppError::Other(format!("Некорректный latest.json: {e}")))
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(net)? {
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_MANIFEST_BYTES {
+            return Err(AppError::Other(format!("Сервер обновлений: {what} слишком большой")));
+        }
+    }
+    Ok(body)
+}
+
+/// `latest.json` и его подпись `latest.json.sig`; без верной подписи — ошибка.
+pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
+    let parsed = url::Url::parse(url).map_err(|_| AppError::Other("Некорректный адрес обновлений".into()))?;
+    if parsed.scheme() != "https" {
+        return Err(AppError::Other("Обновления проверяются только по https".into()));
+    }
+    let client = http(Duration::from_secs(30))?;
+    let body = fetch_small(&client, url, "latest.json").await?;
+    let sig = fetch_small(&client, &format!("{url}.sig"), "подпись latest.json.sig").await?;
+    verify_manifest(&body, &String::from_utf8_lossy(&sig), &trusted_keys())?;
+    parse_manifest(&body)
 }
 
 pub fn pick(manifest: &Manifest, variant: &str) -> Option<ManifestAsset> {
@@ -224,7 +312,8 @@ pub async fn download(asset: &ManifestAsset, dir: &Path, progress: &Progress) ->
     drop(file);
     let got: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
     let want = asset.sha256.trim().trim_start_matches("sha256:").to_ascii_lowercase();
-    if !want.is_empty() && got != want {
+    // SHA-256 обязательна: манифест подписан, сумма в нём гарантирует целостность файла.
+    if !is_sha256_hex(&want) || got != want {
         let _ = std::fs::remove_file(&part);
         return Err(AppError::Other("Контрольная сумма обновления не совпала — файл повреждён или подменён".into()));
     }
@@ -333,6 +422,62 @@ mod tests {
         assert!(check_asset(&pick(&m, "deb").unwrap()).is_err());
         assert!(check_asset(&pick(&m, "rpm").unwrap()).is_err());
         assert!(pick(&m, "astra17").is_none());
+    }
+
+    fn test_key() -> (ed25519_dalek::SigningKey, ed25519_dalek::VerifyingKey) {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let vk = sk.verifying_key();
+        (sk, vk)
+    }
+
+    fn sign(sk: &ed25519_dalek::SigningKey, body: &[u8]) -> String {
+        use base64::Engine as _;
+        use ed25519_dalek::Signer as _;
+        base64::engine::general_purpose::STANDARD.encode(sk.sign(body).to_bytes())
+    }
+
+    #[test]
+    fn manifest_signature_is_required_and_checked() {
+        let (sk, vk) = test_key();
+        let body = br#"{"version":"1.2.3","assets":{}}"#;
+        let sig = sign(&sk, body);
+        assert!(verify_manifest(body, &sig, &[vk]).is_ok());
+        // Подменён один байт манифеста.
+        assert!(verify_manifest(br#"{"version":"9.2.3","assets":{}}"#, &sig, &[vk]).is_err());
+        // Подписан другим ключом.
+        let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        assert!(verify_manifest(body, &sign(&other, body), &[vk]).is_err());
+        // Пустая, мусорная, обрезанная подпись; нет доверенных ключей.
+        for bad in ["", "not base64!", &sig[..20]] {
+            assert!(verify_manifest(body, bad, &[vk]).is_err(), "{bad}");
+        }
+        assert!(verify_manifest(body, &sig, &[]).is_err());
+        // Встроенный ключ корректен.
+        assert!(trusted_keys().len() >= UPDATE_PUBLIC_KEYS.len());
+        assert!(UPDATE_PUBLIC_KEYS.iter().all(|k| decode_key(k).is_some()));
+    }
+
+    #[test]
+    fn accepts_signature_made_by_openssl_in_ci() {
+        // Подпись сделана так же, как в CI: `openssl pkeyutl -sign -rawin` (ключ tests/servers/update-test-key.pem).
+        let vk = decode_key("4AF+AFb4f3ka6BZU5jOqcgMUv3K0MRcK7SP/z57l4u0=").unwrap();
+        let body = br#"{"version":"1.0.0","assets":{}}"#;
+        assert!(verify_manifest(body, "FEvwJwJW++adoB5II/MP/SAUkvZmW7bvmRXPklJqso4JcpF+GK7COiTPb8K4L1OiDfp+xvMPHyKhcSAPqRChBg==\n", &[vk]).is_ok());
+    }
+
+    #[test]
+    fn manifest_requires_sha256_for_every_file() {
+        let ok = format!(r#"{{"version":"1.0.0","assets":{{"win":{{"name":"a.exe","url":"https://x/a.exe","sha256":"{}"}}}}}}"#, "a".repeat(64));
+        assert!(parse_manifest(ok.as_bytes()).is_ok());
+        for sha in ["", "00", &"g".repeat(64), &"a".repeat(63)] {
+            let m = format!(r#"{{"version":"1.0.0","assets":{{"win":{{"name":"a.exe","url":"https://x/a.exe","sha256":"{sha}"}}}}}}"#);
+            assert!(parse_manifest(m.as_bytes()).is_err(), "sha {sha:?}");
+        }
+        let no_sha = r#"{"version":"1.0.0","assets":{"win":{"name":"a.exe","url":"https://x/a.exe"}}}"#;
+        assert!(parse_manifest(no_sha.as_bytes()).is_err());
+        assert!(parse_manifest(br#"{"version":"","assets":{}}"#).is_err());
+        // Откат: подписанный старый манифест не предлагается.
+        assert!(!is_newer("0.9.0", "0.9.2"));
     }
 
     #[test]

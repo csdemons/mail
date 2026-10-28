@@ -184,12 +184,21 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {'server': base, 'loginName': LOGIN, 'appPassword': APP_PASSWORD})
 
         # --- обновления (без авторизации, как GitHub Releases)
-        if method == 'GET' and p == '/updates/latest.json':
-            import hashlib
-            return self.send(200, {'version': '9.9.9', 'notes': '- Проверка обновлений\n- Ещё пункт', 'assets': {
+        if method == 'GET' and p in ('/updates/latest.json', '/updates/latest.json.sig'):
+            import hashlib, subprocess, os, base64 as b64
+            body = json.dumps({'version': '9.9.9', 'notes': '- Проверка обновлений\n- Ещё пункт', 'assets': {
                 'test': {'name': 'rrcki-mail_9.9.9_amd64.deb', 'url': f'{base}/updates/rrcki-mail_9.9.9_amd64.deb',
-                         'sha256': hashlib.sha256(UPDATE_BLOB).hexdigest(), 'size': len(UPDATE_BLOB)},
-                'win': {'name': 'x.exe', 'url': f'{base}/updates/x.exe', 'sha256': '00'}}})
+                         'sha256': hashlib.sha256(UPDATE_BLOB).hexdigest(), 'size': len(UPDATE_BLOB)}}}, ensure_ascii=False).encode()
+            if p.endswith('.sig'):
+                # Подпись тестовым ключом (tests/servers/update-test-key.pem) — как в CI, через openssl.
+                key = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'update-test-key.pem')
+                import tempfile
+                with tempfile.NamedTemporaryFile() as tf:
+                    tf.write(body); tf.flush()
+                    sig = subprocess.run(['openssl', 'pkeyutl', '-sign', '-inkey', key, '-rawin', '-in', tf.name], capture_output=True, check=True).stdout
+                body = b64.b64encode(sig) + b'\n'
+            self.send_response(200); self.send_header('Content-Type', 'application/octet-stream'); self.send_header('Content-Length', str(len(body))); self.end_headers()
+            return self.wfile.write(body)
         if method == 'GET' and p == '/updates/rrcki-mail_9.9.9_amd64.deb':
             self.send_response(200); self.send_header('Content-Length', str(len(UPDATE_BLOB))); self.end_headers()
             self.wfile.write(UPDATE_BLOB); return
