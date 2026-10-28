@@ -28,11 +28,15 @@ export default function ContextMenu({ x, y, items, onClose }: { x: number; y: nu
       if (e.type === 'mousedown' && ref.current?.contains(e.target as Node)) return
       onClose()
     }
+    // Esc закрывает меню, даже если фокус ушёл из меню (и не доходит до горячих клавиш окна).
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); onClose() } }
+    window.addEventListener('keydown', esc, true)
     window.addEventListener('mousedown', close, true)
     window.addEventListener('wheel', close, { capture: true, passive: true })
     window.addEventListener('resize', close)
     window.addEventListener('blur', close)
     return () => {
+      window.removeEventListener('keydown', esc, true)
       window.removeEventListener('mousedown', close, true)
       window.removeEventListener('wheel', close, true)
       window.removeEventListener('resize', close)
