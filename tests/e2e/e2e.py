@@ -874,7 +874,7 @@ try:
     W(d, 10).until(lambda d: not row('E2E ctx one') and not row('E2E ctx two'))
     W(d, 10).until(lambda d: {'E2E ctx one', 'E2E ctx two'} <= set(subjects('Trash')))
     ok('context menu on several selected messages: delete both to Trash')
-    # Правый щелчок через WebDriver оставляет состояние ввода — сбрасываем, иначе дальше теряется Shift.
+    # После правых щелчков WebKitWebDriver теряет Shift при вводе — дальше поля заполняются напрямую.
     ActionChains(d).reset_actions()
 
     # Предпросмотр вложений: картинка (миниатюра и просмотр), PDF (pdf.js), текст в cp1251.
@@ -1009,10 +1009,10 @@ try:
     t = d.find_element(By.CSS_SELECTOR, '.filter-item').get_attribute('textContent')
     assert 'Рассылка' in t and '[noc]' in t, t; ok('filters: existing SOGo filter listed')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.filters-modal button') if 'Новый фильтр' in b.text][0].click()
-    d.find_element(By.CSS_SELECTOR, 'input[aria-label="Название фильтра"]').send_keys('От Иванова')
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Название фильтра"]'), 'От Иванова')
     from selenium.webdriver.support.ui import Select
     Select(d.find_element(By.CSS_SELECTOR, '.filter-row select[aria-label="Поле"]')).select_by_visible_text('От')
-    d.find_element(By.CSS_SELECTOR, '.filter-row input[aria-label="Значение"]').send_keys('ivanov@nrcki.ru')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.filter-row input[aria-label="Значение"]'), 'ivanov@nrcki.ru')
     d.find_element(By.CSS_SELECTOR, '.filter-folder').click()
     wait(d, '.folder-picker input').send_keys('2026')
     W(d, 5).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.folder-picker-list .folder-item')) == 1)
