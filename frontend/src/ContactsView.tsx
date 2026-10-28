@@ -27,6 +27,8 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
   // Результаты поиска на сервере: корпоративная книга (LDAP) целиком не загружается.
   const [remote, setRemote] = useState<Contact[]>([])
   const [searching, setSearching] = useState(false)
+  // Корпоративная книга списком (загружается при её выборе).
+  const [browsed, setBrowsed] = useState<Record<string, Contact[] | 'loading' | 'error'>>({})
   // Подробности корпоративных контактов (поиск отдаёт только имя и почту).
   const [details, setDetails] = useState<Record<string, Contact | 'loading' | 'none'>>({})
 
@@ -47,8 +49,13 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
   const all = useMemo(() => {
     const local = data?.contacts ?? []
     const known = new Set(local.map((c) => c.href))
-    return [...local, ...remote.filter((c) => !known.has(c.href))]
-  }, [data, remote])
+    const extraLists = Object.values(browsed).flatMap((v) => (Array.isArray(v) ? v : []))
+    const out = [...local]
+    for (const c of [...remote, ...extraLists]) {
+      if (!known.has(c.href)) { known.add(c.href); out.push(c) }
+    }
+    return out
+  }, [data, remote, browsed])
 
   async function load() {
     setLoading(true)
@@ -88,6 +95,15 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
       .catch(() => setDetails((d) => ({ ...d, [base.id]: 'none' })))
   }, [base, details])
   const selectedBook = data?.books.find((b) => b.name === book)
+  const browseState = selectedBook ? browsed[selectedBook.url] : undefined
+  useEffect(() => {
+    if (!selectedBook || selectedBook.writable || browsed[selectedBook.url]) return
+    const url = selectedBook.url
+    setBrowsed((b) => ({ ...b, [url]: 'loading' }))
+    api.browseContacts(url)
+      .then((list) => setBrowsed((b) => ({ ...b, [url]: list })))
+      .catch(() => setBrowsed((b) => ({ ...b, [url]: 'error' })))
+  }, [selectedBook, browsed])
   const canCreate = Boolean(data?.books.some((b) => b.writable))
 
   async function remove(c: Contact) {
@@ -145,11 +161,12 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
             </button>
           ))}
           {searching && <div className="folder-placeholder">Поиск в корпоративной книге…</div>}
-          {data && !loading && !searching && visible.length === 0 && (selectedBook && !selectedBook.writable && query.trim().length < 2
-            ? <div className="empty-state"><Search size={30} /><strong>{selectedBook.name}</strong><span>Сотрудники показываются по поиску: введите фамилию, имя, e-mail или отдел.</span></div>
+          {browseState === 'loading' && <div className="folder-placeholder">Загрузка «{selectedBook?.name}»…</div>}
+          {data && !loading && !searching && browseState !== 'loading' && visible.length === 0 && (selectedBook && !selectedBook.writable && query.trim().length < 2
+            ? <div className="empty-state"><Search size={30} /><strong>{selectedBook.name}</strong><span>Сервер не отдаёт эту книгу списком — сотрудники находятся по поиску: введите фамилию, имя, e-mail или отдел.</span></div>
             : <div className="empty-state"><BookUser size={30} /><strong>Контакты не найдены</strong>{query.trim().length < 2 && <span>Корпоративная книга ищется по имени или e-mail — начните вводить.</span>}</div>)}
         </div>
-        <div className="list-footer"><span>{visible.length} из {data?.contacts.length ?? 0}</span><span>CardDAV</span></div>
+        <div className="list-footer"><span>{visible.length}{selectedBook && Array.isArray(browseState) ? '' : ` из ${data?.contacts.length ?? 0}`}</span><span>{selectedBook && !selectedBook.writable ? 'SOGo' : 'CardDAV'}</span></div>
       </main>
 
       <section className="reader-pane">

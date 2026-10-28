@@ -178,6 +178,29 @@ try:
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if '2026' in f.get_attribute('textContent')][0].click()
     W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.message-row')) == 1 and 'В проектной папке' in d.find_element(By.CSS_SELECTOR, '.message-row').get_attribute('textContent'))
     ok('Cyrillic folder opened')
+
+    # Тёмная тема: непрочитанные выделены, окно письма отличимо от фона, адрес в «Кому» читается.
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Входящие' in f.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.message-row.unread'))
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Тема"]').click()
+    W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.app-shell.theme-dark'))
+    bg = d.execute_script("return getComputedStyle(document.querySelector('.message-row.unread')).backgroundColor")
+    assert bg in ('rgb(34, 50, 75)', 'rgba(34, 50, 75, 1)'), bg
+    time.sleep(0.5); d.save_screenshot(f'{OUT}/14-dark-inbox.png')
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    to = wait(d, '.compose-modal .recipient-field input'); to.send_keys('Иванов Иван <ivanov@nrcki.ru>')
+    assert d.execute_script("return getComputedStyle(arguments[0]).color", to) == 'rgb(244, 247, 252)'
+    sel = d.find_element(By.CSS_SELECTOR, '.compose-modal .rt-font')
+    assert d.execute_script("return getComputedStyle(arguments[0]).backgroundColor", sel) == 'rgb(28, 35, 48)'
+    d.save_screenshot(f'{OUT}/15-dark-compose.png')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Тема"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.app-shell.theme-dark'))
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    to = wait(d, '.compose-modal .recipient-field input')
+    assert d.execute_script("return getComputedStyle(arguments[0]).color", to) == 'rgb(15, 23, 42)'
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    ok('dark theme: unread rows highlighted, compose window and recipients readable; light: recipients near-black')
     d.save_screenshot(f'{OUT}/04-folder.png')
 
     OUTBOX = '/srv/imaptest/outbox'

@@ -44,6 +44,7 @@ export const api = {
   installUpdate: () => invoke<InstallResult>('install_update'),
   searchContacts: (query: string) => invoke<Contact[]>('search_contacts', { query }),
   contactDetails: (href: string, id: string) => invoke<Contact>('contact_details', { href, id }),
+  browseContacts: (bookUrl: string) => invoke<Contact[]>('browse_contacts', { bookUrl }),
   listEvents: (start: Date, end: Date) =>
     invoke<EventsResult>('list_events', { start: start.toISOString(), end: end.toISOString() }),
   createEvent: (calendarUrl: string, input: EventInput) => invoke<void>('create_event', { calendarUrl, input }),

@@ -136,6 +136,44 @@ impl SogoSession {
         Ok(parse_search(&v))
     }
 
+    /// Список книги целиком, как его открывает веб-интерфейс SOGo. Для LDAP-книг
+    /// сервер часто отдаёт список только по шаблону («.» — все), поэтому пробуем
+    /// несколько вариантов и берём первый непустой. `log` — для диагностики.
+    pub async fn browse(&self, source: &str, log: &mut Vec<String>) -> Result<Vec<Contact>> {
+        let client = http()?;
+        let url = self.url(&format!("Contacts/{source}/view"))?;
+        let attempts: [(&str, Value); 3] = [
+            ("view .", json!({ "search": "name_or_address", "value": ".", "sort": "c_cn", "asc": 1 })),
+            ("view *", json!({ "search": "name_or_address", "value": "*", "sort": "c_cn", "asc": 1 })),
+            ("view пусто", json!({ "search": "name_or_address", "value": "", "sort": "c_cn", "asc": 1 })),
+        ];
+        for (label, body) in attempts {
+            let mut req = client.post(url.clone()).header("Cookie", &self.cookie).header("Accept", "application/json").json(&body);
+            if let Some(x) = &self.xsrf {
+                req = req.header("X-XSRF-TOKEN", x);
+            }
+            let resp = req.send().await.map_err(net)?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(net)?;
+            let list = serde_json::from_str::<Value>(&text).map(|v| parse_list(&v, source)).unwrap_or_default();
+            log.push(format!("{label} → {status}, записей: {}, ответ: {}", list.len(), text.chars().take(200).collect::<String>()));
+            if !list.is_empty() {
+                return Ok(list);
+            }
+        }
+        for q in [".", "*"] {
+            if let Ok((status, text)) = self.search_raw(q).await {
+                let list: Vec<Contact> = serde_json::from_str::<Value>(&text).map(|v| parse_search(&v)).unwrap_or_default()
+                    .into_iter().filter(|c| c.id.starts_with(&format!("sogo:{source}:"))).collect();
+                log.push(format!("allContactSearch «{q}» → {status}, записей: {}", list.len()));
+                if !list.is_empty() {
+                    return Ok(list);
+                }
+            }
+        }
+        Ok(Vec::new())
+    }
+
     /// Сырой ответ карточки контакта веб-интерфейса SOGo (`…/Contacts/<книга>/<id>/view`).
     pub async fn view_raw(&self, source: &str, id: &str) -> Result<(StatusCode, String)> {
         let url = self.url(&format!("Contacts/{source}/{id}/view"))?;
@@ -189,9 +227,9 @@ pub fn parse_search(v: &Value) -> Vec<Contact> {
         if emails.is_empty() {
             continue;
         }
-        let name = first(c, &["c_cn", "cn", "fn", "displayName"]).unwrap_or_else(|| emails[0].clone());
+        let name = first(c, &["c_cn", "fn", "cn", "c_screenname", "displayName"]).unwrap_or_else(|| emails[0].clone());
         let id = first(c, &["c_name", "id", "c_uid"]).unwrap_or_else(|| emails[0].clone());
-        let source = first(c, &["sourceid", "container"]).unwrap_or_else(|| "gal".into());
+        let source = first(c, &["sourceID", "sourceid", "pid", "container"]).unwrap_or_else(|| "gal".into());
         out.push(Contact {
             id: format!("sogo:{source}:{id}"),
             book: "Корпоративная адресная книга".into(),
@@ -200,14 +238,49 @@ pub fn parse_search(v: &Value) -> Vec<Contact> {
             editable: false,
             full_name: name,
             emails,
-            phones: strings(c.get("c_telephonenumber").unwrap_or(&Value::Null)),
-            org: first(c, &["c_o", "o", "org"]),
+            phones: {
+                let mut p = strings(c.get("phones").unwrap_or(&Value::Null));
+                p.extend(strings(c.get("c_telephonenumber").unwrap_or(&Value::Null)));
+                p.dedup();
+                p
+            },
+            org: first(c, &["c_o", "org", "o"]),
             title: first(c, &["c_title", "title"]),
             note: None,
             address: None,
         });
     }
     out
+}
+
+/// Список книги из `…/view`: либо `{"headers": [[поля…], [значения…], …]}`
+/// (SOGo 5), либо `{"cards": [{…}]}` / `{"contacts": [{…}]}`.
+pub fn parse_list(v: &Value, source: &str) -> Vec<Contact> {
+    let mut rows: Vec<Value> = Vec::new();
+    if let Some(h) = v.get("headers").and_then(Value::as_array) {
+        if let Some(names) = h.first().and_then(Value::as_array) {
+            let names: Vec<String> = names.iter().map(|n| n.as_str().unwrap_or_default().to_string()).collect();
+            for row in h.iter().skip(1).filter_map(Value::as_array) {
+                let mut obj = serde_json::Map::new();
+                for (k, val) in names.iter().zip(row) {
+                    obj.insert(k.clone(), val.clone());
+                }
+                rows.push(Value::Object(obj));
+            }
+        }
+    }
+    for key in ["cards", "contacts"] {
+        if let Some(a) = v.get(key).and_then(Value::as_array) {
+            rows.extend(a.iter().cloned());
+        }
+    }
+    let rows: Vec<Value> = rows.into_iter().map(|mut r| {
+        if let Some(o) = r.as_object_mut() {
+            o.entry("sourceID").or_insert_with(|| json!(source));
+        }
+        r
+    }).collect();
+    parse_search(&json!({ "contacts": rows }))
 }
 
 /// Карточка из веб-API SOGo: поля называются по-разному в разных версиях —
@@ -282,6 +355,23 @@ mod tests {
         assert_eq!(c.phones.len(), 2);
         assert_eq!((c.title.as_deref(), c.org.as_deref()), (Some("Ведущий инженер"), Some("НИЦ КИ, УИТ")));
         assert_eq!(c.address.as_deref(), Some("пл. Курчатова, 1, Москва"));
+    }
+
+    #[test]
+    fn parses_real_rupost_search_and_lists() {
+        // Фрагмент реального ответа RuPost (allContactSearch).
+        let c = parse_search(&json!({"contacts": [{"hasPhoto": 0, "c_cn": "Dmitry O. Yushkov", "c_component": "vcard", "sourceID": "gal",
+            "containerName": "Корпоративная адресная книга", "id": "flay@nrcki.ru", "c_uid": "flay@nrcki.ru", "phones": [{"type": "pref", "value": ""}],
+            "c_sn": "Yushkov", "c_telephonenumber": "", "c_name": "flay@nrcki.ru", "fn": "Dmitry O. Yushkov", "org": "", "c_o": "",
+            "emails": [{"type": "pref", "value": "flay@nrcki.ru"}]}]}));
+        assert_eq!(c.len(), 1);
+        assert_eq!((c[0].full_name.as_str(), c[0].id.as_str()), ("Dmitry O. Yushkov", "sogo:gal:flay@nrcki.ru"));
+        assert!(c[0].phones.is_empty() && c[0].org.is_none());
+        let h = parse_list(&json!({"headers": [["c_name", "c_cn", "c_mail", "c_o"], ["ivanov", "Иванов Иван", "ivanov@nrcki.ru", "УИТ"], ["petrova", "Петрова Анна", "petrova@nrcki.ru", ""]]}), "gal");
+        assert_eq!(h.iter().map(|x| x.full_name.as_str()).collect::<Vec<_>>(), vec!["Иванов Иван", "Петрова Анна"]);
+        assert_eq!(h[0].org.as_deref(), Some("УИТ"));
+        assert_eq!(h[0].id, "sogo:gal:ivanov");
+        assert_eq!(parse_list(&json!({"cards": [{"c_name": "x", "c_cn": "X", "c_mail": "x@nrcki.ru"}]}), "gal").len(), 1);
     }
 
     #[test]

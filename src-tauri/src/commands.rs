@@ -365,6 +365,11 @@ pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> 
                             }
                             Err(e) => extra.push_str(&format!("allContactSearch: ошибка: {e}\n")),
                         }
+                        let mut blog = Vec::new();
+                        let _ = session.browse("gal", &mut blog).await;
+                        for l in blog {
+                            extra.push_str(&format!("список gal: {l}\n"));
+                        }
                         // Подробности первого найденного: веб-API SOGo и vCard по CardDAV.
                         if let Ok(hit) = session.search(&probe).await.map(|l| l.into_iter().next()) {
                             if let Some((source, sid)) = hit.as_ref().and_then(|h| h.id.strip_prefix("sogo:")).and_then(|r| r.split_once(':')) {
@@ -673,6 +678,29 @@ fn urlencoding_segment(name: &str) -> String {
     let mut u = url::Url::parse("https://x/").expect("static");
     u.path_segments_mut().expect("base").push(name);
     u.path().trim_start_matches('/').to_string()
+}
+
+/// Корпоративная (или другая только для чтения) книга целиком — через веб-API
+/// SOGo, как в веб-интерфейсе: CardDAV для LDAP-книг отдаёт пустой список.
+#[tauri::command]
+pub async fn browse_contacts(state: State<'_, AppState>, book_url: String) -> Result<Vec<dav::Contact>> {
+    let (_, base) = dav_client(&state).await?;
+    let books = state.books.lock().await.clone().unwrap_or_default();
+    let book = books.iter().find(|b| b.url == book_url).cloned().ok_or_else(|| AppError::Other("Адресная книга не найдена".into()))?;
+    let source = book.url.trim_end_matches('/').rsplit('/').next().unwrap_or("gal").to_string();
+    let mut log = Vec::new();
+    let mut list = match sogo_session(&state, &base, false).await?.browse(&source, &mut log).await {
+        Ok(l) => l,
+        Err(_) => sogo_session(&state, &base, true).await?.browse(&source, &mut log).await?,
+    };
+    for l in &log {
+        log::info!("browse {source}: {l}");
+    }
+    for c in &mut list {
+        c.book = book.name.clone();
+    }
+    list.sort_by_key(|c| c.full_name.to_lowercase());
+    Ok(list)
 }
 
 /// Подробная карточка контакта: для корпоративной книги поиск отдаёт только
@@ -1489,6 +1517,7 @@ macro_rules! app_commands {
             crate::commands::list_contacts,
             crate::commands::search_contacts,
             crate::commands::contact_details,
+            crate::commands::browse_contacts,
             crate::commands::list_events,
             crate::commands::create_event,
             crate::commands::update_event,
