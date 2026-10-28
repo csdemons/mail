@@ -874,6 +874,8 @@ try:
     W(d, 10).until(lambda d: not row('E2E ctx one') and not row('E2E ctx two'))
     W(d, 10).until(lambda d: {'E2E ctx one', 'E2E ctx two'} <= set(subjects('Trash')))
     ok('context menu on several selected messages: delete both to Trash')
+    # Правый щелчок через WebDriver оставляет состояние ввода — сбрасываем, иначе дальше теряется Shift.
+    ActionChains(d).reset_actions()
 
     # Предпросмотр вложений: картинка (миниатюра и просмотр), PDF (pdf.js), текст в cp1251.
     import zlib, struct
