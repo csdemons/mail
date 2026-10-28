@@ -1,0 +1,19 @@
+#!/bin/sh
+# Этот пакет — для Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+ (WebKitGTK 4.1).
+# На Astra 1.7 (Debian 10) он не встанет: нужен пакет *_amd64-astra1.7.deb.
+set -e
+if [ "$1" = install ] || [ "$1" = upgrade ]; then
+  astra17=""
+  if [ -r /etc/astra_version ] && grep -Eq '(^|[^0-9.])1\.7([^0-9]|$)' /etc/astra_version; then astra17=1; fi
+  if [ -r /etc/debian_version ] && grep -Eq '^(10|buster)' /etc/debian_version; then astra17=1; fi
+  if [ -n "$astra17" ]; then
+    echo "" >&2
+    echo "RRCKI Mail: этот пакет не для Astra Linux SE 1.7." >&2
+    echo "Установите пакет для Astra 1.7 (в названии есть astra1.7):" >&2
+    echo "  sudo apt install ./rrcki-mail_<версия>_amd64-astra1.7.deb" >&2
+    echo "Скачать: https://github.com/csdemons/mail/releases/latest" >&2
+    echo "" >&2
+    exit 1
+  fi
+fi
+exit 0

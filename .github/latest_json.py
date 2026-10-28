@@ -8,7 +8,7 @@ RULES = [
     ('win8', lambda n: n.endswith('-setup-windows8.exe')),
     ('win', lambda n: n.endswith('_x64-setup.exe')),
     ('astra17', lambda n: n.endswith('_amd64-astra1.7.deb')),
-    ('deb', lambda n: n.endswith('_amd64.deb')),
+    ('deb', lambda n: n.endswith('_amd64-astra1.8.deb') or n.endswith('_amd64.deb')),
     ('rpm', lambda n: n.endswith('.x86_64.rpm')),
     ('appimage', lambda n: n.endswith('_amd64.AppImage')),
 ]

@@ -195,7 +195,8 @@ jobs:
         if: steps.ver.outputs.exists == 'false'
         run: |
           find dist -type f | while read -r f; do
-            n="$(dirname "$f")/$(basename "$f" | sed 's/^RRCKI Mail/rrcki-mail/; s/ /-/g')"
+            # Обычный deb — для Astra 1.8: в имени явно, чтобы на 1.7 не ставили его по ошибке.
+            n="$(dirname "$f")/$(basename "$f" | sed 's/^RRCKI Mail/rrcki-mail/; s/ /-/g; s/_amd64\.deb$/_amd64-astra1.8.deb/')"
             [ "$f" = "$n" ] || mv "$f" "$n"
           done
           find dist -type f -printf '%f  %s bytes\n'
@@ -209,8 +210,9 @@ jobs:
           ### Установка
           - **Windows 10/11:** `rrcki-mail_*_x64-setup.exe` (или `.msi` для GPO). Ставится поверх предыдущей версии, настройки и пароли сохраняются.
           - **Windows 8/8.1:** `rrcki-mail_*_x64-setup-windows8.exe` (нужен WebView2 Runtime 109 — последняя версия для этих систем).
-          - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+:** `sudo apt install ./rrcki-mail_*_amd64.deb`
-          - **Astra Linux SE 1.7:** `sudo apt install ./rrcki-mail_*_amd64-astra1.7.deb`
+          - **Astra Linux SE 1.7:** только `rrcki-mail_*_amd64-astra1.7.deb` → `sudo apt install ./rrcki-mail_*_amd64-astra1.7.deb`
+          - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+:** `rrcki-mail_*_amd64-astra1.8.deb` → `sudo apt install ./rrcki-mail_*_amd64-astra1.8.deb`
+          - Узнать версию Astra: `cat /etc/astra_version`. Пакет для 1.8 на 1.7 не встанет (нет WebKitGTK 4.1) — и наоборот ставить не нужно.
           - **RED OS / ALT / Fedora:** `.rpm`; любой дистрибутив — `.AppImage` (`chmod +x` и запустить).
           TXT
       - name: latest.json (встроенное обновление)
