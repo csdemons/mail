@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cached-messages"
+description = "Enables the cached_messages command without any pre-configured scope."
+commands.allow = ["cached_messages"]
+
+[[permission]]
+identifier = "deny-cached-messages"
+description = "Denies the cached_messages command without any pre-configured scope."
+commands.deny = ["cached_messages"]

@@ -20,7 +20,13 @@ const withPrefix = (prefix: string, subj: string) =>
   new RegExp(`^${prefix}:`, 'i').test(subj.trim()) ? subj.trim() : `${prefix}: ${subj.trim()}`
 
 /** Черновик ответа, ответа всем или пересылки. `me` — свой адрес (исключается из «Ответить всем»). */
-export function buildDraft(mode: 'reply' | 'replyAll' | 'forward', m: MessageDetail, me: string): Draft {
+/** Подпись — над цитатой (как в Outlook), отделена стандартной строкой «-- ». */
+export function withSignature(body: string, signature: string): string {
+  const sig = signature.trim()
+  return sig ? `\n\n-- \n${sig}${body}` : body
+}
+
+export function buildDraft(mode: 'reply' | 'replyAll' | 'forward', m: MessageDetail, me: string, signature = ''): Draft {
   const sender = m.fromName ? `${m.fromName} <${m.fromAddress}>` : m.fromAddress
   const header = `${formatFullDate(m.date)}, ${senderLabel(m)} пишет:`
   if (mode === 'forward') {
@@ -29,7 +35,7 @@ export function buildDraft(mode: 'reply' | 'replyAll' | 'forward', m: MessageDet
       to: '',
       cc: '',
       subject: withPrefix('Fwd', m.subject),
-      body: `\n\n---------- Пересланное сообщение ----------\nОт: ${sender}\nДата: ${formatFullDate(m.date)}\nТема: ${m.subject}\nКому: ${m.to.join(', ')}${m.cc.length ? `\nКопия: ${m.cc.join(', ')}` : ''}\n\n${m.bodyText}`,
+      body: withSignature('', signature) + `\n\n---------- Пересланное сообщение ----------\nОт: ${sender}\nДата: ${formatFullDate(m.date)}\nТема: ${m.subject}\nКому: ${m.to.join(', ')}${m.cc.length ? `\nКопия: ${m.cc.join(', ')}` : ''}\n\n${m.bodyText}`,
       inReplyTo: null,
       references: null,
     }
@@ -55,7 +61,7 @@ export function buildDraft(mode: 'reply' | 'replyAll' | 'forward', m: MessageDet
     to: to ? `${to}, ` : '',
     cc: cc ? `${cc}, ` : '',
     subject: withPrefix('Re', m.subject),
-    body: `\n\n${header}\n${m.bodyText.split('\n').map((l) => `> ${l}`).join('\n')}`,
+    body: withSignature('', signature) + `\n\n${header}\n${m.bodyText.split('\n').map((l) => `> ${l}`).join('\n')}`,
     inReplyTo: m.messageId,
     references: [m.references, m.messageId].filter(Boolean).join(' ') || null,
   }

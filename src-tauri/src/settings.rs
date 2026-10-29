@@ -46,6 +46,12 @@ pub struct Settings {
     pub nextcloud_login: String,
     #[serde(default)]
     pub nextcloud_uid: String,
+    /// Личная подпись (текст). None — ещё не задавалась: берётся из настроек SOGo.
+    #[serde(default)]
+    pub signature: Option<String>,
+    /// Сколько дней писем хранить на компьютере (по умолчанию 7, 0 — не хранить).
+    #[serde(default)]
+    pub offline_days: Option<u32>,
 }
 
 pub const DEFAULT_NEXTCLOUD_URL: &str = "https://next.nrcki.ru/";

@@ -19,6 +19,30 @@ pub fn config_dir(app: &AppHandle) -> Result<PathBuf> {
         .map_err(|e| AppError::Other(format!("Каталог настроек недоступен: {e}")))
 }
 
+/// Каталог данных программы (локальное хранилище писем) — не перемещаемый профиль.
+pub fn data_dir(app: &AppHandle) -> Result<PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .map_err(|e| AppError::Other(format!("Каталог данных недоступен: {e}")))
+}
+
+/// Проверка орфографии в полях ввода (WebKitGTK: словари hunspell через enchant;
+/// в Windows WebView2 проверка включена по умолчанию).
+pub fn enable_spellcheck(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.with_webview(|wv| {
+            use webkit2gtk::{WebContextExt, WebViewExt};
+            if let Some(ctx) = wv.inner().context() {
+                ctx.set_spell_checking_enabled(true);
+                ctx.set_spell_checking_languages(&["ru_RU", "en_US"]);
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = app;
+}
+
 /// Выбор файлов (несколько). `None` — пользователь отменил.
 pub async fn pick_files(app: &AppHandle) -> Option<Vec<PathBuf>> {
     let (tx, rx) = tokio::sync::oneshot::channel();

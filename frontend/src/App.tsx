@@ -28,8 +28,10 @@ import ContextMenu from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { AttachmentList } from './AttachmentViewer'
 import MessageBody from './MessageBody'
+import AddressLine from './AddressLine'
+import { OfflineSettings, SignatureSettings } from './MailSettings'
 import TotpSettings, { AUTOLOCK_KEY, loadAutolock } from './TotpSettings'
-import { buildDraft, ensureArchive } from './mailActions'
+import { buildDraft, ensureArchive, withSignature } from './mailActions'
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
 import { appInFront, loadPrefs, notify, savePrefs } from './notifications'
 import type { NotifyPrefs } from './notifications'
@@ -182,7 +184,34 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   const [detailError, setDetailError] = useState('')
 
   const [query, setQuery] = useState('')
+  const queryRef = useRef('')
+  queryRef.current = query
   const [filter, setFilter] = useState<MailFilter>('Все')
+  /** Поиск по всей почте: результаты из локального индекса (и, по кнопке, с сервера). */
+  const [localResults, setLocalResults] = useState<MessageSummary[] | null>(null)
+  const [serverResults, setServerResults] = useState<MessageSummary[] | null>(null)
+  const [searchBusy, setSearchBusy] = useState(false)
+  const serverSearched = serverResults !== null
+  /** Найденное в индексе и (по кнопке) на сервере — без повторов, новые сверху. */
+  const searchResults = useMemo(() => {
+    if (localResults === null && serverResults === null) return null
+    const seen = new Set<string>()
+    return [...(localResults ?? []), ...(serverResults ?? [])]
+      .filter((m) => { const k = messageKey(m); if (seen.has(k)) return false; seen.add(k); return true })
+      .sort((a, b) => (Date.parse(b.date ?? '') || 0) - (Date.parse(a.date ?? '') || 0))
+  }, [localResults, serverResults])
+  function setSearchResults(update: (items: MessageSummary[] | null) => MessageSummary[] | null) {
+    setLocalResults(update)
+    setServerResults(update)
+  }
+  const searching = searchResults !== null
+  /** Письма текущего списка: найденные или письма папки. */
+  const pool = searchResults ?? messages
+  function clearSearch() {
+    setQuery('')
+    setLocalResults(null)
+    setServerResults(null)
+  }
 
   const [diagText, setDiagText] = useState<string | null>(null)
   const [diagBusy, setDiagBusy] = useState(false)
@@ -191,6 +220,8 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   const [ncStatus, setNcStatus] = useState<NcStatus | null>(null)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [signature, setSignature] = useState('')
+  useEffect(() => { api.signatureGet().then(setSignature).catch(() => undefined) }, [])
   composingRef.current = draft !== null
   const [contacts, setContacts] = useState<Contact[]>([])
   const contactsRequested = useRef(false)
@@ -271,6 +302,10 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const currentFolder = folders.find((f) => f.id === folderId)
+  function folderName(id: string): string {
+    const f = folders.find((x) => x.id === id)
+    return f ? folderLabel(f) : id
+  }
 
   const visibleFolders = useMemo(() => {
     const byId = new Map(folders.map((f) => [f.id, f]))
@@ -293,6 +328,10 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   }
 
   const loadFolders = useCallback(async () => {
+    // Сначала — папки с компьютера (сразу после запуска и разблокировки), затем с сервера.
+    api.cachedFolders().then((cached) => {
+      if (cached?.length) setFolders((cur) => (cur.length ? cur : cached))
+    }).catch(() => undefined)
     try {
       const list = await api.listFolders()
       setFolders(list)
@@ -313,6 +352,15 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
       setChecked(new Set())
       setSelectedKey('')
       setDetail(null)
+    }
+    if (!keepSelection) {
+      // Письма с компьютера показываются сразу, пока идёт запрос к серверу.
+      const cached = await api.cachedMessages(folder, null, PAGE_SIZE).catch(() => null)
+      if (cached && request === listRequest.current) {
+        setMessages(cached.items)
+        setTotal(cached.total)
+        setHasMore(cached.hasMore)
+      }
     }
     try {
       const page = await api.listMessages(folder, null, PAGE_SIZE)
@@ -450,6 +498,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
 
   function patchMessage(key: string, patch: Partial<MessageSummary>) {
     setMessages((items) => items.map((m) => (messageKey(m) === key ? { ...m, ...patch } : m)))
+    setSearchResults((items) => items && items.map((m) => (messageKey(m) === key ? { ...m, ...patch } : m)))
     setDetail((d) => (d && messageKey(d) === key ? { ...d, ...patch } : d))
   }
 
@@ -534,7 +583,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
     startDraft({
       mode: 'new', to: '', cc: '', inReplyTo: null, references: null,
       subject: links.length === 1 ? links[0].name : `Файлы (${links.length})`,
-      body: `\n\n${links.length === 1 ? 'Ссылка на файл' : 'Ссылки на файлы'}:\n${lines}`,
+      body: `\n\n${links.length === 1 ? 'Ссылка на файл' : 'Ссылки на файлы'}:\n${lines}` + withSignature('', signature),
     })
   }
 
@@ -559,8 +608,8 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   }
 
   const visibleMessages = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return messages.filter((m) => {
+    const q = searching ? '' : query.trim().toLowerCase()
+    return pool.filter((m) => {
       const filterMatch =
         filter === 'Все' ? true :
         filter === 'Непрочитанные' ? m.unread :
@@ -571,13 +620,39 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
       if (!q) return true
       return `${m.fromName} ${m.fromAddress} ${m.subject} ${m.to.join(' ')}`.toLowerCase().includes(q)
     })
-  }, [messages, filter, query])
+  }, [pool, searching, filter, query])
 
-  const selected = messages.find((m) => messageKey(m) === selectedKey)
+  const selected = pool.find((m) => messageKey(m) === selectedKey)
+
+  // Поиск по всей почте (индекс на компьютере), с задержкой после ввода.
+  useEffect(() => {
+    const q = query.trim()
+    setServerResults(null)
+    if (q.length < 2) { setLocalResults(null); return }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      api.searchMail(q).then((found) => { if (!cancelled) setLocalResults(found) }).catch(() => { if (!cancelled) setLocalResults([]) })
+    }, 200)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [query])
+
+  async function searchOnServer() {
+    const q = query.trim()
+    if (q.length < 2) return
+    setSearchBusy(true)
+    try {
+      const found = await api.searchServer(q)
+      if (queryRef.current.trim() === q) setServerResults(found)
+    } catch (error) {
+      setNotice(`Поиск на сервере не удался: ${errorText(error)}`)
+    } finally {
+      setSearchBusy(false)
+    }
+  }
 
   /** Письма, над которыми выполняется действие: отмеченные, иначе открытое. */
   function actionTargets(): MessageSummary[] {
-    if (checked.size > 0) return messages.filter((m) => checked.has(messageKey(m)))
+    if (checked.size > 0) return pool.filter((m) => checked.has(messageKey(m)))
     return selected ? [selected] : []
   }
 
@@ -614,6 +689,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
     const unread = items.filter((m) => m.unread).length
     const source = items[0]?.folder
     setMessages((list) => list.filter((m) => !keys.has(messageKey(m))))
+    setSearchResults((list) => list && list.filter((m) => !keys.has(messageKey(m))))
     setTotal((t) => Math.max(0, t - items.length))
     setChecked(new Set())
     setFolders((list) => list.map((f) => {
@@ -626,14 +702,26 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
       const order = visibleMessages.map(messageKey)
       const idx = order.indexOf(selectedKey)
       const next = order.slice(idx + 1).concat(order.slice(0, idx).reverse()).find((k) => !keys.has(k))
-      const nextMsg = next ? messages.find((m) => messageKey(m) === next) : undefined
+      const nextMsg = next ? pool.find((m) => messageKey(m) === next) : undefined
       setSelectedKey('')
       setDetail(null)
       if (nextMsg) void openMessage(nextMsg)
     }
   }
 
+  /** Письма из найденных могут быть из разных папок — операции выполняются по папкам. */
+  function byFolder(items: MessageSummary[]): MessageSummary[][] {
+    const groups = new Map<string, MessageSummary[]>()
+    for (const m of items) groups.set(m.folder, [...(groups.get(m.folder) ?? []), m])
+    return [...groups.values()]
+  }
+
   async function moveTo(items: MessageSummary[], target: string) {
+    const groups = byFolder(items)
+    if (groups.length > 1) {
+      for (const g of groups) await moveTo(g, target)
+      return
+    }
     if (items.length === 0) return
     const source = items[0].folder
     if (target === source) return
@@ -657,6 +745,11 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
 
   async function deleteNow(items: MessageSummary[], permanentAsked: boolean) {
     setConfirmDelete(null)
+    const groups = byFolder(items)
+    if (groups.length > 1) {
+      for (const g of groups) await deleteNow(g, permanentAsked)
+      return
+    }
     const source = items[0].folder
     const trash = trashFor(folders, source)
     const toTrash = !permanentAsked && trash && trash.id !== source ? trash.id : null
@@ -735,7 +828,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   function startMessageDrag(e: React.PointerEvent, m: MessageSummary) {
     if (e.button !== 0 || e.ctrlKey || e.shiftKey || e.metaKey) return
     const key = messageKey(m)
-    const items = checked.has(key) ? messages.filter((x) => checked.has(messageKey(x))) : [m]
+    const items = checked.has(key) ? pool.filter((x) => checked.has(messageKey(x))) : [m]
     msgDrag.current = { x0: e.clientX, y0: e.clientY, items, active: false }
   }
 
@@ -750,17 +843,21 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
 
   function openComposer(mode: 'new' | 'reply' | 'replyAll' | 'forward') {
     if (mode === 'new' || !detail) {
-      startDraft({ mode: 'new', to: '', cc: '', subject: '', body: '', inReplyTo: null, references: null })
+      startDraft({ mode: 'new', to: '', cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null })
       return
     }
-    startDraft(buildDraft(mode, detail, account.username))
+    startDraft(buildDraft(mode, detail, account.username, signature))
+  }
+
+  function composeTo(to: string) {
+    startDraft({ mode: 'new', to: `${to}, `, cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null })
   }
 
   /** Ответ/пересылка из меню — письмо может быть ещё не открыто: загружаем его. */
   async function composeFor(m: MessageSummary, mode: 'reply' | 'replyAll' | 'forward') {
     try {
       const full = detail && messageKey(detail) === messageKey(m) ? detail : await api.getMessage(m.folder, m.uid)
-      startDraft(buildDraft(mode, full, account.username))
+      startDraft(buildDraft(mode, full, account.username, signature))
     } catch (error) {
       setNotice(`Не удалось открыть письмо: ${errorText(error)}`)
     }
@@ -770,7 +867,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
     e.preventDefault()
     const key = messageKey(m)
     // Как в Outlook: правый щелчок по отмеченным — меню для всех отмеченных, иначе — для этого письма.
-    const items = checked.has(key) && checked.size > 1 ? messages.filter((x) => checked.has(messageKey(x))) : [m]
+    const items = checked.has(key) && checked.size > 1 ? pool.filter((x) => checked.has(messageKey(x))) : [m]
     if (!checked.has(key) && checked.size > 0) setChecked(new Set())
     setRowMenu({ x: e.clientX, y: e.clientY, items })
   }
@@ -821,6 +918,11 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   }
 
   async function archive(items: MessageSummary[]) {
+    const groups = byFolder(items)
+    if (groups.length > 1) {
+      for (const g of groups) await archive(g)
+      return
+    }
     if (items.length === 0) return
     try {
       const target = await ensureArchive(folders, items[0].folder)
@@ -911,7 +1013,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
           <ContactsView
             onLoaded={(list) => { setContacts(list); contactsRequested.current = true }}
             onNotice={setNotice}
-            onWrite={(address) => startDraft({ mode: 'new', to: `${address}, `, cc: '', subject: '', body: '', inReplyTo: null, references: null })}
+            onWrite={(address) => composeTo(address)}
           />
         )}
         {module === 'mail' && <>
@@ -940,7 +1042,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
                   data-folder-id={f.id}
                   style={indent}
                   title={`${f.path} — ${f.total} ${pluralLetters(f.total)}${f.unseen ? `, непрочитанных ${f.unseen}` : ''}`}
-                  onClick={() => setFolderId(f.id)}
+                  onClick={() => { clearSearch(); setFolderId(f.id) }}
                 >
                   {toggle}
                   <Icon size={17} />
@@ -964,7 +1066,20 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
         <main className="message-column">
           <div className="list-toolbar">
             <button className="icon-button soft" aria-label="Показать папки" onClick={() => setFoldersOpen(!foldersOpen)}><PanelLeftClose size={18} /></button>
-            <label className="search-box"><Search size={17} /><input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Искать в загруженных письмах" /><kbd>Ctrl K</kbd></label>
+            <label className="search-box">
+              <Search size={17} />
+              <input
+                ref={searchRef}
+                value={query}
+                aria-label="Поиск писем"
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape' && query) { e.preventDefault(); e.stopPropagation(); clearSearch() } }}
+                placeholder="Поиск по почте"
+              />
+              {query
+                ? <button type="button" className="search-clear" aria-label="Очистить поиск" title="Очистить (Esc)" onClick={() => { clearSearch(); searchRef.current?.focus() }}><X size={15} /></button>
+                : <kbd>Ctrl K</kbd>}
+            </label>
             <button
               className="icon-button soft refresh-button"
               aria-label="Обновить"
@@ -983,7 +1098,14 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
               <button key={item} className={`filter-chip ${filter === item ? 'active' : ''}`} onClick={() => setFilter(item)}>{item}</button>
             ))}
           </div>
-          <div className="message-list-header"><span>{listTitle}</span><span>{total} {pluralLetters(total)}</span></div>
+          {searching
+            ? <div className="message-list-header search-header">
+              <span>Найдено: {searchResults.length}{searchResults.length >= 300 ? '+' : ''}</span>
+              {serverSearched
+                ? <span>с учётом текста писем на сервере</span>
+                : <button className="text-button" disabled={searchBusy} onClick={() => void searchOnServer()}>{searchBusy ? 'Поиск на сервере…' : 'Искать и в тексте старых писем'}</button>}
+            </div>
+            : <div className="message-list-header"><span>{listTitle}</span><span>{total} {pluralLetters(total)}</span></div>}
           {checked.size > 0 && <div className="bulk-bar">
             <span>Отмечено: {checked.size}</span>
             <button className="text-button" onClick={() => void archive(actionTargets())}><Archive size={15} /> В архив</button>
@@ -1018,6 +1140,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
                   <div className="message-summary">
                     <div className="message-topline"><span className="sender-name">{sender}</span><time>{formatListDate(m.date)}</time></div>
                     <div className="message-subject">{m.subject || '(без темы)'}</div>
+                    {searching && <div className="message-folder">{folderName(m.folder)}</div>}
                     <div className="message-meta">
                       {m.hasAttachments && <Paperclip size={13} />}
                       {m.important && <CircleAlert size={13} className="important-mark" />}
@@ -1032,25 +1155,25 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
             {!loading && !listError && visibleMessages.length === 0 && (
               <div className="empty-state">
                 <Inbox size={30} />
-                <strong>{messages.length === 0 ? 'Папка пуста' : 'Ничего не найдено'}</strong>
-                {messages.length === 0 && (currentFolder?.total ?? 0) > 0 && <>
+                <strong>{searching || messages.length > 0 ? 'Ничего не найдено' : 'Папка пуста'}</strong>
+                {searching && <button className="text-button" onClick={clearSearch}>Очистить поиск</button>}
+                {!searching && messages.length === 0 && (currentFolder?.total ?? 0) > 0 && <>
                   <span>Сервер сообщает о {currentFolder?.total} письмах в этой папке, но список не получен.</span>
                   <button className="text-button" onClick={() => { setShowSettings(true); void runDiagnostics() }}>Открыть диагностику</button>
                 </>}
-                {messages.length > 0 && <>
-                  <span>Поиск и фильтры работают по загруженным письмам.</span>
-                  <button className="text-button" onClick={() => { setQuery(''); setFilter('Все') }}>Сбросить фильтры</button>
+                {!searching && messages.length > 0 && <>
+                  <button className="text-button" onClick={() => { clearSearch(); setFilter('Все') }}>Сбросить фильтры</button>
                 </>}
               </div>
             )}
-            {hasMore && !listError && (
+            {hasMore && !listError && !searching && (
               <button className="text-button load-more" disabled={loadingMore} onClick={() => void loadMore()}>
                 {loadingMore ? 'Загрузка…' : `Показать ещё (загружено ${messages.length} из ${total})`}
               </button>
             )}
           </div>
           <div className="list-footer">
-            <span>{visibleMessages.length} из {messages.length} загруженных</span>
+            <span>{searching ? `${visibleMessages.length} найдено` : `${visibleMessages.length} из ${messages.length} загруженных`}</span>
             <span>
               <Circle size={7} fill={listError ? '#ef4444' : '#22c55e'} />
               {listError ? 'Ошибка' : loading ? 'Синхронизация' : 'Онлайн'}
@@ -1097,10 +1220,9 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
             <div className="sender-block">
               <div className="sender-avatar sender-avatar-large">{initials(senderLabel(detail))}</div>
               <div className="sender-details">
-                <strong>{senderLabel(detail)}</strong>
-                {detail.fromName && <span>{detail.fromAddress}</span>}
-                {detail.to.length > 0 && <span>Кому: {detail.to.join(', ')}</span>}
-                {detail.cc.length > 0 && <span>Копия: {detail.cc.join(', ')}</span>}
+                <span className="sender-line"><AddressLine strong entries={[detail.fromName ? `${detail.fromName} <${detail.fromAddress}>` : detail.fromAddress]} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>
+                {detail.to.length > 0 && <span>Кому: <AddressLine entries={detail.to} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>}
+                {detail.cc.length > 0 && <span>Копия: <AddressLine entries={detail.cc} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>}
                 <small>{formatFullDate(detail.date)}</small>
               </div>
             </div>
@@ -1197,6 +1319,8 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
             <label><input type="checkbox" checked={prefs.preview} onChange={(e) => updatePrefs({ preview: e.target.checked })} /> Показывать тему письма и текст сообщения</label>
             <button className="text-button" onClick={() => notify('Atom Mail', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
           </div>
+          <SignatureSettings signature={signature} onSaved={(text, msg) => { setSignature(text); setNotice(msg) }} />
+          <OfflineSettings onNotice={setNotice} />
           <TotpSettings onChange={setTotpOn} onLock={() => { setShowSettings(false); onLock() }} autolock={autolock} onAutolock={updateAutolock} />
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">

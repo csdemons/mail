@@ -40,6 +40,10 @@ pub struct Policy {
     pub remember_password: Option<bool>,
     pub allow_remember_password: Option<bool>,
     pub share_link_days: Option<u32>,
+    /// Локальное (зашифрованное) хранилище писем и индекс поиска; false — ничего на диск.
+    pub local_store: Option<bool>,
+    /// Наибольший срок хранения писем на компьютере, дней (0 — только индекс заголовков).
+    pub offline_days: Option<u32>,
 }
 
 /// То, что нужно интерфейсу.
@@ -50,6 +54,8 @@ pub struct UiPolicy {
     pub remember_password: bool,
     pub allow_remember_password: bool,
     pub share_link_days: u32,
+    pub local_store: bool,
+    pub max_offline_days: u32,
 }
 
 impl Policy {
@@ -60,7 +66,17 @@ impl Policy {
             remember_password: allow && self.remember_password.unwrap_or(true),
             allow_remember_password: allow,
             share_link_days: self.share_link_days(),
+            local_store: self.local_store(),
+            max_offline_days: self.max_offline_days(),
         }
+    }
+
+    pub fn local_store(&self) -> bool {
+        self.local_store.unwrap_or(true)
+    }
+
+    pub fn max_offline_days(&self) -> u32 {
+        if self.local_store() { self.offline_days.unwrap_or(365).min(3650) } else { 0 }
     }
 
     pub fn share_link_days(&self) -> u32 {
@@ -109,6 +125,12 @@ pub fn load() -> Policy {
         }
         if let Some(v) = registry::dword("ShareLinkDays") {
             p.share_link_days = Some(v);
+        }
+        if let Some(v) = registry::dword("LocalStore") {
+            p.local_store = Some(v != 0);
+        }
+        if let Some(v) = registry::dword("OfflineDays") {
+            p.offline_days = Some(v);
         }
     }
     p

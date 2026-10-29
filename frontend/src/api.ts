@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
+  Account, OfflineStatus, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
 } from './types'
@@ -121,6 +121,15 @@ export const api = {
   totpDisable: (code: string) => invoke<void>('totp_disable', { code }),
   totpUnlock: (code: string) => invoke<LoginResult>('totp_unlock', { code }),
   lockApp: () => invoke<void>('lock_app'),
+  cachedFolders: () => invoke<Folder[] | null>('cached_folders'),
+  cachedMessages: (folder: string, beforeUid: number | null, limit: number) => invoke<MessagePage | null>('cached_messages', { folder, beforeUid, limit }),
+  searchMail: (query: string) => invoke<MessageSummary[]>('search_mail', { query }),
+  searchServer: (query: string) => invoke<MessageSummary[]>('search_server', { query }),
+  offlineStatus: () => invoke<OfflineStatus>('offline_status'),
+  setOfflineDays: (days: number) => invoke<void>('set_offline_days', { days }),
+  clearOffline: () => invoke<void>('clear_offline'),
+  signatureGet: () => invoke<string>('signature_get'),
+  signatureSave: (text: string) => invoke<string | null>('signature_save', { text }),
   listFolders: () => invoke<Folder[]>('list_folders'),
   /** `beforeUid` — UID последнего показанного письма (курсор догрузки). */
   listMessages: (folder: string, beforeUid: number | null = null, limit = PAGE_SIZE) =>

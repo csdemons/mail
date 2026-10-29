@@ -105,6 +105,15 @@
     "allow-totp-setup-begin",
     "allow-totp-setup-confirm",
     "allow-totp-status",
-    "allow-totp-unlock"
+    "allow-totp-unlock",
+    "allow-cached-folders",
+    "allow-cached-messages",
+    "allow-search-mail",
+    "allow-search-server",
+    "allow-offline-status",
+    "allow-set-offline-days",
+    "allow-clear-offline",
+    "allow-signature-get",
+    "allow-signature-save"
   ]
 }

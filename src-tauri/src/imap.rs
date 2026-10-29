@@ -6,7 +6,7 @@ use async_imap::imap_proto::types::NameAttribute;
 use async_imap::types::{Fetch, Flag};
 use futures::TryStreamExt;
 use mail_parser::{MessageParser, MimeHeaders};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio_native_tls::TlsStream;
 
@@ -152,7 +152,7 @@ impl Connection {
 
 // ---------------------------------------------------------------- папки
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FolderRole {
     Inbox,
@@ -164,7 +164,7 @@ pub enum FolderRole {
     Other,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Folder {
     /// Имя на сервере (modified UTF-7) — его передаём обратно в команды.
@@ -212,6 +212,12 @@ pub struct RawFolder {
     /// Роль из атрибутов SPECIAL-USE (\\Sent, \\Trash …).
     pub special_use: Option<FolderRole>,
     pub selectable: bool,
+}
+
+/// Папка из общего/чужого ящика (под корнем `shared` и т. п.).
+pub fn is_shared(folder: &Folder) -> bool {
+    let root = folder.id.split(['/', '.']).next().unwrap_or_default();
+    is_shared_root(root)
 }
 
 /// Корень пространства имён общих/чужих ящиков (Dovecot/RuPost: `shared`).
@@ -414,7 +420,7 @@ pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
 
 // ---------------------------------------------------------------- письма
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageSummary {
     pub folder: String,
@@ -539,9 +545,27 @@ fn has_attachment_part(bs: &async_imap::imap_proto::types::BodyStructure<'_>) ->
     walk(bs, true)
 }
 
-fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'_>>) -> MessageSummary {
+/// Флаги письма: (непрочитано, флажок, важное, отвечено).
+pub type FlagState = (bool, bool, bool, bool);
+
+fn flag_state(fetch: &Fetch) -> FlagState {
     let flags: Vec<Flag<'_>> = fetch.flags().collect();
     let has = |f: &Flag<'_>| flags.iter().any(|x| x == f);
+    (
+        !has(&Flag::Seen),
+        has(&Flag::Flagged),
+        fetch.flags().any(|f| matches!(f, Flag::Custom(k) if k.eq_ignore_ascii_case(IMPORTANT) || k.eq_ignore_ascii_case("$Important"))),
+        has(&Flag::Answered),
+    )
+}
+
+impl MessageSummary {
+    pub fn set_flags(&mut self, f: FlagState) {
+        (self.unread, self.flagged, self.important, self.answered) = f;
+    }
+}
+
+fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'_>>) -> MessageSummary {
 
     let (from_name, from_address) = msg
         .and_then(|m| m.from())
@@ -574,10 +598,10 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
             .trim()
             .to_string(),
         date,
-        unread: !has(&Flag::Seen),
-        flagged: has(&Flag::Flagged),
-        important: fetch.flags().any(|f| matches!(f, Flag::Custom(k) if k.eq_ignore_ascii_case(IMPORTANT) || k.eq_ignore_ascii_case("$Important"))),
-        answered: has(&Flag::Answered),
+        unread: flag_state(fetch).0,
+        flagged: flag_state(fetch).1,
+        important: flag_state(fetch).2,
+        answered: flag_state(fetch).3,
         has_attachments,
         size: fetch.size.unwrap_or(0),
     }
@@ -778,8 +802,34 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
     let body = fetch.body().ok_or(AppError::NotFound)?;
     let parsed = MessageParser::default().parse(body);
     let summary = summary_from(folder, &fetch, parsed.as_ref());
+    Ok(detail_from(summary, body, parsed.as_ref()))
+}
 
-    let (message_id, references, reply_to) = match parsed.as_ref() {
+/// Письмо из локального хранилища: исходник и сведения из индекса.
+pub fn detail_from_raw(summary: MessageSummary, raw: &[u8]) -> MessageDetail {
+    let parsed = MessageParser::default().parse(raw);
+    detail_from(summary, raw, parsed.as_ref())
+}
+
+/// Текст письма для поиска (без HTML-разметки, не длиннее `max` символов).
+pub fn search_text(raw: &[u8], max: usize) -> String {
+    let Some(msg) = MessageParser::default().parse(raw) else { return String::new() };
+    let mut text: String = msg.body_text(0).map(|b| b.into_owned()).unwrap_or_default();
+    let cc = addresses(msg.cc()).join(" ");
+    if !cc.is_empty() {
+        text.push(' ');
+        text.push_str(&cc);
+    }
+    for (i, part) in msg.attachments().enumerate() {
+        text.push(' ');
+        text.push_str(&attachment_name(part, i));
+    }
+    text.chars().take(max).collect()
+}
+
+fn detail_from(summary: MessageSummary, body: &[u8], parsed: Option<&mail_parser::Message<'_>>) -> MessageDetail {
+
+    let (message_id, references, reply_to) = match parsed {
         Some(msg) => {
             let ids = |h: &mail_parser::HeaderValue<'_>| -> Option<String> {
                 let list: Vec<String> = match h {
@@ -799,7 +849,7 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
         None => (None, None, None),
     };
 
-    let (cc, body_text, body_html, remote_images, attachments) = match parsed.as_ref() {
+    let (cc, body_text, body_html, remote_images, attachments) = match parsed {
         Some(msg) => {
             let rendered = crate::html::html_part(msg).map(|h| crate::html::render(msg, h, None));
             let inline = rendered.as_ref().map(|r| r.inline.clone()).unwrap_or_default();
@@ -834,7 +884,7 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
     let mut summary = summary;
     summary.has_attachments = !attachments.is_empty();
 
-    Ok(MessageDetail {
+    MessageDetail {
         summary,
         cc,
         message_id,
@@ -844,7 +894,7 @@ pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Resul
         body_html,
         remote_images,
         attachments,
-    })
+    }
 }
 
 /// HTML письма вместе с картинками из интернета (по кнопке «Показать картинки»).
@@ -871,9 +921,103 @@ pub async fn get_attachment(
     index: usize,
 ) -> Result<(String, Vec<u8>)> {
     let raw = raw_message(conn, folder, uid).await?;
-    let msg = MessageParser::default().parse(&raw).ok_or(AppError::NotFound)?;
+    attachment_in(&raw, index)
+}
+
+/// Вложение из исходника письма (в том числе из локального хранилища).
+pub fn attachment_in(raw: &[u8], index: usize) -> Result<(String, Vec<u8>)> {
+    let msg = MessageParser::default().parse(raw).ok_or(AppError::NotFound)?;
     let part = msg.attachments().nth(index).ok_or(AppError::NotFound)?;
     Ok((attachment_name(part, index), part.contents().to_vec()))
+}
+
+impl Connection {
+    /// Исходник последнего загруженного с сервера письма (для локального хранилища).
+    pub fn last_raw(&self, folder: &str, uid: u32) -> Option<&[u8]> {
+        self.raw_cache.as_ref().filter(|(f, u, _)| f == folder && *u == uid).map(|(_, _, r)| r.as_slice())
+    }
+
+    /// Письмо открыто из локального хранилища: вложения и картинки — без повторной загрузки.
+    pub fn prime_raw(&mut self, folder: &str, uid: u32, raw: Vec<u8>) {
+        self.raw_cache = Some((folder.to_string(), uid, raw));
+    }
+}
+
+// ---------------------------------------------------------------- синхронизация локального хранилища
+
+/// UIDVALIDITY папки и флаги всех писем (только чтение: EXAMINE).
+pub async fn folder_flags(conn: &mut Connection, folder: &str) -> Result<(u32, Vec<(u32, FlagState)>)> {
+    conn.selected = None;
+    let mailbox = conn.session.examine(folder).await.map_err(|e| match e {
+        async_imap::error::Error::No(_) => AppError::NotFound,
+        other => other.into(),
+    })?;
+    let validity = mailbox.uid_validity.ok_or_else(|| AppError::Imap("нет UIDVALIDITY".into()))?;
+    if mailbox.exists == 0 {
+        return Ok((validity, Vec::new()));
+    }
+    let fetches: Vec<Fetch> = conn.session.uid_fetch("1:*", "(UID FLAGS)").await?.try_collect().await?;
+    Ok((validity, fetches.iter().filter_map(|f| f.uid.map(|u| (u, flag_state(f)))).collect()))
+}
+
+/// Заголовки писем для индекса (папка уже открыта `folder_flags`).
+pub async fn index_summaries(conn: &mut Connection, folder: &str, uids: &[u32]) -> Result<Vec<MessageSummary>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fetches: Vec<Fetch> = conn
+        .session
+        .uid_fetch(uid_set(uids), "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])")
+        .await?
+        .try_collect()
+        .await?;
+    let parser = MessageParser::default();
+    Ok(fetches
+        .iter()
+        .filter(|f| f.uid.is_some())
+        .map(|f| {
+            let parsed = f.header().and_then(|h| parser.parse_headers(h));
+            summary_from(folder, f, parsed.as_ref())
+        })
+        .collect())
+}
+
+/// Исходники писем (папка уже открыта `folder_flags`); слишком большие пропускаются.
+pub async fn raw_bodies(conn: &mut Connection, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), "(UID BODY.PEEK[])").await?.try_collect().await?;
+    Ok(fetches.iter().filter_map(|f| Some((f.uid?, f.body()?.to_vec()))).collect())
+}
+
+/// Поиск по тексту писем на сервере (IMAP SEARCH TEXT, UTF-8).
+pub async fn search_server(conn: &mut Connection, folder: &str, query: &str) -> Result<Vec<u32>> {
+    conn.ensure_selected(folder).await?;
+    let mut criteria = String::new();
+    for word in query.split_whitespace().take(6) {
+        let w: String = word.chars().filter(|c| !c.is_control()).collect::<String>().replace('\\', "\\\\").replace('"', "\\\"");
+        if !w.is_empty() {
+            criteria.push_str(&format!(" TEXT \"{w}\""));
+        }
+    }
+    if criteria.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ascii = query.is_ascii();
+    let cmd = if ascii { criteria.trim().to_string() } else { format!("CHARSET UTF-8{criteria}") };
+    let mut uids: Vec<u32> = conn.session.uid_search(cmd).await?.into_iter().collect();
+    uids.sort_unstable_by(|a, b| b.cmp(a));
+    Ok(uids)
+}
+
+/// Заголовки найденных писем (папка открыта `search_server`).
+pub async fn summaries_of(conn: &mut Connection, folder: &str, uids: &[u32]) -> Result<Vec<MessageSummary>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    conn.ensure_selected(folder).await?;
+    index_summaries(conn, folder, uids).await
 }
 
 /// Кладёт отправленное письмо в папку «Отправленные» (\\Sent или по имени).

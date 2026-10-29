@@ -23,6 +23,8 @@ mod imap;
 mod nextcloud;
 #[path = "../../src-tauri/src/settings.rs"]
 mod settings;
+#[path = "../../src-tauri/src/store.rs"]
+mod store;
 #[path = "../../src-tauri/src/totp.rs"]
 mod totp;
 #[path = "../../src-tauri/src/smtp.rs"]
@@ -36,6 +38,10 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     tauri::Builder::default()
         .manage(commands::AppState::default())
+        .setup(|app| {
+            host::enable_spellcheck(&app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(commands::app_commands!())
         .run(tauri::generate_context!())
         .expect("error while running RRCKI Mail");

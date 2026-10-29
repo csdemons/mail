@@ -6,6 +6,8 @@ import type { Contact, ContactInput, DavCollection } from './types'
 
 interface Props {
   contact: Contact | null
+  /** Новый контакт с заполненными полями (например, из адреса письма). */
+  prefill?: { fullName: string; emails: string[] }
   books: DavCollection[]
   defaultBook: string
   onClose: () => void
@@ -14,10 +16,10 @@ interface Props {
 
 const lines = (v: string) => v.split(/[\n,;]/).map((x) => x.trim()).filter(Boolean)
 
-export default function ContactEditor({ contact, books, defaultBook, onClose, onSaved }: Props) {
+export default function ContactEditor({ contact, prefill, books, defaultBook, onClose, onSaved }: Props) {
   const writable = books.filter((b) => b.writable)
-  const [fullName, setFullName] = useState(contact?.fullName ?? '')
-  const [emails, setEmails] = useState(contact?.emails.join('\n') ?? '')
+  const [fullName, setFullName] = useState(contact?.fullName ?? prefill?.fullName ?? '')
+  const [emails, setEmails] = useState(contact?.emails.join('\n') ?? prefill?.emails.join('\n') ?? '')
   const [phones, setPhones] = useState(contact?.phones.join('\n') ?? '')
   const [org, setOrg] = useState(contact?.org ?? '')
   const [title, setTitle] = useState(contact?.title ?? '')

@@ -10,6 +10,17 @@ export interface Account {
   locked?: boolean
 }
 
+export interface OfflineStatus {
+  enabled: boolean
+  allowed: boolean
+  days: number
+  maxDays: number
+  messages: number
+  cached: number
+  syncing: boolean
+  bytes: number
+}
+
 export interface TotpStatus {
   enabled: boolean
   keyringAvailable: boolean

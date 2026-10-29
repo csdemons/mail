@@ -16,6 +16,28 @@ pub fn config_dir(app: &AppHandle) -> Result<PathBuf> {
         .ok_or_else(|| AppError::Other("Каталог настроек недоступен".into()))
 }
 
+pub fn data_dir(app: &AppHandle) -> Result<PathBuf> {
+    app.path_resolver()
+        .app_local_data_dir()
+        .ok_or_else(|| AppError::Other("Каталог данных недоступен".into()))
+}
+
+/// Проверка орфографии (WebKitGTK 4.0: словари hunspell через enchant).
+pub fn enable_spellcheck(app: &AppHandle) {
+    #[cfg(not(target_os = "linux"))]
+    let _ = app;
+    #[cfg(target_os = "linux")]
+    if let Some(w) = app.get_window("main") {
+        let _ = w.with_webview(|wv| {
+            use webkit2gtk::{WebContextExt, WebViewExt};
+            if let Some(ctx) = wv.inner().context() {
+                ctx.set_spell_checking_enabled(true);
+                ctx.set_spell_checking_languages(&["ru_RU", "en_US"]);
+            }
+        });
+    }
+}
+
 pub async fn pick_files(_app: &AppHandle) -> Option<Vec<PathBuf>> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     FileDialogBuilder::new().pick_files(move |paths| {

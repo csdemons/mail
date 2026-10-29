@@ -29,6 +29,8 @@
     "allow-get-policy",
     "allow-nc-files-list",
     "allow-nc-link-for",
-    "allow-nc-upload-links"
+    "allow-nc-upload-links",
+    "allow-create-contact",
+    "allow-signature-get"
   ]
 }

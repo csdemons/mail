@@ -1081,6 +1081,112 @@ except Exception:
 finally:
     d.quit()
 
+# 14a. письма на компьютере, поиск по всей почте, адреса, подпись
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    def inv(cmd, args=None):
+        return d.execute_async_script("const cb = arguments[2]; window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1] || {}).then((r) => cb({ok: r}), (e) => cb({err: JSON.stringify(e)}))", cmd, args)
+    # фоновая синхронизация: индекс всех папок и исходники писем за 7 дней
+    W(d, 90).until(lambda d: (inv('offline_status').get('ok') or {}).get('cached', 0) >= 60 and not inv('offline_status')['ok']['syncing'])
+    st = inv('offline_status')['ok']
+    assert st['enabled'] and st['days'] == 7 and st['messages'] >= 100, st
+    ok(f"local store: {st['messages']} messages indexed, {st['cached']} stored (7 days)")
+    store_files = [f for f in glob.glob(os.environ['XDG_DATA_HOME'] + '/**/mailstore/**/*', recursive=True) if os.path.isfile(f)]
+    assert len(store_files) > 70, len(store_files)
+    blob = b''.join(open(f, 'rb').read() for f in store_files)
+    for secret in ['Тестовое письмо'.encode(), 'robot@rrcki.ru'.encode(), 'Отчёт с вложением'.encode(), 'Содержимое отчёта'.encode()]:
+        assert secret not in blob, secret
+    ok('local store on disk is encrypted (no subjects, addresses or bodies in plaintext)')
+    page = inv('cached_messages', {'folder': 'INBOX', 'beforeUid': None, 'limit': 5})['ok']
+    assert page and len(page['items']) == 5, page
+    ok('cached first page available instantly')
+
+    # поиск: по тексту хранимых писем, по всем папкам, кнопка очистки
+    q = d.find_element(By.CSS_SELECTOR, 'input[aria-label="Поиск писем"]')
+    set_value(d, q, 'номер 119')
+    subj = lambda d: [r.find_element(By.CSS_SELECTOR, '.message-subject').get_attribute('textContent').strip() for r in d.find_elements(By.CSS_SELECTOR, '.message-row')]
+    try:
+        W(d, 10).until(lambda d: subj(d) == ['Письмо №119'])
+    except Exception:
+        print('ROWS:', subj(d)); raise
+    ok('search finds text inside locally stored mail')
+    set_value(d, q, 'проектной')
+    W(d, 10).until(lambda d: subj(d) == ['В проектной папке'])
+    assert '2026' in d.find_element(By.CSS_SELECTOR, '.message-row .message-folder').get_attribute('textContent')
+    d.find_element(By.CSS_SELECTOR, '.message-row').click()
+    W(d, 15).until(lambda d: 'Письмо в папке с русским именем' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
+    ok('search covers all folders; result from another folder opens')
+    set_value(d, q, 'номер 5.')
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.search-header'))
+    assert 'Письмо №5' not in subj(d), subj(d)
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.search-header button') if 'старых писем' in b.text][0].click()
+    W(d, 30).until(lambda d: 'Письмо №5' in subj(d))
+    ok('server search finds older mail by its text')
+    d.save_screenshot(f'{OUT}/42-search.png')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Очистить поиск"]').click()
+    W(d, 10).until(lambda d: q.get_attribute('value') == '' and not d.find_elements(By.CSS_SELECTOR, '.search-header') and len(d.find_elements(By.CSS_SELECTOR, '.message-row')) >= 50)
+    set_value(d, q, 'что-то')
+    q.send_keys(Keys.ESCAPE)
+    W(d, 5).until(lambda d: q.get_attribute('value') == '')
+    ok('search clear button and Esc reset the search')
+
+    # подпись: из веб-почты SOGo, изменение сохраняется в SOGo и попадает в письмо
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    sig = wait(d, 'textarea[aria-label="Подпись"]')
+    W(d, 10).until(lambda d: sig.get_attribute('value') == 'С уважением')
+    set_value(d, sig, 'С уважением,\nТестов Тест\nОтдел испытаний')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.signature-settings button') if 'Сохранить подпись' in b.text][0].click()
+    import json as _j, urllib.request as _u
+    ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    W(d, 10).until(lambda d: 'Отдел испытаний' in _j.loads(_u.urlopen('https://localhost:8444/__defaults', context=ctx).read())['SOGoMailSignature'])
+    assert _j.loads(_u.urlopen('https://localhost:8444/__defaults', context=ctx).read())['SOGoSieveFilters'], 'filters lost'
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    body = wait(d, '.compose-body')
+    try:
+        W(d, 5).until(lambda d: 'Отдел испытаний' in body.get_attribute('textContent') and '--' in body.get_attribute('textContent'))
+    except Exception:
+        print('BODY:', repr(body.get_attribute('innerHTML'))); raise
+    assert body.get_attribute('spellcheck') == 'true'
+    body.click()
+    d.execute_script("arguments[0].focus(); const r = document.createRange(); r.setStart(arguments[0], 0); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('insertText', false, 'Превет, это тестт ')", body)
+    time.sleep(1)
+    d.save_screenshot(f'{OUT}/44-signature-spellcheck.png')
+    ok('signature: taken from SOGo, saved back to SOGo, inserted into new mail; editor has spellcheck')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[aria-label="Закрыть"]').click()
+    # контакты — снова на CardDAV-сервере (выше адрес указывал на мок SOGo)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    dav = [i for i in wait(d, '.profile-form').find_elements(By.CSS_SELECTOR, 'input') if 'автоопределение' in (i.get_attribute('placeholder') or '')][0]
+    set_value(d, dav, 'https://localhost:5232/')
+    set_value(d, wait(d, 'input[aria-label="Пароль для подтверждения"]'), 'Secret-123')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.profile-form button') if b.text == 'Сохранить'][0].click()
+    W(d, 15).until(lambda d: (inv('get_profile').get('ok') or {}).get('davUrl') == 'https://localhost:5232/')
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+    # адрес отправителя: копировать, в контакты
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'Отчёт с вложением' in r.get_attribute('textContent')][0].click()
+    chip = wait(d, '.sender-line .address-chip')
+    assert chip.get_attribute('data-address') == 'yushkov_do@nrcki.ru', chip.get_attribute('data-address')
+    assert d.execute_script("const s = getComputedStyle(arguments[0]); return s.userSelect || s.webkitUserSelect", chip) in ('text', 'auto'), 'not selectable'
+    chip.click()
+    [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if b.text == 'Копировать адрес'][0].click()
+    W(d, 5).until(lambda d: 'Скопировано: yushkov_do@nrcki.ru' in d.find_element(By.CSS_SELECTOR, '.toast').get_attribute('textContent'))
+    chip.click()
+    [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if 'Добавить в контакты' in b.text][0].click()
+    ed = wait(d, '.editor-modal', 20)
+    assert field(d, 'Фамилия Имя Отчество').get_attribute('value') == 'Юшков Дмитрий'
+    assert 'yushkov_do@nrcki.ru' in field(d, 'E-mail (по одному в строке)').get_attribute('value')
+    d.save_screenshot(f'{OUT}/43-add-contact.png')
+    ed.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()
+    W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.editor-modal'))
+    W(d, 10).until(lambda d: any('yushkov_do@nrcki.ru' in c['emails'] for c in (inv('list_contacts').get('ok') or {}).get('contacts', [])))
+    ok('sender address: copy and add to contacts (prefilled)')
+
+except Exception:
+    d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
+finally:
+    d.quit()
+
 # 14b. защита кодом (TOTP): включение, блокировка, разблокировка, резервный код
 import hmac as _hmac, hashlib as _hashlib, base64 as _b64, struct as _struct
 TOTP = {'secret': None, 'last': -1, 'recovery': []}

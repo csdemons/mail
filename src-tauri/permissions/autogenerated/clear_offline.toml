@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-offline"
+description = "Enables the clear_offline command without any pre-configured scope."
+commands.allow = ["clear_offline"]
+
+[[permission]]
+identifier = "deny-clear-offline"
+description = "Denies the clear_offline command without any pre-configured scope."
+commands.deny = ["clear_offline"]

@@ -233,6 +233,8 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
         ref={editor}
         className="compose-body rt-content"
         contentEditable
+        spellCheck
+        lang="ru"
         role="textbox"
         aria-multiline="true"
         aria-label="Текст письма"

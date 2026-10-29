@@ -7,8 +7,9 @@ import { api, editNotice, errorText, formatFullDate, NC_MAIL_DIR } from './api'
 import { AttachmentList } from './AttachmentViewer'
 import Composer from './Composer'
 import MessageBody from './MessageBody'
+import AddressLine from './AddressLine'
 import { trashFor } from './FolderPicker'
-import { buildDraft, ensureArchive, initials, senderLabel } from './mailActions'
+import { buildDraft, ensureArchive, initials, senderLabel, withSignature } from './mailActions'
 import type { Contact, Draft, Folder, MessageDetail, Settings } from './types'
 
 declare global {
@@ -63,11 +64,16 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
   }, [font])
 
   const me = profile?.username ?? ''
+  const [signature, setSignature] = useState('')
+  useEffect(() => { api.signatureGet().then(setSignature).catch(() => undefined) }, [])
   const startDraft = useCallback((mode: 'reply' | 'replyAll' | 'forward') => {
     if (!detail) return
-    setDraft(buildDraft(mode, detail, me))
+    setDraft(buildDraft(mode, detail, me, signature))
     if (contacts.length === 0) api.listContacts().then((r) => setContacts(r.contacts)).catch(() => undefined)
-  }, [detail, me, contacts.length])
+  }, [detail, me, contacts.length, signature])
+  const composeTo = useCallback((to: string) => {
+    setDraft({ mode: 'new', to: `${to}, `, cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null })
+  }, [signature])
 
   async function toggle(flag: 'flagged' | 'important' | 'seen') {
     if (!detail) return
@@ -164,10 +170,9 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
         <div className="sender-block">
           <div className="sender-avatar sender-avatar-large">{initials(senderLabel(detail))}</div>
           <div className="sender-details">
-            <strong>{senderLabel(detail)}</strong>
-            {detail.fromName && <span>{detail.fromAddress}</span>}
-            {detail.to.length > 0 && <span>Кому: {detail.to.join(', ')}</span>}
-            {detail.cc.length > 0 && <span>Копия: {detail.cc.join(', ')}</span>}
+            <span className="sender-line"><AddressLine strong entries={[detail.fromName ? `${detail.fromName} <${detail.fromAddress}>` : detail.fromAddress]} onCompose={composeTo} onNotice={setNotice} /></span>
+            {detail.to.length > 0 && <span>Кому: <AddressLine entries={detail.to} onCompose={composeTo} onNotice={setNotice} /></span>}
+            {detail.cc.length > 0 && <span>Копия: <AddressLine entries={detail.cc} onCompose={composeTo} onNotice={setNotice} /></span>}
             <small>{formatFullDate(detail.date)}</small>
           </div>
         </div>

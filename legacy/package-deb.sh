@@ -39,6 +39,7 @@ Architecture: amd64
 Maintainer: RRCKI <noreply@rrcki.ru>
 Installed-Size: $SIZE
 Depends: $DEPS
+Recommends: hunspell-ru | myspell-ru, hunspell-en-us
 Section: mail
 Priority: optional
 Description: RRCKI Mail — корпоративный почтовый клиент (Astra Linux SE 1.7)

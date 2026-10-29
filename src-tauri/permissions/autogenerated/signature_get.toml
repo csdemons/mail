@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-signature-get"
+description = "Enables the signature_get command without any pre-configured scope."
+commands.allow = ["signature_get"]
+
+[[permission]]
+identifier = "deny-signature-get"
+description = "Denies the signature_get command without any pre-configured scope."
+commands.deny = ["signature_get"]

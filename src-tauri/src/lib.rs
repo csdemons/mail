@@ -8,6 +8,7 @@ pub mod nextcloud;
 #[doc(hidden)]
 pub mod imap;
 mod settings;
+mod store;
 mod totp;
 #[doc(hidden)]
 pub mod smtp;
@@ -32,6 +33,10 @@ pub fn run() {
                 .build(),
         )
         .manage(commands::AppState::default())
+        .setup(|app| {
+            host::enable_spellcheck(&app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(commands::app_commands!())
         .run(tauri::generate_context!())
         .expect("error while running RRCKI Mail");

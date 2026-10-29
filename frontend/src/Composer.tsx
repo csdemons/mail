@@ -165,7 +165,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
         {showCc
           ? <RecipientField label="Копия" value={cc} onChange={setCc} contacts={contacts} />
           : <button type="button" className="text-button add-cc" onClick={() => setShowCc(true)}>+ Копия</button>}
-        <label className="compose-field"><span>Тема</span><input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
+        <label className="compose-field"><span>Тема</span><input value={subject} spellCheck lang="ru" onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
         <RichEditor ref={editor} initialText={draft.body} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} />
         {files.length > 0 && (
           <div className="compose-files">
