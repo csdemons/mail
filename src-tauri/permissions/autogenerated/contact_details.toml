@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-contact-details"
+description = "Enables the contact_details command without any pre-configured scope."
+commands.allow = ["contact_details"]
+
+[[permission]]
+identifier = "deny-contact-details"
+description = "Denies the contact_details command without any pre-configured scope."
+commands.deny = ["contact_details"]

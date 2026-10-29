@@ -99,18 +99,39 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) -> Result<()> {
 }
 
 /// Окно с внешней страницей (редактор документов Nextcloud). Командам программы
-/// эта страница недоступна: окна `doc-*` не входят в capabilities.
+/// эта страница недоступна: окна `doc-*` не входят в capabilities. Переходы на
+/// чужие сайты не выполняются в этом окне (у него нет адресной строки — удобная
+/// сцена для поддельной формы входа): такие ссылки открываются в браузере.
 pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url::Url) -> Result<()> {
     if let Some(w) = app.get_webview_window(label) {
         let _ = w.unminimize();
         let _ = w.set_focus();
         return Ok(());
     }
+    let base = url.clone();
+    let (nav_app, new_app) = (app.clone(), app.clone());
+    let nav_base = base.clone();
     tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::External(url))
         .title(title)
         .inner_size(1280.0, 860.0)
         .min_inner_size(640.0, 480.0)
+        .on_navigation(move |u| {
+            if crate::nextcloud::editor_url_allowed(&nav_base, u) {
+                return true;
+            }
+            if matches!(u.scheme(), "http" | "https" | "mailto") {
+                let _ = open_url(&nav_app, u.as_str());
+            }
+            false
+        })
+        .on_new_window(move |u, _| {
+            if matches!(u.scheme(), "http" | "https" | "mailto") {
+                let _ = open_url(&new_app, u.as_str());
+            }
+            tauri::webview::NewWindowResponse::Deny
+        })
         .build()
         .map_err(|e| AppError::Other(format!("Не удалось открыть окно редактора: {e}")))?;
     Ok(())
 }
+

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-send-file"
+description = "Enables the talk_send_file command without any pre-configured scope."
+commands.allow = ["talk_send_file"]
+
+[[permission]]
+identifier = "deny-talk-send-file"
+description = "Denies the talk_send_file command without any pre-configured scope."
+commands.deny = ["talk_send_file"]

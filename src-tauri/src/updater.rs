@@ -193,6 +193,16 @@ pub fn load_config(user_config_dir: Option<&Path>) -> UpdateConfig {
             }
         }
     }
+    // Групповая политика Windows (HKLM) важнее файлов.
+    #[cfg(windows)]
+    {
+        if let Some(v) = crate::policy::registry::dword("UpdateDisabled") {
+            cfg.disabled = v != 0;
+        }
+        if let Some(u) = crate::policy::registry::string("UpdateUrl").filter(|u| !u.trim().is_empty()) {
+            cfg.url = Some(u);
+        }
+    }
     cfg
 }
 
@@ -288,10 +298,104 @@ fn check_asset(asset: &ManifestAsset) -> Result<()> {
     Ok(())
 }
 
-/// Скачивает файл в `dir`, проверяет SHA-256 (если он указан в latest.json).
+/// Личный каталог для загрузки обновления: новый, только для текущего пользователя.
+///
+/// Общий `/tmp` нельзя: на многопользовательском Linux (терминальная ферма) другой
+/// пользователь мог бы заранее создать каталог и подменить пакет между проверкой
+/// SHA-256 и установкой через pkexec (от root). Поэтому: `$XDG_RUNTIME_DIR` или
+/// `~/.cache/rrcki-mail` (0700, владелец — мы), внутри — новый каталог (mkdir
+/// не принимает существующий), файлы создаются с O_EXCL и без перехода по ссылкам.
+pub fn private_download_dir() -> Result<PathBuf> {
+    let base = private_base()?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    for n in 0..20u32 {
+        let dir = base.join(format!("update-{}-{stamp:x}-{n}", std::process::id()));
+        #[allow(unused_mut)] // mode() — только в unix
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        match b.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(AppError::Other("Не удалось создать каталог для обновления".into()))
+}
+
+#[cfg(unix)]
+fn private_base() -> Result<PathBuf> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    // SAFETY: getuid() не имеет побочных эффектов и не может завершиться ошибкой.
+    let uid = unsafe { libc::getuid() };
+    let owned_private = |p: &Path| {
+        std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink() && m.uid() == uid && m.mode() & 0o077 == 0)
+    };
+    if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        if owned_private(&run) {
+            let dir = run.join("rrcki-mail");
+            let _ = std::fs::DirBuilder::new().recursive(true).create(&dir);
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            if owned_private(&dir) {
+                return Ok(dir);
+            }
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| AppError::Other("Не найден домашний каталог".into()))?;
+    let dir = home.join(".cache").join("rrcki-mail");
+    std::fs::DirBuilder::new().recursive(true).create(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    if !owned_private(&dir) {
+        return Err(AppError::Other(format!("Каталог {} принадлежит другому пользователю или доступен другим — обновление не скачивается", dir.display())));
+    }
+    Ok(dir)
+}
+
+#[cfg(not(unix))]
+fn private_base() -> Result<PathBuf> {
+    // %TEMP% в Windows у каждого пользователя свой.
+    Ok(std::env::temp_dir())
+}
+
+/// Новый файл: не перезаписывает существующий и не идёт по символьной ссылке.
+fn create_new_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    o.open(path)
+}
+
+/// SHA-256 файла на диске — сверяется непосредственно перед установкой.
+pub fn verify_file(path: &Path, sha256: &str) -> Result<()> {
+    use std::io::Read as _;
+    let want = sha256.trim().trim_start_matches("sha256:").to_ascii_lowercase();
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let got: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if !is_sha256_hex(&want) || got != want {
+        return Err(AppError::Other("Файл обновления изменился после загрузки — установка отменена".into()));
+    }
+    Ok(())
+}
+
+/// Скачивает файл в личный каталог `dir` и проверяет SHA-256.
 pub async fn download(asset: &ManifestAsset, dir: &Path, progress: &Progress) -> Result<PathBuf> {
     check_asset(asset)?;
-    std::fs::create_dir_all(dir)?;
     let path = dir.join(&asset.name);
     let part = dir.join(format!("{}.part", asset.name));
     let mut resp = http(Duration::from_secs(60 * 60))?.get(&asset.url).send().await.map_err(net)?;
@@ -301,7 +405,7 @@ pub async fn download(asset: &ManifestAsset, dir: &Path, progress: &Progress) ->
     progress.done.store(0, Ordering::Relaxed);
     progress.total.store(resp.content_length().unwrap_or(asset.size), Ordering::Relaxed);
     let mut hasher = Sha256::new();
-    let mut file = tokio::fs::File::create(&part).await?;
+    let mut file = tokio::fs::File::from_std(create_new_file(&part)?);
     use tokio::io::AsyncWriteExt;
     while let Some(chunk) = resp.chunk().await.map_err(net)? {
         hasher.update(&chunk);
@@ -318,6 +422,8 @@ pub async fn download(asset: &ManifestAsset, dir: &Path, progress: &Progress) ->
         return Err(AppError::Other("Контрольная сумма обновления не совпала — файл повреждён или подменён".into()));
     }
     std::fs::rename(&part, &path)?;
+    // Хэш выше посчитан по потоку из сети; теперь — по самому файлу на диске.
+    verify_file(&path, &asset.sha256)?;
     Ok(path)
 }
 
@@ -359,7 +465,8 @@ pub fn install(variant: &str, file: &Path) -> Result<InstallResult> {
             let (tool, args): (&str, Vec<&str>) = if variant == "rpm" {
                 ("dnf", vec!["install", "-y", &path])
             } else {
-                ("apt-get", vec!["install", "-y", "--allow-downgrades", &path])
+                // Без --allow-downgrades: подписанный манифест и так не предлагает старых версий.
+                ("apt-get", vec!["install", "-y", &path])
             };
             let hint = format!("sudo {tool} {}", args.iter().map(|a| if a.contains(' ') { format!("'{a}'") } else { a.to_string() }).collect::<Vec<_>>().join(" "));
             let status = std::process::Command::new("pkexec").arg(tool).args(&args).status();
@@ -376,19 +483,22 @@ pub fn install(variant: &str, file: &Path) -> Result<InstallResult> {
     }
 }
 
-/// Запуск через оболочку Windows (`start`): для программ, которым нужны права
-/// администратора, Windows сама покажет запрос UAC.
+/// Запуск установщика с повышением прав (ShellExecute «runas» — запрос UAC),
+/// без командной строки: путь передаётся как есть, спецсимволы в нём не мешают.
 #[cfg(windows)]
 fn run_elevated(file: &Path) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("cmd")
-        .args(["/C", "start", ""])
-        .arg(file)
-        .args(["/P", "/R"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| AppError::Other(format!("Не удалось запустить установщик с правами администратора: {e}")))?;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let verb = wide(std::ffi::OsStr::new("runas"));
+    let path = wide(file.as_os_str());
+    let params = wide(std::ffi::OsStr::new("/P /R"));
+    // SAFETY: все строки — нуль-терминированные UTF-16 и живут до конца вызова.
+    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), path.as_ptr(), params.as_ptr(), std::ptr::null(), SW_SHOWNORMAL) };
+    if (r as isize) <= 32 {
+        return Err(AppError::Other(format!("Не удалось запустить установщик с правами администратора (код {})", r as isize)));
+    }
     Ok(())
 }
 
@@ -478,6 +588,33 @@ mod tests {
         assert!(parse_manifest(br#"{"version":"","assets":{}}"#).is_err());
         // Откат: подписанный старый манифест не предлагается.
         assert!(!is_newer("0.9.0", "0.9.2"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_dir_is_private_and_new() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = private_download_dir().unwrap();
+        let b = private_download_dir().unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(a.parent().unwrap()).unwrap().permissions().mode() & 0o077, 0);
+        // Файл не перезаписывается и не открывается через символьную ссылку.
+        let f = a.join("x.part");
+        create_new_file(&f).unwrap();
+        assert!(create_new_file(&f).is_err());
+        let link = a.join("l.part");
+        std::os::unix::fs::symlink("/etc/passwd", &link).unwrap();
+        assert!(create_new_file(&link).is_err());
+        // Подмена файла после загрузки ловится сверкой перед установкой.
+        std::fs::write(a.join("pkg.deb"), b"good").unwrap();
+        let good = "770e607624d689265ca6c44884d0807d9b054d23c473c106c72be9de08b7376c";
+        assert!(verify_file(&a.join("pkg.deb"), good).is_ok());
+        std::fs::write(a.join("pkg.deb"), b"MALICIOUS").unwrap();
+        assert!(verify_file(&a.join("pkg.deb"), good).is_err());
+        assert!(verify_file(&a.join("pkg.deb"), "").is_err());
+        std::fs::remove_dir_all(&a).unwrap();
+        std::fs::remove_dir_all(&b).unwrap();
     }
 
     #[test]

@@ -49,6 +49,10 @@ fn net(e: reqwest::Error) -> AppError {
 
 /// `https://host/` → `https://host/SOGo/`
 pub fn sogo_root(dav_base: &Url) -> Result<Url> {
+    // Пароль уходит формой входа — только по https.
+    if dav_base.scheme() != "https" {
+        return Err(AppError::Other("Адрес сервера SOGo должен начинаться с https://".into()));
+    }
     let mut u = dav_base.clone();
     u.set_path("/SOGo/");
     u.set_query(None);

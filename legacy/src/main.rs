@@ -15,6 +15,8 @@ mod error;
 mod host;
 #[path = "../../src-tauri/src/html.rs"]
 mod html;
+#[path = "../../src-tauri/src/policy.rs"]
+mod policy;
 #[path = "../../src-tauri/src/imap.rs"]
 mod imap;
 #[path = "../../src-tauri/src/nextcloud.rs"]

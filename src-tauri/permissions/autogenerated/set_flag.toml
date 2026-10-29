@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-flag"
+description = "Enables the set_flag command without any pre-configured scope."
+commands.allow = ["set_flag"]
+
+[[permission]]
+identifier = "deny-set-flag"
+description = "Denies the set_flag command without any pre-configured scope."
+commands.deny = ["set_flag"]

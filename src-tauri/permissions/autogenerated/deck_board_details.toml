@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-board-details"
+description = "Enables the deck_board_details command without any pre-configured scope."
+commands.allow = ["deck_board_details"]
+
+[[permission]]
+identifier = "deny-deck-board-details"
+description = "Denies the deck_board_details command without any pre-configured scope."
+commands.deny = ["deck_board_details"]

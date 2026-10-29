@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-files-download"
+description = "Enables the nc_files_download command without any pre-configured scope."
+commands.allow = ["nc_files_download"]
+
+[[permission]]
+identifier = "deny-nc-files-download"
+description = "Denies the nc_files_download command without any pre-configured scope."
+commands.deny = ["nc_files_download"]

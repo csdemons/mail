@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-create"
+description = "Enables the talk_create command without any pre-configured scope."
+commands.allow = ["talk_create"]
+
+[[permission]]
+identifier = "deny-talk-create"
+description = "Denies the talk_create command without any pre-configured scope."
+commands.deny = ["talk_create"]

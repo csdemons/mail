@@ -50,7 +50,15 @@ pub struct AppState {
 /// (сервер закрыл его по таймауту простоя и т.п.) — переподключается и
 /// повторяет операцию один раз.
 macro_rules! with_conn {
-    ($state:expr, $c:ident => $body:expr) => {{
+    ($state:expr, $c:ident => $body:expr) => {
+        with_conn!(@run $state, $c, $body, false)
+    };
+    // Неидемпотентная операция (APPEND в «Отправленные»): после таймаута не повторять —
+    // сервер мог уже сохранить письмо, повтор дал бы копию.
+    (once $state:expr, $c:ident => $body:expr) => {
+        with_conn!(@run $state, $c, $body, true)
+    };
+    (@run $state:expr, $c:ident, $body:expr, $no_timeout_retry:expr) => {{
         let creds = $state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
         let mut guard = $state.conn.lock().await;
         let mut attempt = 0;
@@ -66,7 +74,7 @@ macro_rules! with_conn {
             match result {
                 Err(e) if e.is_connection() => {
                     *guard = None;
-                    if attempt == 0 {
+                    if attempt == 0 && !($no_timeout_retry && matches!(e, AppError::Timeout)) {
                         attempt += 1;
                         log::warn!("IMAP connection lost, reconnecting: {e}");
                         continue;
@@ -150,6 +158,9 @@ pub async fn login(
     smtp_port: Option<u16>,
     dav_url: Option<String>,
 ) -> Result<LoginResult> {
+    if let Some(u) = dav_url.as_deref() {
+        settings::validate_dav_url(u)?;
+    }
     let host = host.trim().to_string();
     let username = username.trim().to_string();
     if host.is_empty() || username.is_empty() || password.is_empty() {
@@ -210,6 +221,8 @@ pub async fn login(
         log::warn!("settings not saved: {e}");
         warnings.push(format!("Не удалось сохранить настройки подключения: {e}."));
     }
+    // Политика администратора может запретить запоминать пароль.
+    let remember = remember && crate::policy::load().ui().allow_remember_password;
     if remember {
         if let Err(e) = settings::store_password(&s, &password) {
             log::warn!("keyring unavailable: {e}");
@@ -464,9 +477,20 @@ pub async fn update_profile(
     smtp_host: String,
     smtp_port: u16,
     dav_url: String,
+    password: Option<String>,
 ) -> Result<Settings> {
+    settings::validate_dav_url(&dav_url)?;
     let mut guard = state.profile.lock().await;
     let mut p = guard.clone().ok_or(AppError::NotLoggedIn)?;
+    // Смена серверов (куда уходит пароль почты) — только с подтверждением паролем:
+    // даже если в интерфейс попадёт чужой код, увести пароль на свой сервер он не сможет.
+    let servers_changed = p.smtp_host != smtp_host.trim() || p.smtp_port != smtp_port || p.dav_url != dav_url.trim();
+    if servers_changed {
+        let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+        if password.as_deref() != Some(creds.password.as_str()) {
+            return Err(AppError::Other("Чтобы изменить адреса серверов, введите пароль почты".into()));
+        }
+    }
     p.display_name = display_name.trim().to_string();
     p.smtp_host = smtp_host.trim().to_string();
     p.smtp_port = smtp_port;
@@ -555,8 +579,8 @@ pub async fn send_message(
             let path = picked
                 .get(id)
                 .ok_or_else(|| AppError::Other("Вложение не найдено, выберите файл заново".into()))?;
-            let data = tokio::fs::read(path).await?;
-            total += data.len() as u64;
+            // Размер — по метаданным, до чтения: огромный файл не попадает в память.
+            total += tokio::fs::metadata(path).await?.len();
             if total > MAX_OUTGOING_MB * 1024 * 1024 {
                 return Err(AppError::Other(format!(
                     "Вложения больше {MAX_OUTGOING_MB} МБ — почтовый сервер их не примет"
@@ -567,6 +591,7 @@ pub async fn send_message(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "file".into());
             let content_type = mime_guess::from_path(path).first_or_octet_stream().to_string();
+            let data = tokio::fs::read(path).await?;
             files.push(smtp::OutgoingAttachment { name, content_type, data });
         }
     }
@@ -594,7 +619,7 @@ pub async fn send_message(
 
     // Копия в «Отправленные»: письмо уже ушло, поэтому ошибка здесь — предупреждение.
     let raw = message.formatted();
-    match with_conn!(state, c => imap::append_sent(c, &raw)) {
+    match with_conn!(once state, c => imap::append_sent(c, &raw)) {
         Ok(folder) => Ok(SendResult { saved_to: Some(folder), warning: None }),
         Err(e) => Ok(SendResult {
             saved_to: None,
@@ -743,7 +768,7 @@ pub async fn browse_contacts(state: State<'_, AppState>, book_url: String) -> Re
         Err(_) => sogo_session(&state, &base, true).await?.browse(&source, &mut log).await?,
     };
     for l in &log {
-        log::info!("browse {source}: {l}");
+        log::debug!("browse {source}: {l}");
     }
     for c in &mut list {
         c.book = book.name.clone();
@@ -1120,6 +1145,12 @@ pub async fn nc_edit_attachment(app: AppHandle, state: State<'_, AppState>, fold
     edit_in_nextcloud(&app, &nc, &path, nextcloud::office_mime(&name).unwrap_or("")).await
 }
 
+/// Политика администратора для интерфейса (галочка пароля, внешние картинки, срок ссылок).
+#[tauri::command]
+pub fn get_policy() -> crate::policy::UiPolicy {
+    crate::policy::load().ui()
+}
+
 /// Аватар Nextcloud: `kind` = "user" (ID пользователя) или "room" (токен беседы Talk).
 #[tauri::command]
 pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> Result<Option<String>> {
@@ -1138,7 +1169,11 @@ pub async fn message_html_remote(state: State<'_, AppState>, folder: String, uid
     let (_, urls) = with_conn!(state, c => imap::message_html_with_remote(c, &folder, uid))?;
     // Автотесты: картинка с мок-сервера на localhost. В релизной сборке — никогда.
     let allow_local = cfg!(debug_assertions) && std::env::var_os("RRCKI_E2E_ALLOW_LOCAL_IMAGES").is_some();
-    let images = crate::html::fetch_remote(&urls, allow_local).await;
+    let policy = crate::policy::load();
+    if policy.remote_images == crate::policy::RemoteImages::Off {
+        return Err(AppError::Other("Загрузка картинок из интернета отключена администратором".into()));
+    }
+    let images = crate::html::fetch_remote(&urls, allow_local, &policy).await;
     with_conn!(state, c => imap::rerender_html(c, &folder, uid, &images))
 }
 
@@ -1228,6 +1263,12 @@ pub async fn nc_connect_start(app: AppHandle, state: State<'_, AppState>, url: S
     let base = nextcloud::normalize_base(&url)?;
     let flow = nextcloud::login_flow_start(&base).await?;
     let login_url = flow.login_url.clone();
+    // Адрес входа приходит от сервера: открываем только https на том же сервере
+    // (не file:, smb: и не чужие обработчики протоколов).
+    let parsed = url::Url::parse(&login_url).map_err(|_| AppError::Other("Nextcloud вернул некорректный адрес входа".into()))?;
+    if parsed.scheme() != "https" || parsed.host_str() != base.host_str() || parsed.port_or_known_default() != base.port_or_known_default() {
+        return Err(AppError::Other("Nextcloud вернул адрес входа на другом сервере — вход отменён".into()));
+    }
     *state.nc_flow.lock().await = Some((base, flow));
     if let Err(e) = host::open_url(&app, &login_url) {
         log::warn!("browser not opened: {e}");
@@ -1469,8 +1510,9 @@ pub async fn nc_files_mkdir(state: State<'_, AppState>, parent: String, name: St
     nc(&state).await?.files_mkdir(&parent, &name).await
 }
 
-/// Читает выбранные пользователем файлы (по id из `pick_attachments`).
-async fn read_picked(state: &AppState, ids: &[String]) -> Result<Vec<(String, String, Vec<u8>)>> {
+/// Выбранные пользователем файлы (по id из `pick_attachments`): имя, путь и размер.
+/// Содержимое не читается — оно уйдёт на сервер потоком.
+async fn picked_files(state: &AppState, ids: &[String]) -> Result<Vec<(String, String, PathBuf)>> {
     let mut out = Vec::new();
     for id in ids {
         let path = state.picked.lock().await.get(id).cloned().ok_or_else(|| AppError::Other("Файл не найден, выберите его заново".into()))?;
@@ -1479,7 +1521,7 @@ async fn read_picked(state: &AppState, ids: &[String]) -> Result<Vec<(String, St
             return Err(AppError::Other(format!("Файл больше {MAX_TALK_FILE_MB} МБ")));
         }
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
-        out.push((id.clone(), name, tokio::fs::read(&path).await?));
+        out.push((id.clone(), name, path));
     }
     Ok(out)
 }
@@ -1492,11 +1534,11 @@ async fn nc_upload(state: &AppState) -> Result<nextcloud::Nc> {
 /// Загружает выбранные файлы в папку Nextcloud. Возвращает пути.
 #[tauri::command]
 pub async fn nc_files_upload(state: State<'_, AppState>, dir: String, attachments: Vec<String>) -> Result<Vec<String>> {
-    let files = read_picked(&state, &attachments).await?;
+    let files = picked_files(&state, &attachments).await?;
     let client = nc_upload(&state).await?;
     let mut paths = Vec::new();
-    for (id, name, data) in files {
-        paths.push(client.upload_unique(&dir, &name, data).await?);
+    for (id, name, path) in files {
+        paths.push(client.upload_unique_src(&dir, &name, nextcloud::UploadSource::File(path)).await?);
         state.picked.lock().await.remove(&id);
     }
     Ok(paths)
@@ -1509,8 +1551,7 @@ pub async fn nc_files_download(app: AppHandle, state: State<'_, AppState>, path:
     let Some(target) = host::save_file(&app, &name).await else {
         return Ok(None);
     };
-    let data = nc_upload(&state).await?.files_download(&path).await?;
-    tokio::fs::write(&target, data).await?;
+    nc_upload(&state).await?.files_download_to(&path, &target).await?;
     Ok(Some(target.display().to_string()))
 }
 
@@ -1547,7 +1588,7 @@ pub async fn nc_share_delete(state: State<'_, AppState>, id: String) -> Result<(
 /// Публичная ссылка на файл для письма (существующая без пароля или новая).
 #[tauri::command]
 pub async fn nc_link_for(state: State<'_, AppState>, path: String) -> Result<String> {
-    nc(&state).await?.link_for(&path).await
+    nc(&state).await?.link_for(&path, crate::policy::load().share_link_days()).await
 }
 
 #[derive(Serialize)]
@@ -1561,12 +1602,13 @@ pub struct UploadedLink {
 /// Файлы с компьютера → папка в Nextcloud → публичные ссылки (для больших вложений).
 #[tauri::command]
 pub async fn nc_upload_links(state: State<'_, AppState>, dir: String, attachments: Vec<String>) -> Result<Vec<UploadedLink>> {
-    let files = read_picked(&state, &attachments).await?;
+    let days = crate::policy::load().share_link_days();
+    let files = picked_files(&state, &attachments).await?;
     let client = nc_upload(&state).await?;
     let mut out = Vec::new();
-    for (id, name, data) in files {
-        let path = client.upload_unique(&dir, &name, data).await?;
-        let url = client.link_for(&path).await?;
+    for (id, name, file) in files {
+        let path = client.upload_unique_src(&dir, &name, nextcloud::UploadSource::File(file)).await?;
+        let url = client.link_for(&path, days).await?;
         state.picked.lock().await.remove(&id);
         out.push(UploadedLink { name: path.rsplit('/').next().unwrap_or(&name).to_string(), path, url });
     }
@@ -1598,8 +1640,7 @@ pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachmen
         return Err(AppError::Other(format!("Файл больше {MAX_TALK_FILE_MB} МБ — отправьте ссылку из Nextcloud")));
     }
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
-    let data = tokio::fs::read(&path).await?;
-    nextcloud::Nc::upload(creds, &uid)?.talk_send_file(&token, &name, data, &caption, reply_to).await?;
+    nextcloud::Nc::upload(creds, &uid)?.talk_send_file(&token, &name, nextcloud::UploadSource::File(path), &caption, reply_to).await?;
     state.picked.lock().await.remove(&attachment);
     Ok(())
 }
@@ -1770,10 +1811,15 @@ pub async fn install_update(app: AppHandle, state: State<'_, AppState>) -> Resul
         .await
         .clone()
         .ok_or_else(|| AppError::Other("Сначала проверьте обновления".into()))?;
-    let dir = std::env::temp_dir().join("rrcki-mail-update");
+    let dir = updater::private_download_dir()?;
     let file = updater::download(&asset, &dir, &state.update_progress).await?;
     let variant = info.variant.clone();
-    let result = tokio::task::spawn_blocking(move || updater::install(&variant, &file))
+    let sha = asset.sha256.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        // Ещё раз по файлу — прямо перед установкой.
+        updater::verify_file(&file, &sha)?;
+        updater::install(&variant, &file)
+    })
         .await
         .map_err(|e| AppError::Other(e.to_string()))??;
     if result.restarting {
@@ -1867,6 +1913,7 @@ macro_rules! app_commands {
             crate::commands::attachment_data,
             crate::commands::message_html_remote,
             crate::commands::nc_avatar,
+            crate::commands::get_policy,
             crate::commands::nc_editors,
             crate::commands::nc_edit,
             crate::commands::nc_create_document,

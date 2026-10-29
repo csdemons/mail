@@ -762,3 +762,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .context-menu kbd { font: 11px/1 inherit; color: var(--muted, #667085); border: 0; background: none; }
 .context-sep { height: 1px; margin: 4px 6px; background: var(--line); }
 .message-row.menu-target { outline: 2px solid #2474ed; outline-offset: -2px; }
+
+/* Ссылки в письмах: реальный адрес и предупреждение */
+.link-status { position: sticky; bottom: 0; max-width: 100%; margin-top: 4px; padding: 3px 8px; border-radius: 6px; background: var(--hover); color: var(--muted, #667085); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link-full { font-size: 12px; overflow-wrap: anywhere; color: var(--muted, #667085); }

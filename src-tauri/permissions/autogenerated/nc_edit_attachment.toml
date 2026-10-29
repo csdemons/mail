@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-edit-attachment"
+description = "Enables the nc_edit_attachment command without any pre-configured scope."
+commands.allow = ["nc_edit_attachment"]
+
+[[permission]]
+identifier = "deny-nc-edit-attachment"
+description = "Denies the nc_edit_attachment command without any pre-configured scope."
+commands.deny = ["nc_edit_attachment"]

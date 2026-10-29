@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-message-html-remote"
+description = "Enables the message_html_remote command without any pre-configured scope."
+commands.allow = ["message_html_remote"]
+
+[[permission]]
+identifier = "deny-message-html-remote"
+description = "Denies the message_html_remote command without any pre-configured scope."
+commands.deny = ["message_html_remote"]

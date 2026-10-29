@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-message-window"
+description = "Enables the open_message_window command without any pre-configured scope."
+commands.allow = ["open_message_window"]
+
+[[permission]]
+identifier = "deny-open-message-window"
+description = "Denies the open_message_window command without any pre-configured scope."
+commands.deny = ["open_message_window"]

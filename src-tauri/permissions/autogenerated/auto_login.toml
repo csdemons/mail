@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-auto-login"
+description = "Enables the auto_login command without any pre-configured scope."
+commands.allow = ["auto_login"]
+
+[[permission]]
+identifier = "deny-auto-login"
+description = "Denies the auto_login command without any pre-configured scope."
+commands.deny = ["auto_login"]

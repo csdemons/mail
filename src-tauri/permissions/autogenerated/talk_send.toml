@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-send"
+description = "Enables the talk_send command without any pre-configured scope."
+commands.allow = ["talk_send"]
+
+[[permission]]
+identifier = "deny-talk-send"
+description = "Denies the talk_send command without any pre-configured scope."
+commands.deny = ["talk_send"]

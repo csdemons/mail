@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-disconnect"
+description = "Enables the nc_disconnect command without any pre-configured scope."
+commands.allow = ["nc_disconnect"]
+
+[[permission]]
+identifier = "deny-nc-disconnect"
+description = "Denies the nc_disconnect command without any pre-configured scope."
+commands.deny = ["nc_disconnect"]

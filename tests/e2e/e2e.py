@@ -637,6 +637,10 @@ try:
             t.invoke('get_profile').then((r) => done('ALLOWED ' + JSON.stringify(r))).catch((e) => done('denied: ' + e))''')
         print('   editor IPC:', res)
         assert not res.startswith('ALLOWED'), res
+        # Переход на чужой сайт в окне редактора не выполняется (ссылка уходит в браузер).
+        d.execute_script("location.href = 'https://phish.example/login'")
+        time.sleep(1.5)
+        assert expected in d.find_element(By.ID, 'doc').text and 'phish' not in d.current_url, d.current_url
         d.save_screenshot(f'{OUT}/26-editor.png')
         d.close(); d.switch_to.window(main_h)
     file_row('План.docx')[0].click()
@@ -661,8 +665,17 @@ try:
     body = W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-body'))
     W(d, 10).until(lambda d: 'https://localhost:8443/s/tok' in d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-body').get_attribute('innerHTML'))
     assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Регламент.txt'
-    assert len([x for x in nc_mock('GET', '/test/state')['shares'] if x['share_type'] == 3]) == 1, 'existing link must be reused'
-    ok('«Отправить ссылкой»: new mail with the link, existing link reused')
+    links = [x for x in nc_mock('GET', '/test/state')['shares'] if x['share_type'] == 3 and x['path'] == '/Документы/Регламент.txt']
+    # Ссылка без срока для письма не берётся — создаётся новая со сроком 30 дней (политика по умолчанию).
+    assert len(links) == 2 and links[1]['expiration'], links
+    import datetime as _dt
+    assert links[1]['expiration'][:10] == (_dt.date.today() + _dt.timedelta(days=30)).isoformat(), links[1]
+    ok('«Отправить ссылкой»: new mail with a link that expires in 30 days')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.compose-modal .compose-header button') if b.get_attribute('aria-label') == 'Закрыть'][0].click()
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.file-panel .file-actions button') if 'Отправить ссылкой' in b.text][0].click()
+    W(d, 10).until(lambda d: 'https://localhost:8443/s/tok' in d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-body').get_attribute('innerHTML'))
+    assert len([x for x in nc_mock('GET', '/test/state')['shares'] if x['share_type'] == 3 and x['path'] == '/Документы/Регламент.txt']) == 2, 'link with expiry must be reused'
+    ok('second «Отправить ссылкой» reuses the link with expiry')
     # В том же письме — «Ссылка Nextcloud» из окна письма.
     d.find_element(By.CSS_SELECTOR, '.nc-link-button').click()
     W(d, 10).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.nc-picker-list .file-row') if 'Документы' in r.get_attribute('textContent')])
@@ -944,7 +957,7 @@ try:
     rel.attach(MIMEText('<html><head><style>.hdr { background: #003366; color: #ffffff; padding: 12px }</style></head><body>'
                         '<table width="600" bgcolor="#f0f0f0"><tr><td class="hdr"><img src="cid:logo@rrcki" width="120" alt="logo"> Новости НИЦ</td></tr>'
                         '<tr><td><p style="color:#990000">Вёрстка <b>рассылки</b></p><img id="remote" src="https://localhost:8443/e2e/remote.png" alt="r">'
-                        '<p><a href="https://example.org/novosti">Подробнее</a></p></td></tr></table></body></html>', 'html', 'utf-8'))
+                        '<p><a href="https://example.org/novosti">Подробнее</a></p><p><a id="phish" href="https://evil.example/login">https://www.nrcki.ru/login</a></p></td></tr></table></body></html>', 'html', 'utf-8'))
     logo = MIMEImage(png(120, 40, (0, 51, 102)), 'png'); logo.add_header('Content-ID', '<logo@rrcki>'); logo.add_header('Content-Disposition', 'inline', filename='logo.png')
     rel.attach(logo)
     rel['Subject'] = 'E2E html'; rel['From'] = 'Рассылка <news@nrcki.ru>'; rel['To'] = 'test@rrcki.ru'
@@ -972,6 +985,16 @@ try:
     d.switch_to.default_content()
     assert nc_mock('GET', '/test/state').get('remote_png', 0) == 1
     ok('HTML mail: «Показать картинки» loads remote image via the app')
+    frame = d.find_element(By.CSS_SELECTOR, 'iframe.message-html'); d.switch_to.frame(frame)
+    d.execute_script("document.querySelector('a[href=\"https://evil.example/login\"]').click()")
+    d.switch_to.default_content()
+    modal = W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.confirm-modal[aria-label="Подозрительная ссылка"]'))
+    t = modal.get_attribute('textContent')
+    assert 'nrcki.ru' in t and 'evil.example' in t, t
+    d.save_screenshot(f'{OUT}/28-phishing-link.png')
+    [b for b in modal.find_elements(By.TAG_NAME, 'button') if 'Не открывать' in b.text][0].click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.confirm-modal'))
+    ok('link whose text shows another domain: warning before opening')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.html-foot button') if 'как текст' in b.text][0].click()
     W(d, 5).until(lambda d: 'Вёрстка рассылки' in d.find_element(By.CSS_SELECTOR, '.message-body.plain').get_attribute('textContent'))
     ok('HTML mail: plain-text view toggle')
@@ -1002,8 +1025,22 @@ try:
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     dav = [i for i in d.find_elements(By.CSS_SELECTOR, '.settings-modal .login-field input') if 'автоопределение' in (i.get_attribute('placeholder') or '')][0]
     set_value(d, dav, 'https://localhost:8444/')
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if b.text == 'Сохранить'][0].click()
-    time.sleep(1)
+    # Смена адреса сервера требует пароль почты; без него — отказ.
+    save_btn = [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if b.text == 'Сохранить'][0]
+    assert not save_btn.is_enabled()
+    set_value(d, wait(d, '.settings-modal input[aria-label="Пароль для подтверждения"]'), 'wrong')
+    save_btn.click()
+    W(d, 10).until(lambda d: any('введите пароль почты' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.settings-modal input[aria-label="Пароль для подтверждения"]'), 'Secret-123')
+    save_btn.click()
+    W(d, 10).until(lambda d: any('Настройки сохранены' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    ok('changing server addresses requires the mail password')
+    set_value(d, dav, 'http://localhost:8444/')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.settings-modal input[aria-label="Пароль для подтверждения"]'), 'Secret-123')
+    save_btn.click()
+    W(d, 10).until(lambda d: any('только https' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    set_value(d, dav, 'https://localhost:8444/')
+    ok('http address for calendar/contacts refused')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if 'Фильтры почты' in b.text][0].click()
     W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.filter-item'))
     t = d.find_element(By.CSS_SELECTOR, '.filter-item').get_attribute('textContent')

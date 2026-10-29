@@ -183,7 +183,7 @@ const MAX_REDIRECTS: usize = 3;
 /// Проверяет адрес и разрешает имя: все IP должны быть публичными. Возвращает
 /// адрес, к которому подключаться (имя закрепляется за ним — повторное
 /// DNS-разрешение не подменит его на внутренний, DNS rebinding).
-async fn resolve_public(url: &url::Url, allow_local: bool) -> Option<std::net::SocketAddr> {
+async fn resolve_public(url: &url::Url, allow_local: bool, policy: &crate::policy::Policy) -> Option<std::net::SocketAddr> {
     if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
         return None;
     }
@@ -198,28 +198,29 @@ async fn resolve_public(url: &url::Url, allow_local: bool) -> Option<std::net::S
         .ok()?
         .ok()?
         .collect();
-    if addrs.is_empty() || (!allow_local && addrs.iter().any(|a| !is_public_ip(a.ip()))) {
+    if addrs.is_empty() || (!allow_local && addrs.iter().any(|a| !is_public_ip(a.ip()) || policy.is_internal(a.ip()))) {
         return None;
     }
     addrs.into_iter().next()
 }
 
-async fn fetch_one(url: String, allow_local: bool, budget: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Option<(String, String)> {
+async fn fetch_one(url: String, allow_local: bool, policy: std::sync::Arc<crate::policy::Policy>, budget: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Option<(String, String)> {
     use std::sync::atomic::Ordering;
     let mut current = url::Url::parse(&url).ok()?;
     for _ in 0..=MAX_REDIRECTS {
-        let addr = resolve_public(&current, allow_local).await?;
+        let addr = resolve_public(&current, allow_local, &policy).await?;
         let host = current.host_str()?.trim_start_matches('[').trim_end_matches(']').to_string();
-        // Свой клиент на каждый шаг: имя → проверенный адрес, без прокси (прокси сам
-        // разрешал бы имена), без автоматических перенаправлений, без cookie.
-        let client = reqwest::Client::builder()
+        // Свой клиент на каждый шаг, без автоматических перенаправлений и cookie.
+        // «direct»: имя закреплено за проверенным адресом (защита от DNS rebinding), без прокси.
+        // «proxy»: через системный/корпоративный прокси — фильтрация и журнал на нём.
+        let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .connect_timeout(std::time::Duration::from_secs(8))
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .resolve(&host, addr)
-            .build()
-            .ok()?;
+            .redirect(reqwest::redirect::Policy::none());
+        if policy.remote_images != crate::policy::RemoteImages::Proxy {
+            builder = builder.no_proxy().resolve(&host, addr);
+        }
+        let client = builder.build().ok()?;
         let mut resp = client.get(current.clone()).send().await.ok()?;
         if resp.status().is_redirection() {
             let loc = resp.headers().get(reqwest::header::LOCATION)?.to_str().ok()?;
@@ -258,11 +259,15 @@ async fn fetch_one(url: String, allow_local: bool, budget: std::sync::Arc<std::s
 /// Загружает внешние картинки письма — только по кнопке пользователя, только из
 /// публичного интернета, с проверкой каждого перенаправления и ограничением объёма.
 /// `allow_local` — только для автотестов (мок-сервер на localhost).
-pub async fn fetch_remote(urls: &[String], allow_local: bool) -> HashMap<String, String> {
+pub async fn fetch_remote(urls: &[String], allow_local: bool, policy: &crate::policy::Policy) -> HashMap<String, String> {
     use futures::StreamExt;
+    if policy.remote_images == crate::policy::RemoteImages::Off {
+        return HashMap::new();
+    }
+    let policy = Arc::new(policy.clone());
     let budget = Arc::new(std::sync::atomic::AtomicUsize::new(MAX_REMOTE_TOTAL));
     futures::stream::iter(urls.iter().take(MAX_REMOTE_IMAGES).cloned())
-        .map(|u| fetch_one(u, allow_local, budget.clone()))
+        .map(|u| fetch_one(u, allow_local, policy.clone(), budget.clone()))
         .buffer_unordered(REMOTE_PARALLEL)
         .filter_map(|r| async move { r })
         .collect()
@@ -316,7 +321,10 @@ mod tests {
             "file:///etc/passwd",
         ].iter().map(|s| s.to_string()).collect();
         let started = std::time::Instant::now();
-        assert!(fetch_remote(&urls, false).await.is_empty());
+        assert!(fetch_remote(&urls, false, &crate::policy::Policy::default()).await.is_empty());
+        // Режим «off» администратора — ничего не загружается вообще.
+        let off = crate::policy::Policy { remote_images: crate::policy::RemoteImages::Off, ..Default::default() };
+        assert!(fetch_remote(&["https://example.com/a.png".to_string()], true, &off).await.is_empty());
         // Отказ до любого подключения — быстро (localhost разрешается без сети).
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }

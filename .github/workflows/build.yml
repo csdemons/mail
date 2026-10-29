@@ -219,6 +219,10 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [bundle, bundle-win8, bundle-astra17]
     runs-on: ubuntu-22.04
+    # Секрет подписи обновлений хранится в среде «release»: настройте в ней обязательное
+    # подтверждение (Settings → Environments → release → Required reviewers) и перенесите
+    # туда UPDATE_SIGNING_KEY — тогда изменённый workflow не получит ключ без вашего одобрения.
+    environment: release
     permissions:
       contents: write
     steps:

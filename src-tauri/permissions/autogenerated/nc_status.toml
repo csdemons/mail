@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-status"
+description = "Enables the nc_status command without any pre-configured scope."
+commands.allow = ["nc_status"]
+
+[[permission]]
+identifier = "deny-nc-status"
+description = "Denies the nc_status command without any pre-configured scope."
+commands.deny = ["nc_status"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mail-filters-save"
+description = "Enables the mail_filters_save command without any pre-configured scope."
+commands.allow = ["mail_filters_save"]
+
+[[permission]]
+identifier = "deny-mail-filters-save"
+description = "Denies the mail_filters_save command without any pre-configured scope."
+commands.deny = ["mail_filters_save"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-label"
+description = "Enables the deck_label command without any pre-configured scope."
+commands.allow = ["deck_label"]
+
+[[permission]]
+identifier = "deny-deck-label"
+description = "Denies the deck_label command without any pre-configured scope."
+commands.deny = ["deck_label"]

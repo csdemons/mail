@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-upload-links"
+description = "Enables the nc_upload_links command without any pre-configured scope."
+commands.allow = ["nc_upload_links"]
+
+[[permission]]
+identifier = "deny-nc-upload-links"
+description = "Denies the nc_upload_links command without any pre-configured scope."
+commands.deny = ["nc_upload_links"]

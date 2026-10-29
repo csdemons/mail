@@ -181,7 +181,14 @@ impl DavClient {
     fn check_target(&mut self, url: &Url) -> Result<()> {
         let (scheme, host, port) = origin_of(url);
         let (o_scheme, o_host, o_port) = &self.origin;
-        let same = host == *o_host && ((scheme == *o_scheme && port == *o_port) || (o_scheme == "http" && scheme == "https"));
+        // Пароль почты — доменный: по http его не отправляем никогда.
+        if scheme != "https" {
+            self.log.push(format!("отказ: {url} — не https, пароль не отправлен"));
+            return Err(AppError::Other(
+                "Адрес календаря и контактов должен начинаться с https:// — по http пароль не отправляется".into(),
+            ));
+        }
+        let same = host == *o_host && (port == *o_port || (o_scheme == "http" && port == 443));
         if same {
             return Ok(());
         }
@@ -980,7 +987,7 @@ fn escape_text(v: &str) -> String {
         .replace(';', "\\;")
         .replace(',', "\\,")
         .replace("\r\n", "\\n")
-        .replace('\n', "\\n")
+        .replace(['\r', '\n'], "\\n")
 }
 
 /// Перенос строк длиннее 75 октетов, не разрывая символы UTF-8.
@@ -1278,8 +1285,9 @@ mod tests {
         for bad in ["https://evil.example/", "http://rp.nrcki.ru/", "https://rp.nrcki.ru:8443/", "https://rp.nrcki.ru.evil.example/"] {
             assert!(c.check_target(&Url::parse(bad).unwrap()).is_err(), "{bad}");
         }
-        // http в настройках: переход на https того же сервера разрешён.
+        // http в настройках: сам http-адрес не получает пароль, допустим лишь https того же сервера.
         let mut c = DavClient::new("u", "p", &Url::parse("http://dav.local:8080/").unwrap()).unwrap();
+        assert!(c.check_target(&Url::parse("http://dav.local:8080/").unwrap()).is_err());
         assert!(c.check_target(&Url::parse("https://dav.local/").unwrap()).is_ok());
         assert!(c.check_target(&Url::parse("http://other.local:8080/").unwrap()).is_err());
     }

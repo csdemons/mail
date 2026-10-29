@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-react"
+description = "Enables the talk_react command without any pre-configured scope."
+commands.allow = ["talk_react"]
+
+[[permission]]
+identifier = "deny-talk-react"
+description = "Denies the talk_react command without any pre-configured scope."
+commands.deny = ["talk_react"]

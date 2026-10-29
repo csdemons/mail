@@ -2,6 +2,7 @@
 pub mod dav;
 mod error;
 mod html;
+mod policy;
 #[doc(hidden)]
 pub mod nextcloud;
 #[doc(hidden)]

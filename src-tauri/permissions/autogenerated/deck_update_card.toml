@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-update-card"
+description = "Enables the deck_update_card command without any pre-configured scope."
+commands.allow = ["deck_update_card"]
+
+[[permission]]
+identifier = "deny-deck-update-card"
+description = "Denies the deck_update_card command without any pre-configured scope."
+commands.deny = ["deck_update_card"]

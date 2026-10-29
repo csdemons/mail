@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notify-poll-secs"
+description = "Enables the notify_poll_secs command without any pre-configured scope."
+commands.allow = ["notify_poll_secs"]
+
+[[permission]]
+identifier = "deny-notify-poll-secs"
+description = "Denies the notify_poll_secs command without any pre-configured scope."
+commands.deny = ["notify_poll_secs"]

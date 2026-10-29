@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RRCKI Mail",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "identifier": "ru.rrcki.mail",
   "build": {
     "frontendDist": "../frontend/dist",
@@ -61,7 +61,8 @@
           "Russian",
           "English"
         ],
-        "installMode": "both"
+        "installMode": "both",
+        "installerHooks": "windows/hooks.nsh"
       },
       "wix": {
         "language": "ru-RU"

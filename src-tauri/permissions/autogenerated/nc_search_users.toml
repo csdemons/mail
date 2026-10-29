@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-search-users"
+description = "Enables the nc_search_users command without any pre-configured scope."
+commands.allow = ["nc_search_users"]
+
+[[permission]]
+identifier = "deny-nc-search-users"
+description = "Denies the nc_search_users command without any pre-configured scope."
+commands.deny = ["nc_search_users"]

@@ -1,0 +1,34 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "message-window",
+  "description": "Окна писем (msg-*): только команды, нужные для чтения письма, ответа и действий с ним. Окна редактора документов (doc-*) не получают команд вообще.",
+  "windows": [
+    "msg-*"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-get-profile",
+    "allow-get-message",
+    "allow-set-flag",
+    "allow-move-messages",
+    "allow-delete-messages",
+    "allow-create-folder",
+    "allow-list-folders",
+    "allow-send-message",
+    "allow-pick-attachments",
+    "allow-forget-attachment",
+    "allow-list-contacts",
+    "allow-search-contacts",
+    "allow-attachment-data",
+    "allow-save-attachment",
+    "allow-close-window",
+    "allow-message-html-remote",
+    "allow-nc-status",
+    "allow-nc-edit-attachment",
+    "allow-open-link",
+    "allow-get-policy",
+    "allow-nc-files-list",
+    "allow-nc-link-for",
+    "allow-nc-upload-links"
+  ]
+}

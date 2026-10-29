@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-share-link"
+description = "Enables the nc_share_link command without any pre-configured scope."
+commands.allow = ["nc_share_link"]
+
+[[permission]]
+identifier = "deny-nc-share-link"
+description = "Denies the nc_share_link command without any pre-configured scope."
+commands.deny = ["nc_share_link"]

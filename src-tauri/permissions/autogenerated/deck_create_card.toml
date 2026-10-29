@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-create-card"
+description = "Enables the deck_create_card command without any pre-configured scope."
+commands.allow = ["deck_create_card"]
+
+[[permission]]
+identifier = "deny-deck-create-card"
+description = "Denies the deck_create_card command without any pre-configured scope."
+commands.deny = ["deck_create_card"]

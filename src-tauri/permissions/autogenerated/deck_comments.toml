@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-comments"
+description = "Enables the deck_comments command without any pre-configured scope."
+commands.allow = ["deck_comments"]
+
+[[permission]]
+identifier = "deny-deck-comments"
+description = "Denies the deck_comments command without any pre-configured scope."
+commands.deny = ["deck_comments"]

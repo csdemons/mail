@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-create-document"
+description = "Enables the nc_create_document command without any pre-configured scope."
+commands.allow = ["nc_create_document"]
+
+[[permission]]
+identifier = "deny-nc-create-document"
+description = "Denies the nc_create_document command without any pre-configured scope."
+commands.deny = ["nc_create_document"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-shares"
+description = "Enables the nc_shares command without any pre-configured scope."
+commands.allow = ["nc_shares"]
+
+[[permission]]
+identifier = "deny-nc-shares"
+description = "Denies the nc_shares command without any pre-configured scope."
+commands.deny = ["nc_shares"]

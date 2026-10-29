@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-files-upload"
+description = "Enables the nc_files_upload command without any pre-configured scope."
+commands.allow = ["nc_files_upload"]
+
+[[permission]]
+identifier = "deny-nc-files-upload"
+description = "Denies the nc_files_upload command without any pre-configured scope."
+commands.deny = ["nc_files_upload"]

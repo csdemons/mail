@@ -30,7 +30,7 @@ export const api = {
   login: ({ host, port, username, password, remember, smtpHost, smtpPort, davUrl }: LoginParams) =>
     invoke<LoginResult>('login', { host, port, username, password, remember, smtpHost, smtpPort, davUrl }),
   getProfile: () => invoke<Settings | null>('get_profile'),
-  updateProfile: (p: { displayName: string; smtpHost: string; smtpPort: number; davUrl: string }) =>
+  updateProfile: (p: { displayName: string; smtpHost: string; smtpPort: number; davUrl: string; password: string | null }) =>
     invoke<Settings>('update_profile', { ...p }),
   pickAttachments: () => invoke<PickedFile[]>('pick_attachments'),
   sendMessage: (m: {
@@ -129,6 +129,7 @@ export const api = {
   ncEdit: (path: string, mime: string) => invoke<EditResult>('nc_edit', { path, mime }),
   ncCreateDocument: (dir: string, name: string, kind: 'docx' | 'xlsx' | 'pptx') => invoke<EditResult>('nc_create_document', { dir, name, kind }),
   ncEditAttachment: (folder: string, uid: number, index: number, dir: string) => invoke<EditResult>('nc_edit_attachment', { folder, uid, index, dir }),
+  getPolicy: () => invoke<UiPolicy>('get_policy'),
   ncAvatar: (kind: 'user' | 'room', id: string) => invoke<string | null>('nc_avatar', { kind, id }),
   messageHtmlRemote: (folder: string, uid: number) => invoke<string>('message_html_remote', { folder, uid }),
   attachmentData: (folder: string, uid: number, index: number) => invoke<{ name: string; data: string }>('attachment_data', { folder, uid, index }),
@@ -215,4 +216,24 @@ export function editNotice(r: EditResult, name: string) {
   return r.inApp
     ? `«${name}» открыт в редакторе. Изменения сохраняются в Nextcloud (${r.path}).`
     : `«${name}» открыт в браузере (редактор Nextcloud). Файл: ${r.path}.`
+}
+
+/** Политика администратора (policy.json / групповая политика Windows). */
+export interface UiPolicy {
+  remoteImages: 'direct' | 'proxy' | 'off'
+  rememberPassword: boolean
+  allowRememberPassword: boolean
+  shareLinkDays: number
+}
+
+/** Домен ссылки и, если текст ссылки выглядит как адрес другого сайта, — этот «показанный» домен. */
+export function linkMismatch(href: string, text: string): { real: string; shown: string } | null {
+  let real = ''
+  try { real = new URL(href).hostname.toLowerCase() } catch { return null }
+  const m = text.trim().toLowerCase().match(/^(?:https?:\/\/)?(?:www\.)?([a-zа-яё0-9-]+(?:\.[a-zа-яё0-9-]+)+)/i)
+  if (!m) return null
+  const shown = m[1].replace(/^www\./, '')
+  const r = real.replace(/^www\./, '')
+  if (r === shown || r.endsWith(`.${shown}`)) return null
+  return { real, shown }
 }

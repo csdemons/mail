@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-editors"
+description = "Enables the nc_editors command without any pre-configured scope."
+commands.allow = ["nc_editors"]
+
+[[permission]]
+identifier = "deny-nc-editors"
+description = "Denies the nc_editors command without any pre-configured scope."
+commands.deny = ["nc_editors"]

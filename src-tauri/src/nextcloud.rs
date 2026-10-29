@@ -816,7 +816,7 @@ impl Nc {
     pub async fn talk_history(&self, token: &str, before: Option<i64>) -> Result<TalkChunk> {
         let mut q = vec![("lookIntoFuture", "0".to_string()), ("limit", "100".to_string()), ("setReadMarker", "1".to_string())];
         if let Some(b) = before { q.push(("lastKnownMessageId", b.to_string())); }
-        let (status, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{token}"), &q, None, "Сообщения").await?;
+        let (status, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Сообщения").await?;
         if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0 }); }
         Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d) })
     }
@@ -825,7 +825,7 @@ impl Nc {
     pub async fn talk_poll(&self, token: &str, last_known: i64) -> Result<TalkChunk> {
         let q = vec![("lookIntoFuture", "1".to_string()), ("lastKnownMessageId", last_known.to_string()),
             ("timeout", "30".to_string()), ("limit", "100".to_string()), ("setReadMarker", "1".to_string())];
-        let (status, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{token}"), &q, None, "Новые сообщения").await?;
+        let (status, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Новые сообщения").await?;
         if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0 }); }
         Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d) })
     }
@@ -835,12 +835,12 @@ impl Nc {
         if message.is_empty() { return Ok(()); }
         let mut body = json!({ "message": message });
         if let Some(r) = reply_to { body["replyTo"] = json!(r); }
-        self.ocs(Method::POST, &format!("{TALK_CHAT}{token}"), &[], Some(body), "Отправка сообщения").await?;
+        self.ocs(Method::POST, &format!("{TALK_CHAT}{}", seg(token)), &[], Some(body), "Отправка сообщения").await?;
         Ok(())
     }
 
     pub async fn talk_react(&self, token: &str, message_id: i64, emoji: &str, add: bool) -> Result<()> {
-        let path = format!("ocs/v2.php/apps/spreed/api/v1/reaction/{token}/{message_id}");
+        let path = format!("ocs/v2.php/apps/spreed/api/v1/reaction/{}/{message_id}", seg(token));
         if add {
             self.ocs(Method::POST, &path, &[], Some(json!({ "reaction": emoji })), "Реакция").await?;
         } else {
@@ -852,19 +852,19 @@ impl Nc {
     pub async fn talk_edit(&self, token: &str, message_id: i64, message: &str) -> Result<()> {
         let message = message.trim();
         if message.is_empty() { return Err(AppError::Other("Сообщение не может быть пустым".into())); }
-        self.ocs(Method::PUT, &format!("{TALK_CHAT}{token}/{message_id}"), &[], Some(json!({ "message": message })), "Правка сообщения").await?;
+        self.ocs(Method::PUT, &format!("{TALK_CHAT}{}/{message_id}", seg(token)), &[], Some(json!({ "message": message })), "Правка сообщения").await?;
         Ok(())
     }
 
     pub async fn talk_delete(&self, token: &str, message_id: i64) -> Result<()> {
-        self.ocs(Method::DELETE, &format!("{TALK_CHAT}{token}/{message_id}"), &[], None, "Удаление сообщения").await?;
+        self.ocs(Method::DELETE, &format!("{TALK_CHAT}{}/{message_id}", seg(token)), &[], None, "Удаление сообщения").await?;
         Ok(())
     }
 
     /// Кого можно упомянуть в беседе (подсказка после «@»).
     pub async fn talk_mentions(&self, token: &str, search: &str) -> Result<Vec<TalkMention>> {
         let q = [("search", search.to_string()), ("limit", "8".to_string()), ("includeStatus", "false".to_string())];
-        let (_, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{token}/mentions"), &q, None, "Упоминания").await?;
+        let (_, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}/mentions", seg(token)), &q, None, "Упоминания").await?;
         Ok(d.as_array().map(|a| a.iter().map(|m| {
             let source = text(&m["source"]);
             let id = m.get("mentionId").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| text(&m["id"]));
@@ -903,7 +903,7 @@ impl Nc {
         if token.is_empty() { return Err(AppError::Other("Talk не вернул беседу".into())); }
         if group {
             for u in users {
-                self.ocs(Method::POST, &format!("{TALK_ROOM}/{token}/participants"), &[], Some(json!({ "newParticipant": u, "source": "users" })), "Участник беседы").await?;
+                self.ocs(Method::POST, &format!("{TALK_ROOM}/{}/participants", seg(&token)), &[], Some(json!({ "newParticipant": u, "source": "users" })), "Участник беседы").await?;
             }
         }
         Ok(token)
@@ -950,9 +950,9 @@ impl Nc {
     /// Отправляет файл в беседу так же, как веб-интерфейс Talk: загружает его
     /// в папку вложений пользователя и публикует в беседе (shareType 10).
     /// Имя не перезаписывает существующие файлы: «файл (1).pdf», «файл (2).pdf»…
-    pub async fn talk_send_file(&self, token: &str, name: &str, data: Vec<u8>, caption: &str, reply_to: Option<i64>) -> Result<String> {
+    pub async fn talk_send_file(&self, token: &str, name: &str, src: UploadSource, caption: &str, reply_to: Option<i64>) -> Result<String> {
         let folder = self.talk_attachment_folder().await;
-        let path = self.upload_unique(&folder, name, data).await?;
+        let path = self.upload_unique_src(&folder, name, src).await?;
         let mut meta = json!({ "messageType": "comment" });
         if !caption.trim().is_empty() { meta["caption"] = json!(caption.trim()); }
         if let Some(r) = reply_to { meta["replyTo"] = json!(r); }
@@ -1115,15 +1115,30 @@ impl Nc {
 
     /// Загружает файл в папку, не перезаписывая существующие: «файл (1).pdf»…
     pub async fn upload_unique(&self, dir: &str, name: &str, data: Vec<u8>) -> Result<String> {
+        self.upload_unique_src(dir, name, UploadSource::Bytes(bytes::Bytes::from(data))).await
+    }
+
+    /// Загрузка без перезаписи: «имя (1).ext» и т.д. Файл с диска передаётся потоком
+    /// (не читается в память целиком — важно на терминальных серверах).
+    pub async fn upload_unique_src(&self, dir: &str, name: &str, src: UploadSource) -> Result<String> {
         let dir = self.ensure_dir(dir).await?;
         let name = valid_name(name)?;
         for n in 0..100 {
             let path = format!("{}/{}", dir.trim_end_matches('/'), numbered_name(&name, n));
+            let (body, len) = match &src {
+                UploadSource::Bytes(b) => (reqwest::Body::from(b.clone()), b.len() as u64),
+                UploadSource::File(p) => {
+                    let f = tokio::fs::File::open(p).await?;
+                    let len = f.metadata().await?.len();
+                    (reqwest::Body::from(f), len)
+                }
+            };
             let resp = self
                 .dav(Method::PUT, self.files_url(&path)?)
                 .header("If-None-Match", "*")
                 .header("Content-Type", mime_guess::from_path(&name).first_or_octet_stream().essence_str())
-                .body(data.clone())
+                .header(reqwest::header::CONTENT_LENGTH, len)
+                .body(body)
                 .send()
                 .await
                 .map_err(net_error)?;
@@ -1138,12 +1153,21 @@ impl Nc {
         Err(AppError::Other("Не удалось подобрать свободное имя файла".into()))
     }
 
-    pub async fn files_download(&self, path: &str) -> Result<Vec<u8>> {
-        let resp = self.dav(Method::GET, self.files_url(&clean_path(path)?)?).send().await.map_err(net_error)?;
+    /// Скачивает файл потоком прямо на диск (без копии целиком в памяти).
+    pub async fn files_download_to(&self, path: &str, target: &std::path::Path) -> Result<u64> {
+        use tokio::io::AsyncWriteExt as _;
+        let mut resp = self.dav(Method::GET, self.files_url(&clean_path(path)?)?).send().await.map_err(net_error)?;
         if !resp.status().is_success() {
             return Err(status_error(resp.status(), "Скачивание"));
         }
-        Ok(resp.bytes().await.map_err(net_error)?.to_vec())
+        let mut file = tokio::fs::File::create(target).await?;
+        let mut total = 0u64;
+        while let Some(chunk) = resp.chunk().await.map_err(net_error)? {
+            file.write_all(&chunk).await?;
+            total += chunk.len() as u64;
+        }
+        file.flush().await?;
+        Ok(total)
     }
 
     /// Удаление (в Nextcloud — в корзину).
@@ -1267,12 +1291,26 @@ impl Nc {
             .ok_or_else(|| AppError::Other("Nextcloud не сообщил ID файла".into()))
     }
 
-    /// Существующая публичная ссылка без пароля или новая — для письма.
-    pub async fn link_for(&self, path: &str) -> Result<String> {
-        if let Some(s) = self.shares_list(path).await?.into_iter().find(|s| s.share_type == 3 && !s.has_password && !s.url.is_empty()) {
+    /// Публичная ссылка для письма: существующая без пароля и со сроком не меньше
+    /// `days`/2 дней — или новая со сроком `days` дней (0 — без срока, по политике).
+    pub async fn link_for(&self, path: &str, days: u32) -> Result<String> {
+        let today = chrono::Local::now().date_naive();
+        let min_left = chrono::Duration::days(i64::from(days / 2).max(1));
+        let usable = |s: &NcShare| {
+            s.share_type == 3 && !s.has_password && !s.url.is_empty() && {
+                let exp = chrono::NaiveDate::parse_from_str(s.expiration.get(..10).unwrap_or(""), "%Y-%m-%d").ok();
+                match (days, exp) {
+                    (0, _) => true,
+                    (_, Some(e)) => e - today >= min_left,
+                    (_, None) => false, // ссылка без срока — для письма не используем
+                }
+            }
+        };
+        if let Some(s) = self.shares_list(path).await?.into_iter().find(usable) {
             return Ok(s.url);
         }
-        Ok(self.share_link(path, None, None).await?.url)
+        let expire = (days > 0).then(|| (today + chrono::Duration::days(i64::from(days))).format("%Y-%m-%d").to_string());
+        Ok(self.share_link(path, None, expire.as_deref()).await?.url)
     }
 
     pub async fn share_user(&self, path: &str, uid: &str, can_edit: bool) -> Result<NcShare> {
@@ -1293,6 +1331,20 @@ impl Nc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_window_stays_on_own_servers() {
+        let base = url::Url::parse("https://cloud.nrcki.ru/index.php/apps/onlyoffice/direct/x").unwrap();
+        let ok = |s: &str| editor_url_allowed(&base, &url::Url::parse(s).unwrap());
+        assert!(ok("https://cloud.nrcki.ru/index.php/f/5"));
+        assert!(ok("https://eurooffice.nrcki.ru/web-apps/x"));
+        assert!(ok("about:blank"));
+        assert!(!ok("https://evil.example/login"));
+        assert!(!ok("https://nrcki.ru.evil.example/"));
+        assert!(!ok("http://eurooffice.nrcki.ru/"));
+        let local = url::Url::parse("https://localhost:8443/x").unwrap();
+        assert!(!editor_url_allowed(&local, &url::Url::parse("https://example.org/").unwrap()));
+    }
 
     #[test]
     fn encodes_path_segment() {
@@ -1467,3 +1519,25 @@ pub fn office_mime(name: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// Что загружать: байты (вложение письма, шаблон) или файл с диска (потоком).
+pub enum UploadSource {
+    Bytes(bytes::Bytes),
+    File(std::path::PathBuf),
+}
+
+/// Адрес можно открыть в окне редактора: тот же сервер, что Nextcloud, или его
+/// поддомен в том же домене (сервер документов, например eurooffice.<домен>), только https.
+pub fn editor_url_allowed(base: &url::Url, u: &url::Url) -> bool {
+    if matches!(u.scheme(), "about" | "blob" | "data") {
+        return true;
+    }
+    let (Some(host), Some(base_host)) = (u.host_str(), base.host_str()) else { return false };
+    if u.scheme() == base.scheme() && host == base_host && u.port_or_known_default() == base.port_or_known_default() {
+        return true;
+    }
+    // Родительский домен Nextcloud (cloud.nrcki.ru → nrcki.ru); для адресов вида localhost — только сам хост.
+    let parent = base_host.split_once('.').map(|(_, p)| p).filter(|p| p.contains('.'));
+    u.scheme() == "https" && parent.is_some_and(|p| host == p || host.ends_with(&format!(".{p}")))
+}
+

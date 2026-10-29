@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-edit"
+description = "Enables the talk_edit command without any pre-configured scope."
+commands.allow = ["talk_edit"]
+
+[[permission]]
+identifier = "deny-talk-edit"
+description = "Denies the talk_edit command without any pre-configured scope."
+commands.deny = ["talk_edit"]

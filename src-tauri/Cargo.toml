@@ -1,6 +1,6 @@
 [package]
 name = "rrcki-mail"
-version = "0.12.0"
+version = "0.13.0"
 description = "RRCKI Mail — корпоративный почтовый клиент"
 authors = ["RRCKI"]
 license = ""
@@ -37,7 +37,8 @@ utf7-imap = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 keyring = { version = "3", features = ["windows-native", "sync-secret-service", "crypto-rust"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-native-tls", "hostname"] }
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "charset", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "charset", "json", "stream"] }
+bytes = "1"
 roxmltree = "0.20"
 ical = { version = "0.11", default-features = false, features = ["ical", "vcard"] }
 rrule = "0.13"
@@ -58,3 +59,9 @@ strip = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

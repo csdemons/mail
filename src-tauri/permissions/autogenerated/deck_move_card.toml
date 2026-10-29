@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-move-card"
+description = "Enables the deck_move_card command without any pre-configured scope."
+commands.allow = ["deck_move_card"]
+
+[[permission]]
+identifier = "deny-deck-move-card"
+description = "Denies the deck_move_card command without any pre-configured scope."
+commands.deny = ["deck_move_card"]

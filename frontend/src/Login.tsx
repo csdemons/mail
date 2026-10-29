@@ -27,6 +27,10 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
   const [username, setUsername] = useState(initial?.username ?? '')
   const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(true)
+  const [allowRemember, setAllowRemember] = useState(true)
+  useEffect(() => {
+    api.getPolicy().then((p) => { setRemember(p.rememberPassword); setAllowRemember(p.allowRememberPassword) }).catch(() => undefined)
+  }, [])
   const [showServer, setShowServer] = useState(Boolean(initial && initial.host !== DEFAULT_HOST))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(initialError)
@@ -109,7 +113,7 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
         )}
 
         <label className="login-remember">
-          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          <input type="checkbox" checked={remember && allowRemember} disabled={!allowRemember} title={allowRemember ? undefined : 'Запрещено политикой администратора'} onChange={(e) => setRemember(e.target.checked)} />
           <span>Запомнить пароль в системном хранилище</span>
         </label>
 

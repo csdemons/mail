@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-stacks"
+description = "Enables the deck_stacks command without any pre-configured scope."
+commands.allow = ["deck_stacks"]
+
+[[permission]]
+identifier = "deny-deck-stacks"
+description = "Denies the deck_stacks command without any pre-configured scope."
+commands.deny = ["deck_stacks"]

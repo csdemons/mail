@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-share-delete"
+description = "Enables the nc_share_delete command without any pre-configured scope."
+commands.allow = ["nc_share_delete"]
+
+[[permission]]
+identifier = "deny-nc-share-delete"
+description = "Denies the nc_share_delete command without any pre-configured scope."
+commands.deny = ["nc_share_delete"]

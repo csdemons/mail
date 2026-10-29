@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-avatar"
+description = "Enables the nc_avatar command without any pre-configured scope."
+commands.allow = ["nc_avatar"]
+
+[[permission]]
+identifier = "deny-nc-avatar"
+description = "Denies the nc_avatar command without any pre-configured scope."
+commands.deny = ["nc_avatar"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-comment-delete"
+description = "Enables the deck_comment_delete command without any pre-configured scope."
+commands.allow = ["deck_comment_delete"]
+
+[[permission]]
+identifier = "deny-deck-comment-delete"
+description = "Denies the deck_comment_delete command without any pre-configured scope."
+commands.deny = ["deck_comment_delete"]

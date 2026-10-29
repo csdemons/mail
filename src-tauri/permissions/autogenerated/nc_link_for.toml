@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-link-for"
+description = "Enables the nc_link_for command without any pre-configured scope."
+commands.allow = ["nc_link_for"]
+
+[[permission]]
+identifier = "deny-nc-link-for"
+description = "Denies the nc_link_for command without any pre-configured scope."
+commands.deny = ["nc_link_for"]

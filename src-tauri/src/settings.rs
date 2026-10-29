@@ -77,6 +77,19 @@ impl Settings {
     }
 }
 
+/// Адрес календаря/контактов: пусто, имя сервера или https://… (http запрещён —
+/// туда уходит пароль почты).
+pub fn validate_dav_url(url: &str) -> Result<()> {
+    let u = url.trim();
+    if u.to_ascii_lowercase().starts_with("http://") {
+        return Err(AppError::Other("Адрес календаря и контактов: только https:// (по http пароль передавался бы открытым текстом)".into()));
+    }
+    if u.contains("://") && !u.to_ascii_lowercase().starts_with("https://") {
+        return Err(AppError::Other("Адрес календаря и контактов должен начинаться с https://".into()));
+    }
+    Ok(())
+}
+
 fn settings_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(crate::host::config_dir(app)?.join("settings.json"))
 }

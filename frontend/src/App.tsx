@@ -155,6 +155,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const contactsRequested = useRef(false)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [profileForm, setProfileForm] = useState({ displayName: '', smtpHost: '', smtpPort: '465', davUrl: '' })
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const serversChanged = Boolean(profile) && (profileForm.smtpHost.trim() !== profile?.smtpHost || profileForm.smtpPort.trim() !== String(profile?.smtpPort) || profileForm.davUrl.trim() !== profile?.davUrl)
   const [profileBusy, setProfileBusy] = useState(false)
 
   useEffect(() => {
@@ -806,8 +808,9 @@ export default function App({ account, initialNotice, onLogout }: Props) {
     }
     setProfileBusy(true)
     try {
-      const p = await api.updateProfile({ ...profileForm, smtpPort: port })
+      const p = await api.updateProfile({ ...profileForm, smtpPort: port, password: serversChanged ? confirmPassword : null })
       setProfile(p)
+      setConfirmPassword('')
       setNotice('Настройки сохранены.')
     } catch (error) {
       setNotice(`Не удалось сохранить настройки: ${errorText(error)}`)
@@ -1140,7 +1143,8 @@ export default function App({ account, initialNotice, onLogout }: Props) {
               <label className="login-field login-port"><span>Порт</span><input inputMode="numeric" value={profileForm.smtpPort} onChange={(e) => setProfileForm((f) => ({ ...f, smtpPort: e.target.value }))} /></label>
             </div>
             <label className="login-field"><span>Календарь и контакты (CalDAV/CardDAV)</span><input value={profileForm.davUrl} onChange={(e) => setProfileForm((f) => ({ ...f, davUrl: e.target.value }))} placeholder={`https://${account.host}/ (автоопределение)`} /></label>
-            <div className="settings-actions"><button className="primary-button" disabled={profileBusy} onClick={() => void saveProfile()}>Сохранить</button></div>
+            {serversChanged && <label className="login-field"><span>Пароль почты — для смены адресов серверов</span><input type="password" aria-label="Пароль для подтверждения" autoComplete="current-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} /></label>}
+            <div className="settings-actions"><button className="primary-button" disabled={profileBusy || (serversChanged && !confirmPassword)} onClick={() => void saveProfile()}>Сохранить</button></div>
           </div>
           {ncStatus && <div className="settings-section"><strong>Nextcloud (Deck, Talk)</strong><NcConnect status={ncStatus} onChange={setNcStatus} compact /></div>}
           <div className="settings-section notify-settings">

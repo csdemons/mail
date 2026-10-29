@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-delete"
+description = "Enables the talk_delete command without any pre-configured scope."
+commands.allow = ["talk_delete"]
+
+[[permission]]
+identifier = "deny-talk-delete"
+description = "Denies the talk_delete command without any pre-configured scope."
+commands.deny = ["talk_delete"]
