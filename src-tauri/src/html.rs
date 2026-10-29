@@ -204,11 +204,18 @@ async fn resolve_public(url: &url::Url, allow_local: bool, policy: &crate::polic
     addrs.into_iter().next()
 }
 
-/// Забрать `n` байт из общего бюджета письма — одной атомарной операцией
-/// (проверка остатка и вычитание неделимы, параллельные загрузки не превысят лимит).
+/// Забрать `n` байт из общего бюджета письма — атомарно (compare-and-swap: проверка
+/// остатка и вычитание неделимы, параллельные загрузки не превысят лимит).
 fn take_budget(budget: &std::sync::atomic::AtomicUsize, n: usize) -> bool {
     use std::sync::atomic::Ordering;
-    budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(n)).is_ok()
+    let mut left = budget.load(Ordering::Acquire);
+    loop {
+        let Some(next) = left.checked_sub(n) else { return false };
+        match budget.compare_exchange_weak(left, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(actual) => left = actual,
+        }
+    }
 }
 
 async fn fetch_one(url: String, allow_local: bool, policy: std::sync::Arc<crate::policy::Policy>, budget: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Option<(String, String)> {
