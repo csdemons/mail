@@ -995,6 +995,12 @@ try:
     [b for b in modal.find_elements(By.TAG_NAME, 'button') if 'Не открывать' in b.text][0].click()
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.confirm-modal'))
     ok('link whose text shows another domain: warning before opening')
+    # Даже если бы очистку обошли — CSP рамки письма не даёт исполнить код (обработчик onerror).
+    frame = d.find_element(By.CSS_SELECTOR, 'iframe.message-html'); d.switch_to.frame(frame)
+    d.execute_script("document.body.insertAdjacentHTML('beforeend', '<img src=\"x\" onerror=\"window.parent.__xss = 1\">')")
+    d.switch_to.default_content(); time.sleep(1)
+    assert d.execute_script('return window.__xss') is None, 'inline handler must be blocked by the frame CSP'
+    ok('mail frame CSP blocks injected inline handlers')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.html-foot button') if 'как текст' in b.text][0].click()
     W(d, 5).until(lambda d: 'Вёрстка рассылки' in d.find_element(By.CSS_SELECTOR, '.message-body.plain').get_attribute('textContent'))
     ok('HTML mail: plain-text view toggle')

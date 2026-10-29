@@ -88,13 +88,19 @@ blockquote { margin: 0 0 0 6px; padding-left: 10px; border-left: 3px solid #cbd5
 a { color: #1d4ed8; }
 `
 
+const FRAME_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; script-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; connect-src 'none'"
+
 function HtmlFrame({ html, scale, onHover, onLink }: { html: string; scale: number; onHover: (href: string) => void; onLink: (href: string, text: string) => void }) {
   const frame = useRef<HTMLIFrameElement>(null)
   // Обработчики — через ref: иначе каждое наведение мыши перезапускало бы подписки рамки.
   const cb = useRef({ onHover, onLink })
   cb.current = { onHover, onLink }
   const [height, setHeight] = useState(200)
-  const doc = `<!doctype html><html><head><meta charset="utf-8"><style>${FRAME_CSS} html { zoom: ${scale}; }</style></head><body>${html}</body></html>`
+  // Своя политика CSP рамки письма — строже, чем у окна: никаких скриптов, сети, форм,
+  // встраивания; картинки — только data: (внешние программа подставляет сама).
+  // Атрибут sandbox не используется: в WebKitGTK с ним не срабатывают обработчики
+  // щелчков, и ссылки из писем нельзя было бы проверить и открыть в браузере.
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}"><style>${FRAME_CSS} html { zoom: ${scale}; }</style></head><body>${html}</body></html>`
 
   useEffect(() => {
     const el = frame.current
@@ -143,7 +149,6 @@ function HtmlFrame({ html, scale, onHover, onLink }: { html: string; scale: numb
       ref={frame}
       className="message-html"
       title="Текст письма"
-      sandbox="allow-same-origin"
       srcDoc={doc}
       style={{ height }}
     />
