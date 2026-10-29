@@ -154,7 +154,11 @@ jobs:
           set -o pipefail
           cargo build --release -Zbuild-std=std,panic_abort --target x86_64-win7-windows-gnu --features tauri/custom-protocol 2>&1 | tee build.log \
             || { grep -E '^error' -A12 build.log | head -60 | sed 's/^/::error::/'; exit 1; }
-      - run: npx tauri bundle --target x86_64-win7-windows-gnu --bundles nsis
+      - name: Bundle NSIS
+        run: |
+          set -o pipefail
+          npx tauri bundle --verbose --target x86_64-win7-windows-gnu --bundles nsis 2>&1 | tee bundle.log \
+            || { tail -40 bundle.log | sed 's/^/::error::/'; exit 1; }
       - name: Rename installer
         run: |
           cd src-tauri/target/x86_64-win7-windows-gnu/release/bundle/nsis
