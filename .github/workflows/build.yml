@@ -137,7 +137,7 @@ jobs:
       - name: Cross toolchain
         timeout-minutes: 20
         # libayatana-appindicator — tauri-cli проверяет её при упаковке (значок в трее).
-        run: sudo apt-get update && sudo apt-get install -y mingw-w64 nsis libayatana-appindicator3-1
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 nsis libayatana-appindicator3-dev
       - name: npm ci (с повтором при зависании)
         timeout-minutes: 25
         shell: bash
