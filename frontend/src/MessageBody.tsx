@@ -107,9 +107,11 @@ function HtmlFrame({ html, scale, onHover, onLink }: { html: string; scale: numb
       const h = Math.max(d.documentElement.scrollHeight, d.body?.getBoundingClientRect().bottom ?? 0, d.documentElement.getBoundingClientRect().height)
       setHeight(Math.max(60, Math.ceil(h) + 4))
     }
+    const bound = new WeakSet<Document>()
     function onLoad() {
       const d = el?.contentDocument
-      if (!d) return
+      if (!d || bound.has(d)) return
+      bound.add(d)
       measure()
       observer?.disconnect()
       observer = new ResizeObserver(measure)
@@ -130,6 +132,9 @@ function HtmlFrame({ html, scale, onHover, onLink }: { html: string; scale: numb
       d.addEventListener('mouseleave', () => cb.current.onHover(''))
     }
     el.addEventListener('load', onLoad)
+    // srcdoc может загрузиться раньше, чем подписались на «load», — тогда сразу.
+    const ready = el.contentDocument
+    if (ready?.readyState === 'complete' && ready.body && ready.body.childNodes.length > 0) onLoad()
     return () => { el.removeEventListener('load', onLoad); observer?.disconnect() }
   }, [html, scale])
 
