@@ -204,8 +204,14 @@ async fn resolve_public(url: &url::Url, allow_local: bool, policy: &crate::polic
     addrs.into_iter().next()
 }
 
-async fn fetch_one(url: String, allow_local: bool, policy: std::sync::Arc<crate::policy::Policy>, budget: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Option<(String, String)> {
+/// Забрать `n` байт из общего бюджета письма — одной атомарной операцией
+/// (проверка остатка и вычитание неделимы, параллельные загрузки не превысят лимит).
+fn take_budget(budget: &std::sync::atomic::AtomicUsize, n: usize) -> bool {
     use std::sync::atomic::Ordering;
+    budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(n)).is_ok()
+}
+
+async fn fetch_one(url: String, allow_local: bool, policy: std::sync::Arc<crate::policy::Policy>, budget: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Option<(String, String)> {
     let mut current = url::Url::parse(&url).ok()?;
     for _ in 0..=MAX_REDIRECTS {
         let addr = resolve_public(&current, allow_local, &policy).await?;
@@ -239,16 +245,14 @@ async fn fetch_one(url: String, allow_local: bool, policy: std::sync::Arc<crate:
         if !ct.starts_with("image/") || resp.content_length().is_some_and(|n| n as usize > MAX_REMOTE_BYTES) {
             return None;
         }
+        // Каждый принятый кусок сразу списывается с общего бюджета письма: в памяти
+        // одновременно не больше MAX_REMOTE_TOTAL байт картинок, сколько бы загрузок ни шло.
         let mut bytes = Vec::new();
         while let Some(chunk) = resp.chunk().await.ok()? {
-            bytes.extend_from_slice(&chunk);
-            if bytes.len() > MAX_REMOTE_BYTES {
+            if bytes.len() + chunk.len() > MAX_REMOTE_BYTES || !take_budget(&budget, chunk.len()) {
                 return None;
             }
-        }
-        // Общий лимит на письмо: превысили — дальше картинки не берём.
-        if budget.fetch_sub(bytes.len().min(budget.load(Ordering::Relaxed)), Ordering::Relaxed) < bytes.len() {
-            return None;
+            bytes.extend_from_slice(&chunk);
         }
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
         return Some((url, format!("data:{ct};base64,{data}")));
@@ -277,6 +281,32 @@ pub async fn fetch_remote(urls: &[String], allow_local: bool, policy: &crate::po
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_budget_is_never_exceeded_by_parallel_downloads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let budget = Arc::new(AtomicUsize::new(1_000_000));
+        let taken = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let (budget, taken) = (budget.clone(), taken.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..10_000 {
+                        if take_budget(&budget, 997) {
+                            taken.fetch_add(997, Ordering::SeqCst);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let taken = taken.load(Ordering::SeqCst);
+        assert!(taken <= 1_000_000, "taken {taken}");
+        assert_eq!(taken + budget.load(Ordering::SeqCst), 1_000_000);
+        assert!(!take_budget(&budget, 997));
+    }
     use mail_parser::MessageParser;
 
     const RAW: &[u8] = b"From: a@b.ru\r\nTo: c@d.ru\r\nSubject: t\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>p { color: red } a > b {}</style></head><body onload=\"x()\"><p style=\"color:blue\">Hi <img src=\"cid:logo@x\"> <img src=\"https://ex.com/a.png\"> <a href=\"javascript:alert(1)\">bad</a> <a href=\"https://ok.ru\">ok</a></p><script>alert(1)</script><table bgcolor=\"#fff\" width=\"600\"><tr><td>c</td></tr></table></body></html>\r\n--B\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n--B--\r\n";

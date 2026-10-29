@@ -105,59 +105,129 @@ pub fn account_dir(root: &Path, account: &str) -> PathBuf {
     root.join("mailstore").join(hash(account))
 }
 
-fn key_for(account: &str, create: bool) -> Result<[u8; 32]> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| AppError::Other(e.to_string()))?;
-    if let Ok(k) = entry.get_password() {
-        if let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(k.trim()) {
-            if let Ok(key) = <[u8; 32]>::try_from(raw.as_slice()) {
-                return Ok(key);
-            }
-        }
+enum Key {
+    Found([u8; 32]),
+    /// Хранилище паролей отвечает, но ключа для этой учётной записи нет.
+    Missing,
+}
+
+fn key_entry(account: &str) -> Result<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| AppError::Other(format!("системное хранилище паролей недоступно: {e}")))
+}
+
+/// Ключ архива. «Нет ключа» и «хранилище недоступно/заблокировано» — разные
+/// случаи: во втором архив не трогаем, работаем без него до следующего запуска.
+fn load_key(account: &str) -> Result<Key> {
+    match key_entry(account)?.get_password() {
+        Ok(k) => base64::engine::general_purpose::STANDARD
+            .decode(k.trim())
+            .ok()
+            .and_then(|raw| <[u8; 32]>::try_from(raw.as_slice()).ok())
+            .map(Key::Found)
+            .ok_or_else(|| AppError::Other("ключ локального хранилища повреждён".into())),
+        Err(keyring::Error::NoEntry) => Ok(Key::Missing),
+        Err(e) => Err(AppError::Other(format!("системное хранилище паролей недоступно: {e}"))),
     }
-    if !create {
-        return Err(AppError::Other("нет ключа хранилища".into()));
-    }
+}
+
+fn create_key(account: &str) -> Result<[u8; 32]> {
     let mut key = [0u8; 32];
     getrandom::getrandom(&mut key).map_err(|e| AppError::Other(e.to_string()))?;
-    entry
+    key_entry(account)?
         .set_password(&base64::engine::general_purpose::STANDARD.encode(key))
         .map_err(|e| AppError::Other(format!("системное хранилище паролей недоступно: {e}")))?;
     Ok(key)
 }
 
-/// Удалить локальную почту учётной записи и её ключ.
-pub fn wipe(root: &Path, account: &str) {
-    let _ = std::fs::remove_dir_all(account_dir(root, account));
-    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, account) {
-        let _ = e.delete_credential();
-    }
+/// Удалить локальную почту учётной записи и её ключ. Ошибка — если что-то осталось.
+pub fn wipe(root: &Path, account: &str) -> Result<()> {
+    let dir = account_dir(root, account);
+    let files = match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(AppError::Other(format!("не удалось удалить {}: {e}", dir.display()))),
+    };
+    let key = key_entry(account).and_then(|e| match e.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(AppError::Other(format!("ключ хранилища не удалён: {e}"))),
+    });
+    files.and(key)
 }
 
+/// Каталог только для владельца: создаётся с правами 0700, затем проверяется, что
+/// это настоящий каталог (не ссылка), он принадлежит текущему пользователю и
+/// закрыт для группы и остальных. Не удалось — хранилище не открывается.
 fn create_private_dir(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir).map_err(|e| AppError::Other(format!("{}: {e}", dir.display())))?;
+    let fail = |what: String| AppError::Other(format!("каталог локального хранилища {}: {what}", dir.display()));
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        if let Err(e) = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir) {
+            return Err(fail(e.to_string()));
+        }
+        let meta = std::fs::symlink_metadata(dir).map_err(|e| fail(e.to_string()))?;
+        if !meta.file_type().is_dir() {
+            return Err(fail("не является каталогом (ссылка?)".into()));
+        }
+        // SAFETY: geteuid не имеет предусловий.
+        if meta.uid() != unsafe { libc::geteuid() } {
+            return Err(fail("принадлежит другому пользователю".into()));
+        }
+        if meta.mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| fail(format!("права 0700 не установлены: {e}")))?;
+            let mode = std::fs::symlink_metadata(dir).map_err(|e| fail(e.to_string()))?.mode();
+            if mode & 0o077 != 0 {
+                return Err(fail(format!("доступен другим пользователям (права {:o})", mode & 0o777)));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: каталог в %LOCALAPPDATA% профиля пользователя, ACL профиля закрывает
+        // его от других пользователей; проверяем, что это не ссылка/точка соединения.
+        std::fs::create_dir_all(dir).map_err(|e| fail(e.to_string()))?;
+        let meta = std::fs::symlink_metadata(dir).map_err(|e| fail(e.to_string()))?;
+        if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
+            return Err(fail("не является каталогом (ссылка?)".into()));
+        }
     }
     Ok(())
+}
+
+/// Каталоги архивов, отложенные из-за отсутствия ключа, удаляются через неделю.
+fn sweep_orphans(parent: &Path) {
+    let Ok(rd) = std::fs::read_dir(parent) else { return };
+    let now = std::time::SystemTime::now();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|d| d.as_secs() > 7 * 86_400);
+        if name.contains(".nokey-") && old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 impl Store {
     /// Открыть (или создать) хранилище учётной записи `user@host`.
     pub fn open(root: &Path, account: &str, days: u32) -> Result<Store> {
         let dir = account_dir(root, account);
-        let had_dir = dir.exists();
-        // Каталог без ключа (ключ потерян или удалён) — расшифровать нельзя, начинаем заново.
-        let key = match key_for(account, false) {
-            Ok(k) => k,
-            Err(_) => {
-                if had_dir {
-                    let _ = std::fs::remove_dir_all(&dir);
+        let parent = dir.parent().expect("account dir has parent").to_path_buf();
+        create_private_dir(&parent)?;
+        // Хранилище паролей недоступно — ошибка, архив не трогаем.
+        let key = match load_key(account)? {
+            Key::Found(k) => k,
+            Key::Missing => {
+                // Ключа точно нет (удалён или профиль перенесён): старый архив без него
+                // не расшифровать. Не удаляем сразу — откладываем, через неделю он уйдёт сам.
+                if dir.exists() {
+                    let aside = dir.with_extension(format!("nokey-{}", chrono::Utc::now().timestamp()));
+                    std::fs::rename(&dir, &aside).map_err(|e| AppError::Other(format!("{}: {e}", dir.display())))?;
+                    log::warn!("local store: key missing, old archive set aside");
                 }
-                key_for(account, true)?
+                create_key(account)?
             }
         };
+        sweep_orphans(&parent);
         create_private_dir(&dir)?;
         create_private_dir(&dir.join("raw"))?;
         Ok(Store {

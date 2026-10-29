@@ -19,6 +19,8 @@ export interface OfflineStatus {
   cached: number
   syncing: boolean
   bytes: number
+  /** Почему хранилище не открылось (например, недоступно хранилище паролей). */
+  error: string | null
 }
 
 export interface TotpStatus {

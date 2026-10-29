@@ -88,6 +88,7 @@ export function OfflineSettings({ onNotice }: { onNotice: (text: string) => void
           {options.map((d) => <option key={d} value={d}>{d === 0 ? 'не хранить (только индекс для поиска)' : `за последние ${d} дней`}</option>)}
         </select>
       </label>
+      {st.error && <span className="login-error" role="alert">Письма сейчас не сохраняются на компьютере: {st.error}. Уже сохранённое не удалено — программа попробует снова при следующем входе.</span>}
       <span className="offline-stat" aria-label="Состояние хранилища">
         {st.syncing && <RefreshCw size={13} className="spin" />}
         В индексе писем: {st.messages.toLocaleString('ru-RU')} · на компьютере: {st.cached.toLocaleString('ru-RU')} · {size(st.bytes)}

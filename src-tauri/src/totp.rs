@@ -25,6 +25,53 @@ pub struct Stored {
     pub secret: String,
     /// SHA-256 неиспользованных резервных кодов.
     pub recovery: Vec<String>,
+    /// Последний принятый шаг времени: тот же код не принимается и после перезапуска.
+    #[serde(default)]
+    pub last_step: Option<u64>,
+    /// Счётчик неверных кодов и пауза — сохраняются, перезапуск их не сбрасывает.
+    #[serde(default)]
+    pub throttle: Throttle,
+}
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Проверить код (TOTP или резервный) и обновить состояние: последний шаг,
+/// резервные коды, счётчик ошибок. Возвращает, подошёл ли код; `Err` — пауза.
+pub fn apply(stored: &mut Stored, code: &str, now: u64) -> Result<bool> {
+    stored.throttle.check(now)?;
+    let code = code.trim();
+    let ok = if code.contains('-') || code.len() > 7 {
+        use_recovery(stored, code)
+    } else {
+        match verify(&stored.secret, code, now / STEP, stored.last_step) {
+            Some(step) => {
+                stored.last_step = Some(step);
+                true
+            }
+            None => false,
+        }
+    };
+    if ok {
+        stored.throttle.ok();
+    } else {
+        stored.throttle.fail(now);
+    }
+    Ok(ok)
+}
+
+/// Проверка кода с сохранением состояния в системном хранилище. Если сохранить
+/// не удалось — отказ (иначе счётчик ошибок и защита от повтора терялись бы).
+pub fn check_and_record(account: &str, code: &str) -> Result<()> {
+    let mut stored = load(account).ok_or_else(|| AppError::Other("Защита кодом не включена или хранилище паролей недоступно".into()))?;
+    let ok = apply(&mut stored, code, unix_now())?;
+    store(account, &stored)?;
+    if ok {
+        Ok(())
+    } else {
+        Err(AppError::Other("Неверный код".into()))
+    }
 }
 
 fn entry(account: &str) -> keyring::Result<keyring::Entry> {
@@ -103,10 +150,6 @@ pub fn code_at(secret: &[u8], counter: u64) -> u32 {
     bin % 10u32.pow(DIGITS)
 }
 
-pub fn now_step() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() / STEP).unwrap_or(0)
-}
-
 /// Проверяет код (допуск ±1 шаг — часы телефона могут отставать). Возвращает шаг,
 /// которым подошёл код, — повторно этот же код не принимается.
 pub fn verify(secret_b32: &str, code: &str, step: u64, last_used: Option<u64>) -> Option<u64> {
@@ -178,29 +221,29 @@ pub fn qr_svg(text: &str) -> Result<String> {
         .build())
 }
 
-/// Ограничение перебора: после 5 неверных кодов — пауза, растущая с каждой ошибкой.
-#[derive(Debug, Default)]
+/// Ограничение перебора: после 5 неверных кодов — пауза, растущая с каждой ошибкой
+/// (время — в секундах Unix, чтобы состояние можно было сохранить).
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Throttle {
     pub failures: u32,
-    pub blocked_until: Option<std::time::Instant>,
+    pub blocked_until: Option<u64>,
 }
 
 impl Throttle {
-    pub fn check(&self) -> Result<()> {
+    pub fn check(&self, now: u64) -> Result<()> {
         if let Some(t) = self.blocked_until {
-            let now = std::time::Instant::now();
             if t > now {
-                return Err(AppError::Other(format!("Слишком много неверных кодов. Попробуйте через {} с", (t - now).as_secs() + 1)));
+                return Err(AppError::Other(format!("Слишком много неверных кодов. Попробуйте через {} с", t - now)));
             }
         }
         Ok(())
     }
 
-    pub fn fail(&mut self) {
+    pub fn fail(&mut self, now: u64) {
         self.failures += 1;
         if self.failures >= 5 {
             let secs = 30u64 << (self.failures - 5).min(6);
-            self.blocked_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(secs));
+            self.blocked_until = Some(now + secs);
         }
     }
 
@@ -250,7 +293,7 @@ mod tests {
     fn recovery_codes_are_one_time() {
         let (codes, hashes) = new_recovery_codes().unwrap();
         assert_eq!(codes.len(), RECOVERY_CODES);
-        let mut s = Stored { secret: new_secret().unwrap(), recovery: hashes };
+        let mut s = Stored { secret: new_secret().unwrap(), recovery: hashes, last_step: None, throttle: Throttle::default() };
         assert!(use_recovery(&mut s, &codes[3].to_uppercase()));
         assert!(!use_recovery(&mut s, &codes[3]));
         assert_eq!(s.recovery.len(), RECOVERY_CODES - 1);
@@ -261,13 +304,37 @@ mod tests {
     fn throttles_after_five_failures() {
         let mut t = Throttle::default();
         for _ in 0..4 {
-            t.fail();
-            assert!(t.check().is_ok());
+            t.fail(1000);
+            assert!(t.check(1000).is_ok());
         }
-        t.fail();
-        assert!(t.check().is_err());
+        t.fail(1000);
+        assert!(t.check(1000).is_err());
+        assert!(t.check(1031).is_ok(), "пауза 30 с");
         t.ok();
-        assert!(t.check().is_ok());
+        assert!(t.check(1000).is_ok());
+    }
+
+    /// Состояние переживает «перезапуск» (сохранение и загрузка из хранилища):
+    /// пауза после ошибок не сбрасывается, принятый код не принимается повторно.
+    #[test]
+    fn state_survives_restart() {
+        let secret = base32_encode(b"12345678901234567890");
+        let raw = base32_decode(&secret).unwrap();
+        let now = 1_700_000_000u64;
+        let code = format!("{:06}", code_at(&raw, now / STEP));
+        let mut s = Stored { secret: secret.clone(), recovery: vec![], last_step: None, throttle: Throttle::default() };
+        assert!(apply(&mut s, &code, now).unwrap());
+        let restarted = |s: &Stored| -> Stored { serde_json::from_str(&serde_json::to_string(s).unwrap()).unwrap() };
+        let mut s = restarted(&s);
+        assert!(!apply(&mut s, &code, now + 5).unwrap(), "повтор того же кода после перезапуска");
+        for _ in 0..4 {
+            let _ = apply(&mut s, "000000", now + 5);
+        }
+        let mut s = restarted(&s);
+        assert!(apply(&mut s, &format!("{:06}", code_at(&raw, now / STEP + 1)), now + 6).is_err(), "пауза сохранилась");
+        // Старые записи (0.14) без новых полей читаются.
+        let old: Stored = serde_json::from_str(r#"{"secret":"GEZDGNBV","recovery":[]}"#).unwrap();
+        assert!(old.last_step.is_none() && old.throttle.failures == 0);
     }
 
     #[test]

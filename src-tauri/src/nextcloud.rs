@@ -46,6 +46,12 @@ fn http(timeout: Duration) -> Result<Client> {
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(15))
         .user_agent(concat!("RRCKI Mail/", env!("CARGO_PKG_VERSION"), " (Desktop)"))
+        // Перенаправления — только в пределах того же сервера (схема, имя, порт):
+        // пароль приложения и токены входа не уходят на чужой адрес или по http.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let same = attempt.previous().first().is_some_and(|first| first.origin() == attempt.url().origin());
+            if same && attempt.previous().len() < 5 { attempt.follow() } else { attempt.stop() }
+        }))
         .build()
         .map_err(|e| AppError::Other(format!("HTTP-клиент: {e}")))
 }

@@ -48,11 +48,14 @@ pub struct AppState {
     pending: Mutex<Option<Pending>>,
     /// Новый секрет TOTP, пока пользователь не подтвердил его кодом.
     totp_setup: Mutex<Option<(String, String)>>,
-    /// Последний принятый шаг TOTP по учётной записи — код не принимается дважды.
-    totp_used: Mutex<HashMap<String, u64>>,
+    /// Перебор при настройке (до сохранения секрета).
     totp_throttle: Mutex<totp::Throttle>,
+    /// Проверки кода выполняются по одной.
+    totp_gate: Mutex<()>,
     /// Локальное хранилище писем и индекс поиска текущей сессии.
     store: Mutex<Option<std::sync::Arc<store::Store>>>,
+    /// Почему хранилище не открылось (показывается в настройках).
+    store_error: Mutex<Option<String>>,
 }
 
 /// Сессия, которая начнётся после верного кода TOTP.
@@ -158,17 +161,23 @@ async fn open_store(app: &AppHandle, state: &AppState, creds: &Credentials, prof
     let account = account_key(&creds.username, &creds.host);
     if !crate::policy::load().local_store() {
         // Администратор запретил хранить почту на компьютере — убрать то, что было.
-        let _ = tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await;
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await {
+            log::warn!("local store not removed: {e}");
+        }
         return;
     }
     let days = offline_days(profile);
+    *state.store_error.lock().await = None;
     match tokio::task::spawn_blocking(move || store::Store::open(&root, &account, days)).await {
         Ok(Ok(st)) => {
             let st = std::sync::Arc::new(st);
             *state.store.lock().await = Some(st.clone());
             tauri::async_runtime::spawn(store::run_sync(st, creds.clone()));
         }
-        Ok(Err(e)) => log::warn!("local store unavailable: {e}"),
+        Ok(Err(e)) => {
+            log::warn!("local store unavailable: {e}");
+            *state.store_error.lock().await = Some(e.to_string());
+        }
         Err(e) => log::warn!("local store: {e}"),
     }
 }
@@ -270,6 +279,7 @@ pub struct OfflineStatus {
     cached: usize,
     syncing: bool,
     bytes: u64,
+    error: Option<String>,
 }
 
 #[tauri::command]
@@ -289,6 +299,7 @@ pub async fn offline_status(state: State<'_, AppState>) -> Result<OfflineStatus>
         cached: st.map_or(0, |s| s.cached),
         syncing: st.is_some_and(|s| s.syncing),
         bytes: st.map_or(0, |s| s.bytes),
+        error: state.store_error.lock().await.clone(),
     })
 }
 
@@ -315,7 +326,7 @@ pub async fn clear_offline(app: AppHandle, state: State<'_, AppState>) -> Result
     close_store(&state).await;
     let root = host::data_dir(&app)?;
     let account = account_key(&creds.username, &creds.host);
-    tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await.map_err(|e| AppError::Other(e.to_string()))?;
+    tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await.map_err(|e| AppError::Other(e.to_string()))??;
     open_store(&app, &state, &creds, &profile).await;
     Ok(())
 }
@@ -561,7 +572,9 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
         _ => settings::load(&app).map(|s| account_key(&s.username, &s.host)),
     };
     if let (Some(account), Ok(root)) = (account, host::data_dir(&app)) {
-        let _ = tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await;
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await {
+            log::warn!("local store not removed on logout: {e}");
+        }
     }
     // «Выйти и забыть пароль» забывает и подключение к Nextcloud: пароль приложения
     // отзывается на сервере и удаляется из системного хранилища.
@@ -1500,35 +1513,13 @@ async fn current_account(state: &AppState) -> Result<String> {
     Err(AppError::NotLoggedIn)
 }
 
-/// Проверка кода TOTP или резервного кода (резервный удаляется после использования).
+/// Проверка кода TOTP или резервного (резервный удаляется). Состояние — последний
+/// принятый шаг и счётчик ошибок — хранится вместе с секретом и переживает перезапуск.
 async fn check_totp(state: &AppState, account: &str, code: &str) -> Result<()> {
-    state.totp_throttle.lock().await.check()?;
-    let mut stored = totp::load(account).ok_or_else(|| AppError::Other("Защита кодом не включена".into()))?;
-    let code = code.trim();
-    let ok = if code.contains('-') || code.len() > 7 {
-        let ok = totp::use_recovery(&mut stored, code);
-        if ok {
-            totp::store(account, &stored)?;
-        }
-        ok
-    } else {
-        let last = state.totp_used.lock().await.get(account).copied();
-        match totp::verify(&stored.secret, code, totp::now_step(), last) {
-            Some(step) => {
-                state.totp_used.lock().await.insert(account.to_string(), step);
-                true
-            }
-            None => false,
-        }
-    };
-    let mut t = state.totp_throttle.lock().await;
-    if ok {
-        t.ok();
-        Ok(())
-    } else {
-        t.fail();
-        Err(AppError::Other("Неверный код".into()))
-    }
+    // Проверки по очереди: состояние читается и записывается целиком.
+    let _gate = state.totp_gate.lock().await;
+    let (account, code) = (account.to_string(), code.to_string());
+    tokio::task::spawn_blocking(move || totp::check_and_record(&account, &code)).await.map_err(|e| AppError::Other(e.to_string()))?
 }
 
 #[tauri::command]
@@ -1565,15 +1556,14 @@ pub async fn totp_setup_begin(state: State<'_, AppState>) -> Result<TotpSetup> {
 /// Подтвердить настройку кодом из приложения; возвращает резервные коды (показываются один раз).
 #[tauri::command]
 pub async fn totp_setup_confirm(state: State<'_, AppState>, code: String) -> Result<Vec<String>> {
-    state.totp_throttle.lock().await.check()?;
+    state.totp_throttle.lock().await.check(totp::unix_now())?;
     let (account, secret) = state.totp_setup.lock().await.clone().ok_or_else(|| AppError::Other("Сначала начните настройку".into()))?;
-    let Some(step) = totp::verify(&secret, &code, totp::now_step(), None) else {
-        state.totp_throttle.lock().await.fail();
+    let Some(step) = totp::verify(&secret, &code, totp::unix_now() / totp::STEP, None) else {
+        state.totp_throttle.lock().await.fail(totp::unix_now());
         return Err(AppError::Other("Неверный код — проверьте время на телефоне и введите новый код".into()));
     };
     let (codes, hashes) = totp::new_recovery_codes()?;
-    totp::store(&account, &totp::Stored { secret, recovery: hashes })?;
-    state.totp_used.lock().await.insert(account, step);
+    totp::store(&account, &totp::Stored { secret, recovery: hashes, last_step: Some(step), throttle: totp::Throttle::default() })?;
     state.totp_throttle.lock().await.ok();
     *state.totp_setup.lock().await = None;
     Ok(codes)
