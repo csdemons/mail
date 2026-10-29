@@ -18,6 +18,8 @@ export interface RichEditorHandle {
   focus: () => void
   /** Вставляет ссылки на файлы (в место курсора или в конец текста). */
   insertLinks: (links: { name: string; url: string }[]) => void
+  /** Вставляет готовый фрагмент (шаблон) в место курсора или в начало письма. */
+  insertHtml: (html: string) => void
 }
 
 function escapeHtml(s: string) {
@@ -52,18 +54,41 @@ export function textToHtml(text: string): string {
 
 interface Props {
   initialText: string
+  /** Оформленный текст (возврат в редактор после отмены отправки). */
+  initialHtml?: string
   autoFocus?: boolean
   onNotice?: (text: string) => void
 }
 
 /** Редактор письма на contentEditable: шрифт, размер, начертание, цвет, списки,
  *  выравнивание, цитата, ссылки. Итоговый HTML дополнительно чистится в бэкенде. */
-const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initialText, autoFocus, onNotice }, ref) {
+const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initialText, initialHtml, autoFocus, onNotice }, ref) {
   const editor = useRef<HTMLDivElement>(null)
   const saved = useRef<Range | null>(null)
   const [state, setState] = useState({ bold: false, italic: false, underline: false, strike: false, ul: false, ol: false, font: '', size: '' })
 
+  function placeCursor(el: HTMLDivElement) {
+    el.focus()
+    const sel = window.getSelection()
+    if (saved.current && sel && el.contains(saved.current.startContainer)) {
+      sel.removeAllRanges()
+      sel.addRange(saved.current)
+    } else if (sel) {
+      const r = document.createRange()
+      r.setStart(el, 0)
+      r.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(r)
+    }
+  }
+
   useImperativeHandle(ref, () => ({
+    insertHtml: (html: string) => {
+      const el = editor.current
+      if (!el) return
+      placeCursor(el)
+      document.execCommand('insertHTML', false, html)
+    },
     html: () => editor.current?.innerHTML ?? '',
     text: () => (editor.current?.innerText ?? '').replace(/ /g, ' ').replace(/\n{3,}/g, '\n\n'),
     focus: () => editor.current?.focus(),
@@ -91,7 +116,8 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
   useEffect(() => {
     const el = editor.current
     if (!el) return
-    el.innerHTML = textToHtml(initialText)
+    // Свой же HTML из этого редактора (после отмены отправки); при отправке он ещё раз чистится в бэкенде.
+    el.innerHTML = initialHtml ?? textToHtml(initialText)
     try { document.execCommand('styleWithCSS', false, 'true') } catch { /* старые движки */ }
     if (autoFocus) {
       el.focus()

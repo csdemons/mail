@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-scheduled-send-now"
+description = "Enables the scheduled_send_now command without any pre-configured scope."
+commands.allow = ["scheduled_send_now"]
+
+[[permission]]
+identifier = "deny-scheduled-send-now"
+description = "Denies the scheduled_send_now command without any pre-configured scope."
+commands.deny = ["scheduled_send_now"]

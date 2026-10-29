@@ -114,6 +114,8 @@ try:
     clear(d.find_element(By.CSS_SELECTOR, 'input[type=password]'))
     login(d, 'Secret-123')
     wait(d, '.message-row')
+    # Отмена отправки проверяется отдельно (14d); в остальных проверках письма уходят сразу.
+    d.execute_script("localStorage.setItem('rrcki-mail.send-prefs', JSON.stringify({undoSecs: 0}))")
     time.sleep(1)
     rows = d.find_elements(By.CSS_SELECTOR, '.message-row')
     assert len(rows) == 50, len(rows); ok('first page: 50 rows')
@@ -1015,7 +1017,11 @@ try:
     # После закрытых окон редактора в Xvfb (без оконного менеджера) фокус не возвращается — задаём явно.
     d.execute_script('document.hasFocus = () => true')
     new_mail('E2E notify in-app')
-    W(d, 40).until(lambda d: any('Новое письмо от Коллега: E2E notify in-app' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    try:
+        W(d, 40).until(lambda d: any('Новое письмо от Коллега: E2E notify in-app' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    except Exception:
+        print('DIAG notified:', notified()[-400:], 'hidden/focus:', d.execute_script('return [document.hidden, document.hasFocus(), document.visibilityState]'), 'toasts:', [t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')])
+        raise
     assert 'E2E notify in-app' not in notified(), 'window in front: in-app notice, not a system one'
     ok('new mail while the window is active: in-app notice, list refreshed')
     d.execute_script('document.hasFocus = () => false')
@@ -1284,6 +1290,216 @@ try:
     [b for b in sec.find_elements(By.TAG_NAME, 'button') if b.text == 'Отключить'][0].click()
     W(d, 10).until(lambda d: 'Включить защиту кодом' in d.find_element(By.CSS_SELECTOR, '.totp-settings').text)
     ok('totp: protection disabled with a recovery code')
+finally:
+    d.quit()
+
+# 14d. отмена отправки, отложенная отправка, уведомления о прочтении, трей и автозапуск
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    def inv(cmd, args=None):
+        return d.execute_async_script("const cb = arguments[2]; window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1] || {}).then((r) => cb({ok: r}), (e) => cb({err: JSON.stringify(e)}))", cmd, args)
+    def compose(to, subject, text):
+        d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+        wait(d, '.compose-modal')
+        set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), to)
+        set_value(d, d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'), subject)
+        body = d.find_element(By.CSS_SELECTOR, '.compose-body')
+        d.execute_script("arguments[0].focus(); const r = document.createRange(); r.setStart(arguments[0], 0); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('insertText', false, arguments[1])", body, text)
+    def sent_with(subject):
+        return [p for p in outbox() if subject_of(p)[0] == subject]
+
+    # Отмена отправки (5 секунд): письмо возвращается в редактор и не уходит.
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    from selenium.webdriver.support.ui import Select
+    Select(wait(d, 'select[aria-label="Отмена отправки"]')).select_by_value('5')
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+    compose('colleague@nrcki.ru', 'E2E отмена отправки', 'Текст для отмены')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    toast = wait(d, '.outbox-toast', 10)
+    assert 'уйдёт через' in toast.get_attribute('textContent'), toast.get_attribute('textContent')
+    d.save_screenshot(f'{OUT}/45-undo-send.png')
+    [b for b in toast.find_elements(By.TAG_NAME, 'button') if 'Отменить' in b.text][0].click()
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.compose-modal'))
+    assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'E2E отмена отправки'
+    assert 'Текст для отмены' in d.find_element(By.CSS_SELECTOR, '.compose-body').get_attribute('textContent')
+    time.sleep(7)
+    assert not sent_with('E2E отмена отправки'), 'cancelled mail was sent'
+    ok('undo send: countdown, cancel returns the mail to the editor, nothing is sent')
+    # Повторная отправка с запросом уведомления о прочтении; «Отправить сейчас» не ждёт отсчёта.
+    d.find_element(By.CSS_SELECTOR, '.receipt-toggle input').click()
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    toast = wait(d, '.outbox-toast', 10)
+    [b for b in toast.find_elements(By.TAG_NAME, 'button') if 'Отправить сейчас' in b.text][0].click()
+    W(d, 15).until(lambda d: sent_with('E2E отмена отправки'))
+    raw = subject_of(sent_with('E2E отмена отправки')[0])[1].decode('utf-8', 'replace')
+    assert 'Disposition-Notification-To: <test@rrcki.ru>' in raw, raw[:600]
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.outbox-toast'))
+    ok('send now from the undo bar; read receipt requested (Disposition-Notification-To)')
+
+    # Отложенная отправка: письмо ждёт в «Черновиках» и уходит в срок.
+    compose('colleague@nrcki.ru', 'E2E отложенное', 'Уйдёт позже')
+    d.find_element(By.CSS_SELECTOR, '.send-more').click()
+    pop = wait(d, '.schedule-pop')
+    at = time.localtime(time.time() + 100)
+    set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', at))
+    [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Запланировать' in b.text][0].click()
+    W(d, 15).until(lambda d: any('будет отправлено' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.scheduled-link'))
+    drafts = [f['id'] for f in inv('list_folders')['ok'] if f['role'] == 'drafts']
+    assert drafts and 'E2E отложенное' in subjects(drafts[0]), drafts
+    assert not sent_with('E2E отложенное')
+    ok('scheduled send: waits in Drafts, listed as scheduled')
+    # Второе — на час вперёд, затем отмена: остаётся обычным черновиком.
+    compose('colleague@nrcki.ru', 'E2E отложенное отменить', 'Не уйдёт')
+    d.find_element(By.CSS_SELECTOR, '.send-more').click()
+    pop = wait(d, '.schedule-pop')
+    set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 3600)))
+    [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Запланировать' in b.text][0].click()
+    W(d, 15).until(lambda d: '2' in d.find_element(By.CSS_SELECTOR, '.scheduled-link').get_attribute('textContent'))
+    d.find_element(By.CSS_SELECTOR, '.scheduled-link').click()
+    modal = wait(d, '.scheduled-modal')
+    d.save_screenshot(f'{OUT}/46-scheduled.png')
+    item = [i for i in modal.find_elements(By.CSS_SELECTOR, '.scheduled-item') if 'E2E отложенное отменить' in i.get_attribute('textContent')][0]
+    [b for b in item.find_elements(By.TAG_NAME, 'button') if b.text == 'Отменить'][0].click()
+    W(d, 15).until(lambda d: len(inv('scheduled_list')['ok']) == 1)
+    assert 'E2E отложенное отменить' in subjects(drafts[0])
+    d.find_element(By.CSS_SELECTOR, '.scheduled-modal button[aria-label="Закрыть"]').click()
+    ok('scheduled send cancelled: stays as a plain draft')
+    W(d, 180).until(lambda d: sent_with('E2E отложенное'))
+    raw = subject_of(sent_with('E2E отложенное')[0])[1].decode('utf-8', 'replace')
+    assert 'X-Atom-Send-At' not in raw, raw[:600]
+    W(d, 20).until(lambda d: 'E2E отложенное' not in subjects(drafts[0]))
+    assert len(sent_with('E2E отложенное')) == 1
+    ok('scheduled mail sent on time once, removed from Drafts, service header stripped')
+
+    # Уведомление о прочтении: запрос во входящем письме.
+    msg = EmailMessage(); msg['From'] = 'Начальник <boss@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = 'E2E MDN request'
+    msg['Message-ID'] = '<mdn-request@nrcki.ru>'; msg['Disposition-Notification-To'] = 'boss@nrcki.ru'; msg.set_content('Подтвердите прочтение')
+    M = imap(); M.append('INBOX', '', imaplib.Time2Internaldate(time.time()), msg.as_bytes()); M.logout()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: any('E2E MDN request' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'E2E MDN request' in r.get_attribute('textContent')][0].click()
+    bar = wait(d, '.mdn-bar', 15)
+    [b for b in bar.find_elements(By.TAG_NAME, 'button') if b.text == 'Отправить'][0].click()
+    W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.mdn-bar'))
+    W(d, 15).until(lambda d: any(b'disposition-notification' in open(p, 'rb').read() and b'<mdn-request@nrcki.ru>' in open(p, 'rb').read() for p in outbox()))
+    assert '$MDNSent' in flags_of('INBOX', 'E2E MDN request'), flags_of('INBOX', 'E2E MDN request')
+    ok('read receipt request: bar shown, MDN sent (RFC 8098), $MDNSent set so it is not asked again')
+
+    # Трей и автозапуск.
+    prefs = inv('desktop_prefs_get')['ok']
+    assert prefs['tray'] is True and prefs['closeToTray'] is True, prefs
+    assert inv('set_unread', {'count': 7}).get('err') is None
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    auto = [l for l in wait(d, '.settings-modal').find_elements(By.CSS_SELECTOR, 'label') if 'Запускать вместе с системой' in l.get_attribute('textContent')][0].find_element(By.TAG_NAME, 'input')
+    auto.click()
+    desktop_file = os.path.join(os.environ['XDG_CONFIG_HOME'], 'autostart', 'ru.rrcki.mail.desktop')
+    W(d, 10).until(lambda d: os.path.exists(desktop_file))
+    assert '--minimized' in open(desktop_file).read()
+    auto.click()
+    W(d, 10).until(lambda d: not os.path.exists(desktop_file))
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+    d.execute_script("localStorage.setItem('rrcki-mail.send-prefs', JSON.stringify({undoSecs: 0}))")
+    ok('tray icon with unread badge; autostart entry created and removed')
+except Exception:
+    d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
+finally:
+    d.quit()
+
+# 14e. категории, флажок со сроком и напоминание, цепочки, шаблоны
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    d.execute_script('document.hasFocus = () => true')
+    def row(subj):
+        return [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if subj in r.find_element(By.CSS_SELECTOR, '.message-subject').get_attribute('textContent')]
+    def flags_u(folder, subj):
+        M = imap(); M.select(f'"{folder}"')
+        _, ids = M.search(None, 'ALL'); found = ''
+        for i in ids[0].split():
+            _, data = M.fetch(i, '(FLAGS BODY.PEEK[HEADER.FIELDS (SUBJECT)])')
+            if subj == str(make_header(decode_header(email.message_from_bytes(data[0][1])['Subject'] or ''))):
+                found = data[0][0].decode()
+        M.logout(); return found
+    def menu_click(label):
+        [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if label in b.get_attribute('textContent')][0].click()
+
+    # Цепочка: письмо и ответ на него сворачиваются в одну строку.
+    for subj, extra in (('E2E тред начало', {'Message-ID': '<t1@nrcki.ru>'}), ('Re: E2E тред начало', {'Message-ID': '<t2@nrcki.ru>', 'In-Reply-To': '<t1@nrcki.ru>', 'References': '<t1@nrcki.ru>'})):
+        m = EmailMessage(); m['From'] = 'Коллега <colleague@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj
+        for k, v in extra.items(): m[k] = v
+        m.set_content('тред'); M = imap(); M.append('INBOX', '', imaplib.Time2Internaldate(time.time()), m.as_bytes()); M.logout(); time.sleep(1.1)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: row('Re: E2E тред начало'))
+    assert not row('E2E тред начало') or all('Re:' in r.find_element(By.CSS_SELECTOR, '.message-subject').get_attribute('textContent') for r in row('E2E тред начало')), 'thread not collapsed'
+    head = row('Re: E2E тред начало')[0]
+    assert '2' in head.find_element(By.CSS_SELECTOR, '.thread-count').get_attribute('textContent')
+    head.find_element(By.CSS_SELECTOR, '.thread-count').click()
+    W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.message-row.thread-child'))
+    assert 'E2E тред начало' in d.find_element(By.CSS_SELECTOR, '.message-row.thread-child .message-subject').get_attribute('textContent')
+    d.save_screenshot(f'{OUT}/47-thread.png')
+    ok('threads: reply and original grouped into one row, expandable')
+
+    # Категория: из панели письма и из контекстного меню; фильтр по категории.
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'})", row('Отчёт с вложением')[0])
+    row('Отчёт с вложением')[0].click()
+    wait(d, '.reader-content')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Категории"]').click()
+    menu_click('Работа')
+    W(d, 10).until(lambda d: 'Работа' in row('Отчёт с вложением')[0].get_attribute('textContent'))
+    W(d, 10).until(lambda d: '$label2' in flags_u('INBOX', 'Отчёт с вложением'))
+    target = row('Кодировка 1251')[0]
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'})", target)
+    ActionChains(d).context_click(target).perform()
+    menu_click('Категория «Личное»')
+    W(d, 10).until(lambda d: '$label3' in (flags_u('INBOX', 'Кодировка 1251') or ''))
+    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Категория"]')).select_by_visible_text('Работа')
+    W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.message-row')) == 1)
+    d.save_screenshot(f'{OUT}/48-categories.png')
+    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Категория"]')).select_by_visible_text('Все категории')
+    ok('categories: set from reader and context menu ($label2/$label3 on server), filter by category')
+
+    # Флажок со сроком: срок уже наступил — напоминание.
+    row('Отчёт с вложением')[0].click()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Срок"]').click()
+    menu_click('Выбрать срок')
+    pick = wait(d, 'input[aria-label="Срок"]')
+    set_value(d, pick, time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() - 120)))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if 'Поставить флажок' in b.text][0].click()
+    W(d, 10).until(lambda d: 'atomdue-' in (flags_u('INBOX', 'Отчёт с вложением') or ''))
+    W(d, 10).until(lambda d: row('Отчёт с вложением')[0].find_elements(By.CSS_SELECTOR, '.due-tag.overdue'))
+    W(d, 40).until(lambda d: any('Напоминание по флажку' in t.get_attribute('textContent') and 'Отчёт с вложением' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    ok('flag with due date: stored on server, overdue mark, reminder shown')
+
+    # Шаблоны: сохранить текущее письмо, вставить в новое, удалить.
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    wait(d, '.compose-modal')
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'), 'E2E шаблон')
+    body = d.find_element(By.CSS_SELECTOR, '.compose-body')
+    d.execute_script("arguments[0].focus(); const r = document.createRange(); r.setStart(arguments[0], 0); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('insertText', false, 'Текст типового ответа')", body)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Шаблоны"]').click()
+    pop = wait(d, '.tpl-pop')
+    [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Сохранить текущее' in b.text][0].click()
+    W(d, 15).until(lambda d: any('E2E шаблон' in i.get_attribute('textContent') for i in d.find_elements(By.CSS_SELECTOR, '.tpl-item')))
+    assert 'E2E шаблон' in subjects('Templates')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    wait(d, '.compose-modal')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Шаблоны"]').click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.tpl-item'))
+    [i for i in d.find_elements(By.CSS_SELECTOR, '.tpl-item') if 'E2E шаблон' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.schedule-preset').click()
+    assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'E2E шаблон'
+    W(d, 5).until(lambda d: 'Текст типового ответа' in d.find_element(By.CSS_SELECTOR, '.compose-body').get_attribute('textContent'))
+    d.save_screenshot(f'{OUT}/49-template.png')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Шаблоны"]').click()
+    item = [i for i in wait(d, '.tpl-pop').find_elements(By.CSS_SELECTOR, '.tpl-item') if 'E2E шаблон' in i.get_attribute('textContent')][0]
+    item.find_element(By.CSS_SELECTOR, 'button[aria-label^="Удалить шаблон"]').click()
+    W(d, 10).until(lambda d: 'E2E шаблон' not in subjects('Templates'))
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    ok('templates: saved to the Templates folder on the server, inserted into a new mail, deleted')
+except Exception:
+    d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:
     d.quit()
 

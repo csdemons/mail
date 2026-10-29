@@ -609,7 +609,7 @@ async fn sync_folder(store: &Store, conn: &mut imap::Connection, folder: &str) -
             idx.items.clear();
             idx.uid_validity = validity;
         }
-        let live: HashMap<u32, imap::FlagState> = flags.iter().copied().collect();
+        let live: HashMap<u32, imap::FlagState> = flags.iter().cloned().collect();
         let gone: Vec<u32> = idx.items.keys().copied().filter(|u| !live.contains_key(u)).collect();
         for u in &gone {
             idx.items.remove(u);
@@ -617,7 +617,7 @@ async fn sync_folder(store: &Store, conn: &mut imap::Connection, folder: &str) -
         }
         for (u, e) in idx.items.iter_mut() {
             if let Some(f) = live.get(u) {
-                e.s.set_flags(*f);
+                e.s.set_flags(f.clone());
             }
         }
         idx.total = flags.len() as u32;
@@ -675,6 +675,9 @@ mod tests {
             flagged: false,
             important: false,
             answered: false,
+            keywords: vec![],
+            message_id: None,
+            thread: vec![],
             has_attachments: false,
             size: 100,
         }

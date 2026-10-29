@@ -114,6 +114,25 @@
     "allow-set-offline-days",
     "allow-clear-offline",
     "allow-signature-get",
-    "allow-signature-save"
+    "allow-signature-save",
+    "allow-send-wait",
+    "allow-send-cancel",
+    "allow-send-now",
+    "allow-scheduled-list",
+    "allow-scheduled-send-now",
+    "allow-scheduled-cancel",
+    "allow-mdn-respond",
+    "allow-desktop-prefs-get",
+    "allow-desktop-prefs-set",
+    "allow-set-unread",
+    "allow-show-main-window",
+    "allow-categories-get",
+    "allow-categories-save",
+    "allow-set-keywords",
+    "allow-set-due",
+    "allow-due-list",
+    "allow-templates-list",
+    "allow-template-save",
+    "allow-template-delete"
   ]
 }

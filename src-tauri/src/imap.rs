@@ -436,6 +436,15 @@ pub struct MessageSummary {
     /// «Важное»: ключевое слово `$label1` (метка «Важное» в SOGo/Thunderbird) или `$Important`.
     pub important: bool,
     pub answered: bool,
+    /// Ключевые слова IMAP: категории ($label2… / свои), $MDNSent и т. п.
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    /// Message-ID письма — для цепочек (`msgId`: у полного письма есть своё `messageId`).
+    #[serde(default, rename = "msgId", skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// Предки в цепочке: In-Reply-To и References (первый — начало цепочки).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread: Vec<String>,
     pub has_attachments: bool,
     pub size: u32,
 }
@@ -474,6 +483,8 @@ pub struct MessageDetail {
     /// Сколько картинок из интернета не показано (загружаются по кнопке).
     pub remote_images: usize,
     pub attachments: Vec<AttachmentInfo>,
+    /// Отправитель просит уведомление о прочтении (адрес из Disposition-Notification-To).
+    pub disposition_to: Option<String>,
 }
 
 fn addresses(addr: Option<&mail_parser::Address<'_>>) -> Vec<String> {
@@ -545,24 +556,59 @@ fn has_attachment_part(bs: &async_imap::imap_proto::types::BodyStructure<'_>) ->
     walk(bs, true)
 }
 
-/// Флаги письма: (непрочитано, флажок, важное, отвечено).
-pub type FlagState = (bool, bool, bool, bool);
+/// Флаги письма и ключевые слова (категории, «уведомление о прочтении отправлено» и т. п.).
+#[derive(Debug, Clone, Default)]
+pub struct FlagState {
+    pub unread: bool,
+    pub flagged: bool,
+    pub important: bool,
+    pub answered: bool,
+    pub keywords: Vec<String>,
+}
 
 fn flag_state(fetch: &Fetch) -> FlagState {
     let flags: Vec<Flag<'_>> = fetch.flags().collect();
     let has = |f: &Flag<'_>| flags.iter().any(|x| x == f);
-    (
-        !has(&Flag::Seen),
-        has(&Flag::Flagged),
-        fetch.flags().any(|f| matches!(f, Flag::Custom(k) if k.eq_ignore_ascii_case(IMPORTANT) || k.eq_ignore_ascii_case("$Important"))),
-        has(&Flag::Answered),
-    )
+    let is_important = |k: &str| k.eq_ignore_ascii_case(IMPORTANT) || k.eq_ignore_ascii_case("$Important");
+    FlagState {
+        unread: !has(&Flag::Seen),
+        flagged: has(&Flag::Flagged),
+        important: flags.iter().any(|f| matches!(f, Flag::Custom(k) if is_important(k))),
+        answered: has(&Flag::Answered),
+        keywords: flags
+            .iter()
+            .filter_map(|f| match f {
+                Flag::Custom(k) if !is_important(k) && !k.starts_with('\\') => Some(k.to_string()),
+                _ => None,
+            })
+            .collect(),
+    }
 }
 
 impl MessageSummary {
     pub fn set_flags(&mut self, f: FlagState) {
-        (self.unread, self.flagged, self.important, self.answered) = f;
+        self.unread = f.unread;
+        self.flagged = f.flagged;
+        self.important = f.important;
+        self.answered = f.answered;
+        self.keywords = f.keywords;
     }
+}
+
+/// References (по порядку, от начала цепочки), затем In-Reply-To.
+fn thread_ids(m: &mail_parser::Message<'_>) -> Vec<String> {
+    let list = |h: &mail_parser::HeaderValue<'_>| -> Vec<String> {
+        match h {
+            mail_parser::HeaderValue::Text(t) => vec![t.to_string()],
+            mail_parser::HeaderValue::TextList(l) => l.iter().map(|t| t.to_string()).collect(),
+            _ => vec![],
+        }
+    };
+    let mut ids: Vec<String> = list(m.references()).into_iter().chain(list(m.in_reply_to())).map(|id| format!("<{}>", id.trim_matches(['<', '>']))).collect();
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| seen.insert(id.clone()));
+    ids.truncate(20);
+    ids
 }
 
 fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'_>>) -> MessageSummary {
@@ -586,7 +632,7 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
 
     let has_attachments = fetch.bodystructure().is_some_and(has_attachment_part);
 
-    MessageSummary {
+    let mut summary = MessageSummary {
         folder: folder.to_string(),
         uid: fetch.uid.unwrap_or(0),
         from_name,
@@ -598,13 +644,18 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
             .trim()
             .to_string(),
         date,
-        unread: flag_state(fetch).0,
-        flagged: flag_state(fetch).1,
-        important: flag_state(fetch).2,
-        answered: flag_state(fetch).3,
+        unread: false,
+        flagged: false,
+        important: false,
+        answered: false,
+        keywords: Vec::new(),
+        message_id: msg.and_then(|m| m.message_id()).map(|id| format!("<{}>", id.trim_matches(['<', '>']))),
+        thread: msg.map(thread_ids).unwrap_or_default(),
         has_attachments,
         size: fetch.size.unwrap_or(0),
-    }
+    };
+    summary.set_flags(flag_state(fetch));
+    summary
 }
 
 /// Новые непрочитанные письма папки с UID больше `after_uid` (новые сверху, не больше
@@ -883,6 +934,10 @@ fn detail_from(summary: MessageSummary, body: &[u8], parsed: Option<&mail_parser
 
     let mut summary = summary;
     summary.has_attachments = !attachments.is_empty();
+    let disposition_to = parsed
+        .and_then(|m| m.header_raw("Disposition-Notification-To"))
+        .map(|v| v.trim().to_string())
+        .filter(|v| v.contains('@'));
 
     MessageDetail {
         summary,
@@ -894,6 +949,7 @@ fn detail_from(summary: MessageSummary, body: &[u8], parsed: Option<&mail_parser
         body_html,
         remote_images,
         attachments,
+        disposition_to,
     }
 }
 
@@ -967,7 +1023,7 @@ pub async fn index_summaries(conn: &mut Connection, folder: &str, uids: &[u32]) 
     }
     let fetches: Vec<Fetch> = conn
         .session
-        .uid_fetch(uid_set(uids), "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])")
+        .uid_fetch(uid_set(uids), "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])")
         .await?
         .try_collect()
         .await?;
@@ -1023,27 +1079,262 @@ pub async fn summaries_of(conn: &mut Connection, folder: &str, uids: &[u32]) -> 
 /// Кладёт отправленное письмо в папку «Отправленные» (\\Sent или по имени).
 /// Возвращает имя папки.
 pub async fn append_sent(conn: &mut Connection, raw: &[u8]) -> Result<String> {
-    let names: Vec<_> = conn
-        .session
-        .list(Some(""), Some("*"))
-        .await?
-        .try_collect()
-        .await?;
-    let by_attr = names
-        .iter()
-        .find(|n| n.attributes().iter().any(|a| matches!(a, NameAttribute::Sent)))
-        .map(|n| n.name().to_string());
-    let by_name = names
-        .iter()
-        .find(|n| parent_of(n.name(), n.delimiter()).is_none() && role_by_name(n.name()) == FolderRole::Sent)
-        .map(|n| n.name().to_string());
-    drop(names);
-    let folder = by_attr
-        .or(by_name)
-        .ok_or_else(|| AppError::Other("Папка «Отправленные» не найдена".into()))?;
+    let folder = role_folder(conn, FolderRole::Sent).await?.ok_or_else(|| AppError::Other("Папка «Отправленные» не найдена".into()))?;
     conn.selected = None;
     conn.session.append(&folder, Some("(\\Seen)"), None, raw).await?;
     Ok(folder)
+}
+
+/// Служебная папка своего ящика: по атрибуту SPECIAL-USE, иначе по привычному имени.
+pub async fn role_folder(conn: &mut Connection, role: FolderRole) -> Result<Option<String>> {
+    let names: Vec<_> = conn.session.list(Some(""), Some("*")).await?.try_collect().await?;
+    let attr_matches = |a: &NameAttribute<'_>| match role {
+        FolderRole::Sent => matches!(a, NameAttribute::Sent),
+        FolderRole::Drafts => matches!(a, NameAttribute::Drafts),
+        FolderRole::Trash => matches!(a, NameAttribute::Trash),
+        FolderRole::Archive => matches!(a, NameAttribute::Archive),
+        FolderRole::Junk => matches!(a, NameAttribute::Junk),
+        _ => false,
+    };
+    let by_attr = names.iter().find(|n| n.attributes().iter().any(attr_matches)).map(|n| n.name().to_string());
+    let by_name = names
+        .iter()
+        .find(|n| parent_of(n.name(), n.delimiter()).is_none() && role_by_name(n.name()) == role)
+        .map(|n| n.name().to_string());
+    Ok(by_attr.or(by_name))
+}
+
+/// Положить письмо в «Черновики» (отложенная отправка). Возвращает имя папки.
+pub async fn append_draft(conn: &mut Connection, raw: &[u8]) -> Result<String> {
+    let folder = match role_folder(conn, FolderRole::Drafts).await? {
+        Some(f) => f,
+        None => {
+            conn.session.create("Drafts").await?;
+            "Drafts".to_string()
+        }
+    };
+    conn.selected = None;
+    conn.session.append(&folder, Some("(\\Seen \\Draft)"), None, raw).await?;
+    Ok(folder)
+}
+
+/// Заголовок отложенной отправки (время в RFC 3339).
+pub const SEND_AT_HEADER: &str = "X-Atom-Send-At";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Scheduled {
+    pub folder: String,
+    pub uid: u32,
+    pub send_at: String,
+    pub subject: String,
+    pub to: Vec<String>,
+}
+
+/// Письма в «Черновиках», ожидающие отложенной отправки.
+pub async fn scheduled(conn: &mut Connection) -> Result<Vec<Scheduled>> {
+    let Some(folder) = role_folder(conn, FolderRole::Drafts).await? else { return Ok(Vec::new()) };
+    conn.ensure_selected(&folder).await?;
+    let uids: Vec<u32> = conn.session.uid_search(format!("UNDELETED HEADER {SEND_AT_HEADER} \"\"")).await?.into_iter().collect();
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fetches: Vec<Fetch> = conn
+        .session
+        .uid_fetch(uid_set(&uids), format!("(UID BODY.PEEK[HEADER.FIELDS ({SEND_AT_HEADER} SUBJECT TO)])"))
+        .await?
+        .try_collect()
+        .await?;
+    let parser = MessageParser::default();
+    let mut out: Vec<Scheduled> = fetches
+        .iter()
+        .filter_map(|f| {
+            let uid = f.uid?;
+            let msg = parser.parse_headers(f.header()?)?;
+            let send_at = msg.header_raw(SEND_AT_HEADER)?.trim().to_string();
+            chrono::DateTime::parse_from_rfc3339(&send_at).ok()?;
+            Some(Scheduled {
+                folder: folder.clone(),
+                uid,
+                send_at,
+                subject: msg.subject().unwrap_or_default().to_string(),
+                to: addresses(msg.to()),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.send_at.cmp(&b.send_at));
+    Ok(out)
+}
+
+/// Исходник письма целиком (папка, UID) — для отправки отложенного письма.
+pub async fn raw_of(conn: &mut Connection, folder: &str, uid: u32) -> Result<Vec<u8>> {
+    conn.ensure_selected(folder).await?;
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid.to_string(), "(UID BODY.PEEK[])").await?.try_collect().await?;
+    fetches.iter().find(|f| f.uid == Some(uid)).and_then(|f| f.body()).map(<[u8]>::to_vec).ok_or(AppError::NotFound)
+}
+
+/// Захват отложенного письма для отправки, чтобы две запущенные копии программы
+/// (два компьютера) не отправили его дважды: каждая ставит своё ключевое слово,
+/// ждёт и смотрит, чья метка меньше. Возвращает true, если отправляет эта копия.
+pub async fn claim(conn: &mut Connection, folder: &str, uid: u32, token: &str) -> Result<bool> {
+    conn.ensure_selected(folder).await?;
+    let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("+FLAGS.SILENT (atomclaim{token})")).await?.try_collect().await?;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
+    let Some(f) = fetches.iter().find(|f| f.uid == Some(uid)) else { return Ok(false) };
+    if f.flags().any(|x| matches!(x, Flag::Deleted)) {
+        return Ok(false);
+    }
+    // Метка начинается со времени захвата: «зависшие» метки (копия программы
+    // упала во время отправки) старше 10 минут не учитываются.
+    let fresh_after = chrono::Utc::now().timestamp() - 600;
+    let mut claims: Vec<String> = f
+        .flags()
+        .filter_map(|x| match x {
+            Flag::Custom(k) if k.to_ascii_lowercase().starts_with("atomclaim") => Some(k.to_ascii_lowercase()),
+            _ => None,
+        })
+        .filter(|k| k["atomclaim".len()..].chars().take(10).collect::<String>().parse::<i64>().is_ok_and(|ts| ts >= fresh_after))
+        .collect();
+    claims.sort();
+    Ok(claims.first().is_some_and(|c| *c == format!("atomclaim{token}").to_ascii_lowercase()))
+}
+
+/// Удалить письмо из папки (после отправки отложенного) — только это письмо.
+pub async fn remove_message(conn: &mut Connection, folder: &str, uid: u32) -> Result<()> {
+    conn.ensure_selected(folder).await?;
+    let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+    expunge_uids(conn, &[uid]).await
+}
+
+// ---------------------------------------------------------------- шаблоны и сроки флажков
+
+/// Папка шаблонов (как «Templates» в Thunderbird); создаётся при первом сохранении.
+pub async fn templates_folder(conn: &mut Connection, create: bool) -> Result<Option<String>> {
+    let names: Vec<_> = conn.session.list(Some(""), Some("*")).await?.try_collect().await?;
+    let found = names
+        .iter()
+        .map(|n| n.name().to_string())
+        .find(|n| {
+            let leaf = utf7_imap::decode_utf7_imap(n.clone()).to_lowercase();
+            leaf == "templates" || leaf == "шаблоны"
+        });
+    drop(names);
+    if found.is_some() || !create {
+        return Ok(found);
+    }
+    conn.session.create("Templates").await?;
+    Ok(Some("Templates".into()))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Template {
+    pub folder: String,
+    pub uid: u32,
+    pub name: String,
+    pub text: String,
+    pub html: Option<String>,
+}
+
+pub async fn templates(conn: &mut Connection) -> Result<Vec<Template>> {
+    let Some(folder) = templates_folder(conn, false).await? else { return Ok(Vec::new()) };
+    conn.ensure_selected(&folder).await?;
+    let uids: Vec<u32> = conn.session.uid_search("UNDELETED").await?.into_iter().collect();
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(&uids[..uids.len().min(200)]), "(UID BODY.PEEK[])").await?.try_collect().await?;
+    let parser = MessageParser::default();
+    let mut out: Vec<Template> = fetches
+        .iter()
+        .filter_map(|f| {
+            let msg = parser.parse(f.body()?)?;
+            let html = msg.body_html(0).map(|h| crate::smtp::sanitize_html(&h));
+            Some(Template {
+                folder: folder.clone(),
+                uid: f.uid?,
+                name: msg.subject().unwrap_or("(без названия)").to_string(),
+                text: msg.body_text(0).map(|b| b.into_owned()).unwrap_or_default().replace("\r\n", "\n"),
+                html,
+            })
+        })
+        .collect();
+    out.sort_by_key(|t| t.name.to_lowercase());
+    Ok(out)
+}
+
+pub async fn append_template(conn: &mut Connection, raw: &[u8]) -> Result<()> {
+    let folder = templates_folder(conn, true).await?.expect("created");
+    conn.selected = None;
+    conn.session.append(&folder, Some("(\\Seen)"), None, raw).await?;
+    Ok(())
+}
+
+/// Префикс ключевого слова со сроком флажка: `atomdue-ГГГГММДДЧЧММ` (UTC).
+pub const DUE_PREFIX: &str = "atomdue-";
+
+pub fn due_keyword(at: &chrono::DateTime<chrono::Utc>) -> String {
+    format!("{DUE_PREFIX}{}", at.format("%Y%m%d%H%M"))
+}
+
+pub fn due_of(keywords: &[String]) -> Option<chrono::DateTime<chrono::Utc>> {
+    keywords.iter().find_map(|k| {
+        let rest = k.strip_prefix(DUE_PREFIX)?;
+        chrono::NaiveDateTime::parse_from_str(rest, "%Y%m%d%H%M").ok().map(|n| n.and_utc())
+    })
+}
+
+/// Флажок со сроком (или без срока): прежние сроки снимаются.
+pub async fn set_due(conn: &mut Connection, folder: &str, uid: u32, due: Option<chrono::DateTime<chrono::Utc>>) -> Result<()> {
+    conn.ensure_selected(folder).await?;
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
+    let old: Vec<String> = fetches
+        .iter()
+        .find(|f| f.uid == Some(uid))
+        .map(|f| f.flags().filter_map(|x| match x { Flag::Custom(k) if k.starts_with(DUE_PREFIX) => Some(k.to_string()), _ => None }).collect())
+        .unwrap_or_default();
+    if !old.is_empty() {
+        let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("-FLAGS.SILENT ({})", old.join(" "))).await?.try_collect().await?;
+    }
+    let mut add = vec!["\\Flagged".to_string()];
+    if let Some(at) = due {
+        add.push(due_keyword(&at));
+    }
+    let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("+FLAGS.SILENT ({})", add.join(" "))).await?.try_collect().await?;
+    Ok(())
+}
+
+/// Письма с флажком и сроком в папке.
+pub async fn due_in(conn: &mut Connection, folder: &str) -> Result<Vec<MessageSummary>> {
+    conn.ensure_selected(folder).await?;
+    let uids: Vec<u32> = conn.session.uid_search("FLAGGED UNDELETED").await?.into_iter().collect();
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let flags: Vec<Fetch> = conn.session.uid_fetch(uid_set(&uids), "(UID FLAGS)").await?.try_collect().await?;
+    let with_due: Vec<u32> = flags
+        .iter()
+        .filter(|f| f.flags().any(|x| matches!(x, Flag::Custom(k) if k.starts_with(DUE_PREFIX))))
+        .filter_map(|f| f.uid)
+        .collect();
+    index_summaries(conn, folder, &with_due).await
+}
+
+/// Поставить или снять ключевое слово (категория, $MDNSent) у писем.
+pub async fn set_keyword(conn: &mut Connection, folder: &str, uids: &[u32], keyword: &str, value: bool) -> Result<()> {
+    if !valid_keyword(keyword) {
+        return Err(AppError::Other("Недопустимое имя метки".into()));
+    }
+    conn.ensure_selected(folder).await?;
+    let op = if value { "+FLAGS.SILENT" } else { "-FLAGS.SILENT" };
+    let _: Vec<Fetch> = conn.session.uid_store(uid_set(uids), format!("{op} ({keyword})")).await?.try_collect().await?;
+    Ok(())
+}
+
+/// Ключевое слово IMAP (atom): без пробелов, скобок, кавычек и т. п.; не системный флаг.
+pub fn valid_keyword(k: &str) -> bool {
+    !k.is_empty() && k.len() <= 64 && !k.starts_with('\\') && k.bytes().all(|b| b.is_ascii_graphic() && !b"(){%*\"\\]".contains(&b))
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]

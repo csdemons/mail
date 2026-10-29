@@ -3,14 +3,14 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, Lock, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
+  Reply, Search, Send, Settings, ShieldCheck, Lock, CalendarClock, Tag, MessagesSquare, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
 } from 'lucide-react'
 
 import {
   api, editNotice, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE,
 } from './api'
 import type {
-  Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Settings as Profile,
+  Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile,
 } from './types'
 import About from './About'
 import kurchatovLogo from './assets/kurchatov-logo.png'
@@ -29,7 +29,12 @@ import type { MenuItem } from './ContextMenu'
 import { AttachmentList } from './AttachmentViewer'
 import MessageBody from './MessageBody'
 import AddressLine from './AddressLine'
-import { OfflineSettings, SignatureSettings } from './MailSettings'
+import MdnBar from './MdnBar'
+import DuePicker from './DuePicker'
+import { categoriesOf, dueLabel, dueOf, duePresets, threadKeys, userCategories, withDue } from './mailExtras'
+import ScheduledMail from './ScheduledMail'
+import { useOutbox } from './sending'
+import { CategoriesSettings, DesktopSettings, OfflineSettings, SendingSettings, SignatureSettings } from './MailSettings'
 import TotpSettings, { AUTOLOCK_KEY, loadAutolock } from './TotpSettings'
 import { buildDraft, ensureArchive, withSignature } from './mailActions'
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
@@ -221,6 +226,57 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [signature, setSignature] = useState('')
+  // Категории (общие с веб-почтой), фильтр по категории, цепочки писем.
+  const [categories, setCategories] = useState<Category[]>([])
+  useEffect(() => { api.categoriesGet().then(setCategories).catch(() => undefined) }, [])
+  const [catFilter, setCatFilter] = useState('')
+  const [threadsOn, setThreadsOn] = useState(() => { try { return localStorage.getItem('rrcki-mail.threads') !== 'off' } catch { return true } })
+  useEffect(() => { try { localStorage.setItem('rrcki-mail.threads', threadsOn ? 'on' : 'off') } catch { /* нет хранилища */ } }, [threadsOn])
+  const [openThreads, setOpenThreads] = useState<Set<string>>(new Set())
+  const [popMenu, setPopMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  const [duePick, setDuePick] = useState<MessageSummary[] | null>(null)
+
+  // Напоминания по флажкам со сроком: проверка раз в 2 минуты (и при запуске).
+  useEffect(() => {
+    let stopped = false
+    const KEY = 'rrcki-mail.reminded'
+    async function check() {
+      try {
+        const list = await api.dueList()
+        if (stopped) return
+        let done: string[] = []
+        try { done = JSON.parse(localStorage.getItem(KEY) ?? '[]') as string[] } catch { /* нет хранилища */ }
+        const now = Date.now()
+        for (const m of list) {
+          const due = dueOf(m)
+          const id = `${m.msgId ?? `${m.folder}/${m.uid}`}|${due?.getTime()}`
+          if (!due || due.getTime() > now || done.includes(id)) continue
+          done.push(id)
+          const text = `${senderLabel(m)}: ${m.subject || '(без темы)'}`
+          if (appInFront()) setNotice(`Напоминание по флажку — ${text}`)
+          else notify('Напоминание по флажку', text)
+        }
+        try { localStorage.setItem(KEY, JSON.stringify(done.slice(-500))) } catch { /* нет хранилища */ }
+      } catch { /* попробуем позже */ }
+    }
+    let timer = 0
+    const loop = () => { timer = window.setTimeout(() => { void check().finally(() => { if (!stopped) loop() }) }, timer === 0 ? 5000 : pollSecs.current < 60 ? 10_000 : 120_000) }
+    loop()
+    return () => { stopped = true; window.clearTimeout(timer) }
+  }, [])
+  // Непрочитанные во «Входящих» — на значке в трее и на панели задач.
+  const inboxUnseen = folders.find((f) => f.role === 'inbox')?.unseen ?? 0
+  useEffect(() => { void api.setUnread(inboxUnseen).catch(() => undefined) }, [inboxUnseen])
+  useEffect(() => () => { void api.setUnread(0).catch(() => undefined) }, [])
+  const outbox = useOutbox((d) => startDraft(d), (t) => setNotice(t))
+  const [scheduled, setScheduled] = useState<Scheduled[]>([])
+  const [showScheduled, setShowScheduled] = useState(false)
+  const loadScheduled = useCallback(() => { api.scheduledList().then(setScheduled).catch(() => undefined) }, [])
+  useEffect(() => {
+    loadScheduled()
+    const t = window.setInterval(loadScheduled, 60_000)
+    return () => window.clearInterval(t)
+  }, [loadScheduled])
   useEffect(() => { api.signatureGet().then(setSignature).catch(() => undefined) }, [])
   composingRef.current = draft !== null
   const [contacts, setContacts] = useState<Contact[]>([])
@@ -552,6 +608,60 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
     }
   }
 
+  /** Категория у писем (по папкам): поставить или снять. */
+  async function setCategory(items: MessageSummary[], cat: Category, want: boolean) {
+    const target = items.filter((m) => (m.keywords ?? []).some((k) => k.toLowerCase() === cat.keyword.toLowerCase()) !== want)
+    for (const m of target) {
+      const kw = (m.keywords ?? []).filter((k) => k.toLowerCase() !== cat.keyword.toLowerCase())
+      patchMessage(messageKey(m), { keywords: want ? [...kw, cat.keyword] : kw })
+    }
+    for (const g of byFolder(target)) {
+      try {
+        await api.setKeywords(g[0].folder, g.map((m) => m.uid), cat.keyword, want)
+      } catch (error) {
+        setNotice(`Не удалось изменить категорию: ${errorText(error)}`)
+      }
+    }
+  }
+
+  /** Флажок со сроком (или без срока) — напоминание придёт в срок. */
+  async function setDueFor(items: MessageSummary[], due: Date | null) {
+    for (const m of items) {
+      patchMessage(messageKey(m), { flagged: true, keywords: withDue(m.keywords ?? [], due) })
+      try {
+        await api.setDue(m.folder, m.uid, due ? due.toISOString() : null)
+      } catch (error) {
+        setNotice(`Не удалось поставить срок: ${errorText(error)}`)
+      }
+    }
+    if (due) setNotice(`Флажок до ${dueLabel(due)} — напомню в срок.`)
+  }
+
+  function dueMenuItems(items: MessageSummary[]): MenuItem[] {
+    return [
+      ...duePresets().map((p) => ({ label: `К исполнению: ${p.label.toLowerCase()}`, icon: <Flag size={15} />, hint: dueLabel(p.at), onSelect: () => void setDueFor(items, p.at) })),
+      { label: 'Выбрать срок…', icon: <CalendarClock size={15} />, onSelect: () => setDuePick(items) },
+      { label: 'Флажок без срока', icon: <Flag size={15} />, onSelect: () => void setDueFor(items, null) },
+    ]
+  }
+
+  function categoryMenuItems(items: MessageSummary[]): MenuItem[] {
+    const cats = userCategories(categories)
+    return [
+      ...cats.map((c) => {
+        const has = items.every((m) => (m.keywords ?? []).some((k) => k.toLowerCase() === c.keyword.toLowerCase()))
+        return { label: c.name, icon: <span className="cat-dot" style={{ background: c.color }}>{has ? '✓' : ''}</span>, onSelect: () => void setCategory(items, c, !has) }
+      }),
+      ...(cats.length ? [{ separator: true as const }] : []),
+      { label: 'Настроить категории…', icon: <Tag size={15} />, onSelect: () => setShowSettings(true) },
+    ]
+  }
+
+  function openPop(e: React.MouseEvent, items: MenuItem[]) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setPopMenu({ x: r.left, y: r.bottom + 4, items })
+  }
+
   async function runDiagnostics() {
     setDiagBusy(true)
     setDiagText('Сбор данных…')
@@ -617,10 +727,28 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
         filter === 'С флажком' ? m.flagged :
         m.hasAttachments
       if (!filterMatch) return false
+      if (catFilter && !(m.keywords ?? []).some((k) => k.toLowerCase() === catFilter.toLowerCase())) return false
       if (!q) return true
       return `${m.fromName} ${m.fromAddress} ${m.subject} ${m.to.join(' ')}`.toLowerCase().includes(q)
     })
-  }, [pool, searching, filter, query])
+  }, [pool, searching, filter, query, catFilter])
+
+  /** Строки списка: цепочки свёрнуты в одну строку (новое письмо сверху), раскрываются стрелкой. */
+  const listRows = useMemo(() => {
+    if (!threadsOn || searching) return visibleMessages.map((m) => ({ m, count: 1, child: false, thread: '' }))
+    const keys = threadKeys(visibleMessages)
+    const groups = new Map<string, MessageSummary[]>()
+    for (const m of visibleMessages) {
+      const k = keys.get(m) ?? messageKey(m)
+      groups.set(k, [...(groups.get(k) ?? []), m])
+    }
+    const rows: { m: MessageSummary; count: number; child: boolean; thread: string }[] = []
+    for (const [k, items] of groups) {
+      rows.push({ m: items[0], count: items.length, child: false, thread: k })
+      if (items.length > 1 && openThreads.has(k)) for (const c of items.slice(1)) rows.push({ m: c, count: 1, child: true, thread: k })
+    }
+    return rows
+  }, [visibleMessages, threadsOn, searching, openThreads])
 
   const selected = pool.find((m) => messageKey(m) === selectedKey)
 
@@ -905,6 +1033,12 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
       allFlagged
         ? { label: 'Снять флажок', icon: <Flag size={15} />, onSelect: each('flagged', false) }
         : { label: 'Поставить флажок', icon: <Flag size={15} />, onSelect: each('flagged', true) },
+      { label: 'Флажок со сроком…', icon: <CalendarClock size={15} />, onSelect: () => setDuePick(items) },
+      { separator: true },
+      ...userCategories(categories).map((c) => {
+        const has = items.every((m) => (m.keywords ?? []).some((k) => k.toLowerCase() === c.keyword.toLowerCase()))
+        return { label: `Категория «${c.name}»`, icon: <span className="cat-dot" style={{ background: c.color }}>{has ? '✓' : ''}</span>, onSelect: () => void setCategory(items, c, !has) }
+      }),
       { separator: true },
       { label: 'В архив', icon: <Archive size={15} />, onSelect: () => void archive(items) },
       { label: 'Переместить в папку…', icon: <FolderInput size={15} />, onSelect: () => setMovePicker(items) },
@@ -1057,6 +1191,9 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
               )
             })}
           </div>
+          {scheduled.length > 0 && <button className="scheduled-link" onClick={() => { loadScheduled(); setShowScheduled(true) }}>
+            <CalendarClock size={16} /> Запланировано: {scheduled.length}
+          </button>}
           <div className="sidebar-footer">
             <div className="secure-label"><ShieldCheck size={15} /> Подключено по TLS</div>
             <span>{account.host}</span>
@@ -1097,6 +1234,11 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
             {(['Все', 'Непрочитанные', 'Важные', 'С флажком', 'С вложениями'] as MailFilter[]).map((item) => (
               <button key={item} className={`filter-chip ${filter === item ? 'active' : ''}`} onClick={() => setFilter(item)}>{item}</button>
             ))}
+            {userCategories(categories).length > 0 && <select className={`filter-chip filter-select ${catFilter ? 'active' : ''}`} aria-label="Категория" value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
+              <option value="">Все категории</option>
+              {userCategories(categories).map((c) => <option key={c.keyword} value={c.keyword}>{c.name}</option>)}
+            </select>}
+            <button className={`filter-chip ${threadsOn ? 'active' : ''}`} aria-pressed={threadsOn} title="Группировать письма одной переписки" onClick={() => setThreadsOn(!threadsOn)}><MessagesSquare size={13} /> Цепочки</button>
           </div>
           {searching
             ? <div className="message-list-header search-header">
@@ -1122,13 +1264,16 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
                 <button className="text-button" onClick={() => void loadFirstPage(folderId, true)}>Повторить</button>
               </div>
             )}
-            {visibleMessages.map((m) => {
+            {listRows.map(({ m, count, child, thread }) => {
               const key = messageKey(m)
               const sender = senderLabel(m)
+              const due = dueOf(m)
+              const cats = categoriesOf(m, categories)
+              const open = openThreads.has(thread)
               return (
                 <button
                   key={key}
-                  className={`message-row ${selectedKey === key ? 'selected' : ''} ${checked.has(key) ? 'checked' : ''} ${m.unread ? 'unread' : ''} ${rowMenu?.items.some((x) => messageKey(x) === key) ? 'menu-target' : ''}`}
+                  className={`message-row ${child ? 'thread-child' : ''} ${selectedKey === key ? 'selected' : ''} ${checked.has(key) ? 'checked' : ''} ${m.unread ? 'unread' : ''} ${rowMenu?.items.some((x) => messageKey(x) === key) ? 'menu-target' : ''}`}
                   onClick={(e) => onRowClick(e, m)}
                   onDoubleClick={() => openInWindow(m)}
                   onContextMenu={(e) => openRowMenu(e, m)}
@@ -1139,8 +1284,22 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
                   <div className={`sender-avatar avatar-${m.uid % 5}`}>{initials(sender)}</div>
                   <div className="message-summary">
                     <div className="message-topline"><span className="sender-name">{sender}</span><time>{formatListDate(m.date)}</time></div>
-                    <div className="message-subject">{m.subject || '(без темы)'}</div>
+                    <div className="message-subject">
+                      {count > 1 && <span
+                        className={`thread-count ${open ? 'open' : ''}`}
+                        role="button"
+                        aria-label={open ? 'Свернуть цепочку' : 'Развернуть цепочку'}
+                        title={`Писем в цепочке: ${count}`}
+                        onClick={(e) => { e.stopPropagation(); setOpenThreads((s) => { const n = new Set(s); if (n.has(thread)) n.delete(thread); else n.add(thread); return n }) }}
+                        onPointerDown={(e) => e.stopPropagation()}
+                      ><ChevronRight size={12} />{count}</span>}
+                      {m.subject || '(без темы)'}
+                    </div>
                     {searching && <div className="message-folder">{folderName(m.folder)}</div>}
+                    {(cats.length > 0 || due) && <div className="message-tags">
+                      {due && <span className={`due-tag ${due.getTime() < Date.now() ? 'overdue' : ''}`} title="Срок флажка"><Flag size={11} /> {dueLabel(due)}</span>}
+                      {cats.map((c) => <span key={c.keyword} className="cat-tag" style={{ borderColor: c.color, color: c.color }}><span className="cat-dot" style={{ background: c.color }} />{c.name}</span>)}
+                    </div>}
                     <div className="message-meta">
                       {m.hasAttachments && <Paperclip size={13} />}
                       {m.important && <CircleAlert size={13} className="important-mark" />}
@@ -1196,6 +1355,8 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
               <button className={`icon-button ${selected.flagged ? 'flag-on' : ''}`} aria-label="Флажок" aria-pressed={selected.flagged} title={selected.flagged ? 'Снять флажок' : 'Поставить флажок (к исполнению)'} onClick={() => void toggleFlag(selected, 'flagged')}>
                 <Flag size={18} fill={selected.flagged ? 'currentColor' : 'none'} />
               </button>
+              <button className="icon-button" aria-label="Срок" title="Флажок со сроком (напоминание)" onClick={(e) => openPop(e, dueMenuItems([selected]))}><CalendarClock size={18} /></button>
+              <button className="icon-button" aria-label="Категории" title="Категории" onClick={(e) => openPop(e, categoryMenuItems([selected]))}><Tag size={18} /></button>
               <button className="icon-button" aria-label="Непрочитанное" title={selected.unread ? 'Отметить прочитанным' : 'Отметить непрочитанным'} onClick={() => void toggleFlag(selected, 'seen')}>
                 <Mail size={18} />
               </button>
@@ -1236,6 +1397,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
               cloudTitle={`Сохранить в Nextcloud (${NC_MAIL_DIR})`}
               onEdit={ncStatus?.connected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(detail.folder, detail.uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined}
             />}
+            <MdnBar detail={detail} me={account.username} onNotice={setNotice} onDone={() => { setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] }); patchMessage(messageKey(detail), { keywords: [...detail.keywords, '$MDNSent'] }) }} />
             <MessageBody detail={detail} onNotice={setNotice} />
             <div className="reader-actions">
               <button className="primary-button" onClick={() => openComposer('reply')}><Reply size={16} /> Ответить</button>
@@ -1264,11 +1426,21 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
           onSent={(text) => {
             setDraft(null)
             setNotice(text)
+            loadScheduled()
+            if ((draft.mode === 'reply' || draft.mode === 'replyAll') && detail) patchMessage(messageKey(detail), { answered: true })
+          }}
+          onQueued={(id, snapshot, delay) => {
+            setDraft(null)
+            outbox.queued(id, snapshot, delay)
             if ((draft.mode === 'reply' || draft.mode === 'replyAll') && detail) patchMessage(messageKey(detail), { answered: true })
           }}
         />
       )}
 
+      {outbox.element}
+      {popMenu && <ContextMenu x={popMenu.x} y={popMenu.y} items={popMenu.items} onClose={() => setPopMenu(null)} />}
+      {duePick && <DuePicker onClose={() => setDuePick(null)} onPick={(d) => { const items = duePick; setDuePick(null); void setDueFor(items, d) }} />}
+      {showScheduled && <ScheduledMail items={scheduled} onClose={() => setShowScheduled(false)} onChanged={loadScheduled} onNotice={setNotice} />}
       {rowMenu && <ContextMenu x={rowMenu.x} y={rowMenu.y} items={rowMenuItems(rowMenu.items)} onClose={() => setRowMenu(null)} />}
       {dragInfo && <div className="mail-drag-ghost" style={{ left: dragInfo.x + 12, top: dragInfo.y + 8 }}>
         <Mail size={14} /> {dragInfo.count === 1 ? '1 письмо' : `${dragInfo.count} ${pluralLetters(dragInfo.count)}`}
@@ -1320,6 +1492,9 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
             <button className="text-button" onClick={() => notify('Atom Mail', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
           </div>
           <SignatureSettings signature={signature} onSaved={(text, msg) => { setSignature(text); setNotice(msg) }} />
+          <SendingSettings />
+          <CategoriesSettings categories={categories} onSaved={(list, msg) => { setCategories(list); setNotice(msg) }} />
+          <DesktopSettings onNotice={setNotice} />
           <OfflineSettings onNotice={setNotice} />
           <TotpSettings onChange={setTotpOn} onLock={() => { setShowSettings(false); onLock() }} autolock={autolock} onAutolock={updateAutolock} />
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>

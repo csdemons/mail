@@ -79,6 +79,11 @@ export interface MessageSummary {
   /** «Важное» (метка $label1, как в веб-почте SOGo). */
   important: boolean
   answered: boolean
+  /** Ключевые слова IMAP: категории, $MDNSent и т. п. */
+  keywords: string[]
+  /** Message-ID и предки (References, In-Reply-To) — для цепочек. */
+  msgId?: string
+  thread?: string[]
   hasAttachments: boolean
   size: number
 }
@@ -107,6 +112,8 @@ export interface MessageDetail extends MessageSummary {
   /** Сколько картинок из интернета скрыто. */
   remoteImages: number
   attachments: AttachmentInfo[]
+  /** Отправитель просит уведомление о прочтении. */
+  dispositionTo: string | null
 }
 
 export interface PickedFile {
@@ -118,6 +125,42 @@ export interface PickedFile {
 export interface SendResult {
   savedTo: string | null
   warning: string | null
+}
+
+export interface SendTicket {
+  /** Письмо в «окне отмены». */
+  id: number | null
+  result: SendResult | null
+  /** Отложенная отправка: время (RFC 3339). */
+  scheduledAt: string | null
+}
+
+export interface Scheduled {
+  folder: string
+  uid: number
+  sendAt: string
+  subject: string
+  to: string[]
+}
+
+export interface Category {
+  keyword: string
+  name: string
+  color: string
+}
+
+export interface MailTemplate {
+  folder: string
+  uid: number
+  name: string
+  text: string
+  html: string | null
+}
+
+export interface DesktopPrefs {
+  closeToTray: boolean
+  autostart: boolean
+  tray: boolean
 }
 
 export interface DavCollection {
@@ -182,6 +225,10 @@ export interface Draft {
   body: string
   inReplyTo: string | null
   references: string | null
+  /** Возврат в редактор после отмены отправки: оформленный текст, вложения, запрос о прочтении. */
+  html?: string
+  files?: PickedFile[]
+  readReceipt?: boolean
 }
 
 export interface EventInput {

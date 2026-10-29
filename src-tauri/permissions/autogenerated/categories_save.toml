@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-categories-save"
+description = "Enables the categories_save command without any pre-configured scope."
+commands.allow = ["categories_save"]
+
+[[permission]]
+identifier = "deny-categories-save"
+description = "Denies the categories_save command without any pre-configured scope."
+commands.deny = ["categories_save"]

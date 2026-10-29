@@ -38,6 +38,27 @@ pub fn enable_spellcheck(app: &AppHandle) {
     }
 }
 
+/// Трея в сборке для Astra 1.7 нет: окно закрывается как обычно.
+pub fn setup_tray(_app: &AppHandle) -> bool {
+    false
+}
+
+pub fn set_unread(_app: &AppHandle, _count: u32) {}
+
+pub fn hide_main(app: &AppHandle) {
+    if let Some(w) = app.get_window("main") {
+        let _ = w.hide();
+    }
+}
+
+pub fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
 pub async fn pick_files(_app: &AppHandle) -> Option<Vec<PathBuf>> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     FileDialogBuilder::new().pick_files(move |paths| {

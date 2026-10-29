@@ -8,6 +8,7 @@ pub mod nextcloud;
 #[doc(hidden)]
 pub mod imap;
 mod settings;
+mod desktop;
 mod store;
 mod totp;
 #[doc(hidden)]
@@ -34,10 +35,28 @@ pub fn run() {
         )
         .manage(commands::AppState::default())
         .setup(|app| {
-            host::enable_spellcheck(&app.handle().clone());
+            let handle = app.handle().clone();
+            host::enable_spellcheck(&handle);
+            commands::setup_desktop(&handle);
             Ok(())
         })
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            // Закрытие главного окна при включённом трее — свернуть, а не выйти:
+            // почта, уведомления и отложенная отправка продолжают работать.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" && window.app_handle().state::<commands::AppState>().keeps_running() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(commands::app_commands!())
-        .run(tauri::generate_context!())
-        .expect("error while running RRCKI Mail");
+        .build(tauri::generate_context!())
+        .expect("error while running RRCKI Mail")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                commands::on_exit_requested(app, || api.prevent_exit());
+            }
+        });
 }

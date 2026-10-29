@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use lettre::message::header::ContentType;
+use lettre::message::header::{ContentType, HeaderName, HeaderValue};
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -28,6 +28,10 @@ pub struct Outgoing {
     pub in_reply_to: Option<String>,
     pub references: Option<String>,
     pub attachments: Vec<OutgoingAttachment>,
+    /// Запросить уведомление о прочтении (Disposition-Notification-To: отправитель).
+    pub read_receipt: bool,
+    /// Служебные заголовки (например, время отложенной отправки).
+    pub extra_headers: Vec<(String, String)>,
 }
 
 fn parse_mailbox(raw: &str) -> Result<Mailbox> {
@@ -138,6 +142,15 @@ pub fn build(msg: Outgoing) -> Result<Message> {
     if let Some(refs) = msg.references.as_deref().and_then(clean_header_value) {
         builder = builder.references(refs);
     }
+    if msg.read_receipt {
+        builder = builder.raw_header(HeaderValue::new(HeaderName::new_from_ascii_str("Disposition-Notification-To"), format!("<{}>", msg.from_address.trim())));
+    }
+    for (name, value) in msg.extra_headers {
+        let name = HeaderName::new_from_ascii(name).map_err(|_| AppError::Other("Некорректный заголовок".into()))?;
+        if let Some(v) = clean_header_value(&value) {
+            builder = builder.raw_header(HeaderValue::new(name, v));
+        }
+    }
 
     let text = SinglePart::plain(msg.body.replace("\r\n", "\n"));
     let html = msg.html.filter(|h| !h.trim().is_empty()).map(|h| SinglePart::html(html_document(&h)));
@@ -196,6 +209,85 @@ pub async fn send(host: &str, port: u16, user: &str, pass: &str, message: &Messa
         .map_err(|e| smtp_error(host, port, e))
 }
 
+/// Отправка готового исходника (отложенное письмо, уведомление о прочтении):
+/// получатели — из заголовков To и Cc, отправитель — From.
+pub async fn send_raw(host: &str, port: u16, user: &str, pass: &str, raw: &[u8]) -> Result<()> {
+    let msg = mail_parser::MessageParser::default().parse_headers(raw).ok_or_else(|| AppError::Other("Не удалось разобрать письмо".into()))?;
+    let addr = |a: &mail_parser::Addr<'_>| a.address().and_then(|s| s.parse::<lettre::Address>().ok());
+    let from = msg.from().and_then(|f| f.first()).and_then(addr);
+    let mut to: Vec<lettre::Address> = Vec::new();
+    for list in [msg.to(), msg.cc()].into_iter().flatten() {
+        to.extend(list.iter().filter_map(addr));
+    }
+    if to.is_empty() {
+        return Err(AppError::Other("В письме нет получателей".into()));
+    }
+    let envelope = lettre::address::Envelope::new(from, to).map_err(|e| AppError::Other(format!("Конверт письма: {e}")))?;
+    transport(host, port, user, pass)?
+        .send_raw(&envelope, raw)
+        .await
+        .map(|_| ())
+        .map_err(|e| smtp_error(host, port, e))
+}
+
+/// Убрать служебный заголовок и поставить текущую дату (отправка отложенного письма).
+pub fn finalize_scheduled(raw: &[u8], header: &str) -> Vec<u8> {
+    let mut bytes = format!("Date: {}\r\n", chrono::Utc::now().to_rfc2822()).into_bytes();
+    bytes.extend_from_slice(&remove_headers(raw, &[header, "date"]));
+    bytes
+}
+
+/// Убрать служебный заголовок (письмо снова обычный черновик).
+pub fn strip_header(raw: &[u8], header: &str) -> Vec<u8> {
+    remove_headers(raw, &[header])
+}
+
+fn remove_headers(raw: &[u8], names: &[&str]) -> Vec<u8> {
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 2).unwrap_or(raw.len());
+    let (head, body) = raw.split_at(split);
+    let head = String::from_utf8_lossy(head);
+    let mut out = String::new();
+    let mut skip = false;
+    let prefixes: Vec<String> = names.iter().map(|n| format!("{}:", n.to_ascii_lowercase())).collect();
+    for line in head.split_inclusive("\r\n") {
+        let continuation = line.starts_with(' ') || line.starts_with('\t');
+        if !continuation {
+            let l = line.to_ascii_lowercase();
+            skip = prefixes.iter().any(|p| l.starts_with(p.as_str()));
+        }
+        if !skip {
+            out.push_str(line);
+        }
+    }
+    let mut bytes = out.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+/// Уведомление о прочтении (RFC 8098): multipart/report с машиночитаемой частью.
+pub fn build_mdn(from_name: &str, from: &str, to: &str, original_subject: &str, original_id: Option<&str>) -> Vec<u8> {
+    use base64::Engine as _;
+    let enc = |s: &str| format!("=?utf-8?b?{}?=", base64::engine::general_purpose::STANDARD.encode(s.as_bytes()));
+    let boundary = format!("mdn-{}", uuid::Uuid::new_v4().simple());
+    let date = chrono::Utc::now().to_rfc2822();
+    let from_hdr = if from_name.trim().is_empty() { format!("<{from}>") } else { format!("{} <{from}>", enc(from_name.trim())) };
+    let text = format!("Ваше письмо «{original_subject}» прочитано {}.", chrono::Local::now().format("%d.%m.%Y в %H:%M"));
+    let mut raw = String::new();
+    raw.push_str(&format!("Date: {date}\r\nFrom: {from_hdr}\r\nTo: <{to}>\r\nSubject: {}\r\n", enc(&format!("Прочитано: {original_subject}"))));
+    raw.push_str(&format!("Message-ID: <{}@atom-mail>\r\nMIME-Version: 1.0\r\n", uuid::Uuid::new_v4()));
+    if let Some(id) = original_id.and_then(clean_header_value) {
+        raw.push_str(&format!("References: {id}\r\nIn-Reply-To: {id}\r\n"));
+    }
+    raw.push_str(&format!("Content-Type: multipart/report; report-type=disposition-notification; boundary=\"{boundary}\"\r\n\r\n"));
+    raw.push_str(&format!("--{boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n", base64::engine::general_purpose::STANDARD.encode(text.as_bytes())));
+    raw.push_str(&format!("--{boundary}\r\nContent-Type: message/disposition-notification\r\n\r\nReporting-UA: Atom Mail {}\r\nFinal-Recipient: rfc822;{from}\r\n", env!("CARGO_PKG_VERSION")));
+    if let Some(id) = original_id.and_then(clean_header_value) {
+        raw.push_str(&format!("Original-Message-ID: {id}\r\n"));
+    }
+    raw.push_str(&format!("Disposition: manual-action/MDN-sent-manually; displayed\r\n\r\n--{boundary}--\r\n"));
+    raw.into_bytes()
+}
+
 /// Проверка подключения (TLS + EHLO) — для диагностики.
 pub async fn check(host: &str, port: u16, user: &str, pass: &str) -> std::result::Result<bool, String> {
     transport(host, port, user, pass)
@@ -239,6 +331,8 @@ mod tests {
             html: Some("<p><b>Спасибо!</b></p><p style=\"color: red\" onclick=\"x()\">Дмитрий</p><script>alert(1)</script><img src=\"https://track/x.png\">".into()),
             in_reply_to: Some("<abc@nrcki.ru>".into()),
             references: Some("<root@nrcki.ru> <abc@nrcki.ru>".into()),
+            read_receipt: true,
+            extra_headers: vec![("X-Atom-Send-At".into(), "2030-01-01T09:00:00+03:00".into())],
             attachments: vec![OutgoingAttachment {
                 name: "Отчёт.txt".into(),
                 content_type: "text/plain".into(),
@@ -251,6 +345,13 @@ mod tests {
         assert!(raw.contains("References: <root@nrcki.ru> <abc@nrcki.ru>"));
         assert!(raw.contains("multipart/mixed") && raw.contains("multipart/alternative") && raw.contains("text/html"));
         assert!(raw.contains("=?utf-8?b?"), "non-ASCII headers must be encoded");
+        assert!(raw.contains("Disposition-Notification-To: <yushkov_do@nrcki.ru>"), "{raw}");
+        assert!(raw.contains("X-Atom-Send-At: 2030-01-01T09:00:00+03:00"));
+        let fin = String::from_utf8(finalize_scheduled(raw.as_bytes(), "X-Atom-Send-At")).unwrap();
+        assert!(!fin.contains("X-Atom-Send-At") && fin.starts_with("Date: ") && fin.matches("\nDate: ").count() == 0, "{}", &fin[..300]);
+        assert!(fin.contains("Disposition-Notification-To") && fin.ends_with(raw.split_once("\r\n\r\n").unwrap().1));
+        let mdn = String::from_utf8(build_mdn("Тест", "me@nrcki.ru", "you@nrcki.ru", "Отчёт", Some("<abc@nrcki.ru>"))).unwrap();
+        assert!(mdn.contains("report-type=disposition-notification") && mdn.contains("Original-Message-ID: <abc@nrcki.ru>") && mdn.contains("Disposition: manual-action/MDN-sent-manually; displayed"));
         assert!(build(Outgoing {
             from_name: None,
             from_address: "a@b.ru".into(),
@@ -262,6 +363,8 @@ mod tests {
             in_reply_to: None,
             references: None,
             attachments: vec![],
+            read_receipt: false,
+            extra_headers: vec![],
         })
         .is_err());
     }

@@ -52,6 +52,9 @@ pub struct Settings {
     /// Сколько дней писем хранить на компьютере (по умолчанию 7, 0 — не хранить).
     #[serde(default)]
     pub offline_days: Option<u32>,
+    /// Категории, если веб-почта (SOGo) недоступна: [ключевое слово, имя, цвет].
+    #[serde(default)]
+    pub categories: Option<Vec<(String, String, String)>>,
 }
 
 pub const DEFAULT_NEXTCLOUD_URL: &str = "https://next.nrcki.ru/";

@@ -31,6 +31,15 @@
     "allow-nc-link-for",
     "allow-nc-upload-links",
     "allow-create-contact",
-    "allow-signature-get"
+    "allow-signature-get",
+    "allow-send-wait",
+    "allow-send-cancel",
+    "allow-send-now",
+    "allow-mdn-respond",
+    "allow-categories-get",
+    "allow-set-keywords",
+    "allow-set-due",
+    "allow-templates-list",
+    "allow-template-save"
   ]
 }

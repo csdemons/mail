@@ -21,6 +21,8 @@ async fn main() {
             in_reply_to: None,
             references: None,
             attachments: vec![],
+            read_receipt: false,
+            extra_headers: vec![],
         })
         .expect("build");
         match smtp::send(&host, port, &user, &pass, &msg).await {

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Cloud, Paperclip, Send, X } from 'lucide-react'
+import { CalendarClock, ChevronDown, Cloud, FileText, MailCheck, Paperclip, Send, Trash2, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
 import RichEditor, { type RichEditorHandle } from './RichEditor'
 import NcFilePicker from './NcFilePicker'
-import type { Contact, Draft, PickedFile } from './types'
+import type { Contact, Draft, MailTemplate, PickedFile } from './types'
+import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './sending'
 
 interface Props {
   from: string
@@ -14,6 +15,8 @@ interface Props {
   ncConnected?: boolean
   onClose: () => void
   onSent: (notice: string) => void
+  /** Письмо ушло в «окно отмены»: родитель показывает отсчёт и может вернуть его в редактор. */
+  onQueued?: (id: number, snapshot: Draft, delaySecs: number) => void
 }
 
 const TITLES: Record<Draft['mode'], string> = {
@@ -106,14 +109,55 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
   )
 }
 
-export default function Composer({ from, draft, contacts, ncConnected, onClose, onSent }: Props) {
+export default function Composer({ from, draft, contacts, ncConnected, onClose, onSent, onQueued }: Props) {
   const [ncPicker, setNcPicker] = useState(false)
   const [to, setTo] = useState(draft.to)
   const [cc, setCc] = useState(draft.cc)
   const [showCc, setShowCc] = useState(Boolean(draft.cc))
   const [subject, setSubject] = useState(draft.subject)
   const editor = useRef<RichEditorHandle>(null)
-  const [files, setFiles] = useState<PickedFile[]>([])
+  const [files, setFiles] = useState<PickedFile[]>(draft.files ?? [])
+  const [receipt, setReceipt] = useState(draft.readReceipt ?? loadSendPrefs().receiptDefault)
+  const [schedOpen, setSchedOpen] = useState(false)
+  const [tplOpen, setTplOpen] = useState(false)
+  const [templates, setTemplates] = useState<MailTemplate[] | null>(null)
+  const [tplName, setTplName] = useState('')
+
+  function openTemplates() {
+    setTplOpen((o) => !o)
+    setSchedOpen(false)
+    api.templatesList().then(setTemplates).catch((e) => { setTemplates([]); setError(errorText(e)) })
+  }
+
+  function applyTemplate(t: MailTemplate) {
+    setTplOpen(false)
+    if (!subject.trim()) setSubject(t.name)
+    const html = t.html ?? t.text.split('\n').map((l) => `<div>${l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '<br>'}</div>`).join('')
+    editor.current?.insertHtml(html)
+  }
+
+  async function saveTemplate() {
+    const name = tplName.trim() || subject.trim()
+    if (!name) { setError('Укажите название шаблона'); return }
+    try {
+      await api.templateSave(name, editor.current?.text() ?? '', editor.current?.html() ?? null)
+      setTplName('')
+      setTemplates(await api.templatesList())
+      setError('')
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+
+  async function deleteTemplate(t: MailTemplate) {
+    try {
+      await api.templateDelete(t.folder, t.uid)
+      setTemplates((l) => (l ?? []).filter((x) => x.uid !== t.uid))
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+  const [schedAt, setSchedAt] = useState(() => localInputValue(schedulePresets()[0].at))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -126,8 +170,8 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
     }
   }
 
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  async function submit(event: React.FormEvent<HTMLFormElement> | null, sendAt: Date | null = null) {
+    event?.preventDefault()
     if (!to.trim()) {
       setError('Укажите получателя')
       return
@@ -136,15 +180,25 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
     setBusy(true)
     setError('')
     try {
-      const result = await api.sendMessage({
-        to, cc, subject,
-        body: editor.current?.text() ?? '',
-        html: editor.current?.html() ?? null,
+      const html = editor.current?.html() ?? null
+      const body = editor.current?.text() ?? ''
+      const delaySecs = onQueued && !sendAt ? loadSendPrefs().undoSecs : 0
+      const ticket = await api.sendMessage({
+        to, cc, subject, body, html,
         inReplyTo: draft.inReplyTo,
         references: draft.references,
         attachments: files.map((f) => f.id),
+        readReceipt: receipt,
+        delaySecs,
+        sendAt: sendAt ? sendAt.toISOString() : null,
       })
-      onSent(result.warning ?? 'Письмо отправлено.')
+      if (ticket.id !== null && onQueued) {
+        onQueued(ticket.id, { ...draft, to, cc, subject, body, html: html ?? undefined, files, readReceipt: receipt }, delaySecs)
+      } else if (ticket.scheduledAt) {
+        onSent(`Письмо будет отправлено ${formatWhen(ticket.scheduledAt)}. Оно ждёт в «Черновиках».`)
+      } else {
+        onSent(ticket.result?.warning ?? 'Письмо отправлено.')
+      }
     } catch (err) {
       setError(errorText(err))
     } finally {
@@ -166,7 +220,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
           ? <RecipientField label="Копия" value={cc} onChange={setCc} contacts={contacts} />
           : <button type="button" className="text-button add-cc" onClick={() => setShowCc(true)}>+ Копия</button>}
         <label className="compose-field"><span>Тема</span><input value={subject} spellCheck lang="ru" onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
-        <RichEditor ref={editor} initialText={draft.body} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} />
+        <RichEditor ref={editor} initialText={draft.body} initialHtml={draft.html} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} />
         {files.length > 0 && (
           <div className="compose-files">
             {files.map((f) => (
@@ -183,10 +237,48 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
             <Paperclip size={15} /> Вложить файл{files.length > 0 ? ` (${files.length}, ${formatSize(totalSize)})` : ''}
           </button>
           {ncConnected && <button type="button" className="text-button nc-link-button" disabled={busy} onClick={() => setNcPicker(true)} title="Вставить ссылку на файл из Nextcloud или загрузить большой файл в облако"><Cloud size={15} /> Ссылка Nextcloud</button>}
+          <div className="tpl-wrap">
+            <button type="button" className="text-button" disabled={busy} aria-label="Шаблоны" onClick={openTemplates}><FileText size={15} /> Шаблоны</button>
+            {tplOpen && <div className="schedule-pop tpl-pop popover" role="dialog" aria-label="Шаблоны писем">
+              <strong><FileText size={15} /> Шаблоны</strong>
+              {templates === null && <small className="settings-hint">Загрузка…</small>}
+              {templates?.length === 0 && <small className="settings-hint">Шаблонов пока нет — сохраните текущее письмо как шаблон.</small>}
+              {templates?.map((t) => (
+                <div key={`${t.folder}/${t.uid}`} className="tpl-item">
+                  <button type="button" className="schedule-preset" onClick={() => applyTemplate(t)}><span>{t.name}</span></button>
+                  <button type="button" className="icon-button" aria-label={`Удалить шаблон ${t.name}`} onClick={() => void deleteTemplate(t)}><Trash2 size={14} /></button>
+                </div>
+              ))}
+              <label className="schedule-custom">
+                <input aria-label="Название шаблона" placeholder={subject || 'Название шаблона'} value={tplName} onChange={(e) => setTplName(e.target.value)} />
+                <button type="button" className="secondary-button" onClick={() => void saveTemplate()}>Сохранить текущее</button>
+              </label>
+              <small className="settings-hint">Шаблоны хранятся в папке «Templates» на сервере, как в Thunderbird.</small>
+            </div>}
+          </div>
+          <label className="text-button receipt-toggle" title="Попросить получателя подтвердить, что письмо прочитано">
+            <input type="checkbox" checked={receipt} onChange={(e) => setReceipt(e.target.checked)} /> <MailCheck size={15} /> Уведомить о прочтении
+          </label>
           <div className="reader-toolbar-spacer" />
-          <button className="primary-button" type="submit" disabled={busy}>
-            <Send size={16} /> {busy ? 'Отправка…' : 'Отправить'}
-          </button>
+          <div className="send-split">
+            <button className="primary-button" type="submit" disabled={busy}>
+              <Send size={16} /> {busy ? 'Отправка…' : 'Отправить'}
+            </button>
+            <button type="button" className="primary-button send-more" disabled={busy} aria-label="Отправить позже" title="Отправить позже" onClick={() => { setTplOpen(false); setSchedOpen((o) => !o) }}><ChevronDown size={16} /></button>
+            {schedOpen && <div className="schedule-pop popover" role="dialog" aria-label="Отправить позже">
+              <strong><CalendarClock size={15} /> Отправить позже</strong>
+              {schedulePresets().map((p) => (
+                <button type="button" key={p.label} className="schedule-preset" onClick={() => { setSchedOpen(false); void submit(null, p.at) }}>
+                  <span>{p.label}</span><small>{formatWhen(p.at.toISOString())}</small>
+                </button>
+              ))}
+              <label className="schedule-custom">
+                <input type="datetime-local" aria-label="Дата и время отправки" value={schedAt} min={localInputValue(new Date())} onChange={(e) => setSchedAt(e.target.value)} />
+                <button type="button" className="secondary-button" disabled={!schedAt} onClick={() => { setSchedOpen(false); void submit(null, new Date(schedAt)) }}>Запланировать</button>
+              </label>
+              <small className="settings-hint">Письмо ждёт в «Черновиках» и уходит в срок, пока Atom Mail запущен (можно свернуть в трей); если программа была закрыта — при следующем запуске.</small>
+            </div>}
+          </div>
         </div>
       </form>
       {ncPicker && <NcFilePicker onClose={() => setNcPicker(false)} onPick={(links) => { setNcPicker(false); editor.current?.insertLinks(links) }} />}

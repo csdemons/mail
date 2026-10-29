@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, OfflineStatus, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
+  Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
 } from './types'
@@ -36,7 +36,26 @@ export const api = {
   sendMessage: (m: {
     to: string; cc: string; subject: string; body: string; html: string | null
     inReplyTo: string | null; references: string | null; attachments: string[]
-  }) => invoke<SendResult>('send_message', { ...m }),
+    readReceipt?: boolean; delaySecs?: number; sendAt?: string | null
+  }) => invoke<SendTicket>('send_message', { ...m }),
+  sendWait: (id: number) => invoke<SendResult>('send_wait', { id }),
+  sendCancel: (id: number) => invoke<boolean>('send_cancel', { id }),
+  sendNow: (id: number) => invoke<void>('send_now', { id }),
+  scheduledList: () => invoke<Scheduled[]>('scheduled_list'),
+  scheduledSendNow: (folder: string, uid: number) => invoke<SendResult>('scheduled_send_now', { folder, uid }),
+  scheduledCancel: (folder: string, uid: number) => invoke<void>('scheduled_cancel', { folder, uid }),
+  mdnRespond: (folder: string, uid: number, send: boolean) => invoke<void>('mdn_respond', { folder, uid, send }),
+  desktopPrefsGet: () => invoke<DesktopPrefs>('desktop_prefs_get'),
+  desktopPrefsSet: (prefs: DesktopPrefs) => invoke<void>('desktop_prefs_set', { prefs }),
+  setUnread: (count: number) => invoke<void>('set_unread', { count }),
+  categoriesGet: () => invoke<Category[]>('categories_get'),
+  categoriesSave: (categories: Category[]) => invoke<string | null>('categories_save', { categories }),
+  setKeywords: (folder: string, uids: number[], keyword: string, value: boolean) => invoke<void>('set_keywords', { folder, uids, keyword, value }),
+  setDue: (folder: string, uid: number, due: string | null) => invoke<void>('set_due', { folder, uid, due }),
+  dueList: () => invoke<MessageSummary[]>('due_list'),
+  templatesList: () => invoke<MailTemplate[]>('templates_list'),
+  templateSave: (name: string, text: string, html: string | null) => invoke<void>('template_save', { name, text, html }),
+  templateDelete: (folder: string, uid: number) => invoke<void>('template_delete', { folder, uid }),
   listContacts: () => invoke<ContactsResult>('list_contacts'),
   appInfo: () => invoke<AppInfo>('app_info'),
   checkUpdate: () => invoke<UpdateInfo | null>('check_update'),

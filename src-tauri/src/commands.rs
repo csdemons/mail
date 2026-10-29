@@ -56,6 +56,84 @@ pub struct AppState {
     store: Mutex<Option<std::sync::Arc<store::Store>>>,
     /// Почему хранилище не открылось (показывается в настройках).
     store_error: Mutex<Option<String>>,
+    /// Письма в «окне отмены».
+    pub outbox: Outbox,
+    /// Номер сессии: фоновые задачи прошлой сессии (до выхода/блокировки) завершаются.
+    session: AtomicU64,
+    /// Значок в трее создан.
+    tray: std::sync::atomic::AtomicBool,
+    /// Закрытие окна сворачивает в трей.
+    close_to_tray: std::sync::atomic::AtomicBool,
+}
+
+impl AppState {
+    /// Закрытие главного окна не завершает программу (она в трее).
+    pub fn keeps_running(&self) -> bool {
+        self.tray.load(Ordering::SeqCst) && self.close_to_tray.load(Ordering::SeqCst)
+    }
+}
+
+/// Трей, настройки окна и запуск свёрнутым (автозапуск передаёт `--minimized`).
+pub fn setup_desktop(app: &AppHandle) {
+    use tauri::Manager;
+    let state = app.state::<AppState>();
+    let prefs = host::config_dir(app).map(|d| crate::desktop::load_prefs(&d)).unwrap_or_default();
+    state.close_to_tray.store(prefs.close_to_tray, Ordering::SeqCst);
+    let tray = host::setup_tray(app);
+    state.tray.store(tray, Ordering::SeqCst);
+    if tray && std::env::args().any(|a| a == crate::desktop::MINIMIZED_ARG) {
+        host::hide_main(app);
+    }
+}
+
+/// Выход из программы: письма из «окна отмены» сначала уходят.
+pub fn on_exit_requested(app: &AppHandle, prevent: impl FnOnce()) {
+    use tauri::Manager;
+    if app.state::<AppState>().outbox.pending() {
+        prevent();
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            app.state::<AppState>().outbox.flush().await;
+            app.exit(0);
+        });
+    }
+}
+
+#[derive(Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopPrefs {
+    close_to_tray: bool,
+    autostart: bool,
+    /// Только для чтения: есть ли значок в трее.
+    #[serde(default)]
+    tray: bool,
+}
+
+#[tauri::command]
+pub fn desktop_prefs_get(app: AppHandle, state: State<'_, AppState>) -> DesktopPrefs {
+    let _ = app;
+    DesktopPrefs { close_to_tray: state.close_to_tray.load(Ordering::SeqCst), autostart: crate::desktop::autostart_enabled(), tray: state.tray.load(Ordering::SeqCst) }
+}
+
+#[tauri::command]
+pub fn desktop_prefs_set(app: AppHandle, state: State<'_, AppState>, prefs: DesktopPrefs) -> Result<()> {
+    if prefs.autostart != crate::desktop::autostart_enabled() {
+        crate::desktop::set_autostart(prefs.autostart)?;
+    }
+    state.close_to_tray.store(prefs.close_to_tray, Ordering::SeqCst);
+    crate::desktop::save_prefs(&host::config_dir(&app)?, &crate::desktop::UiPrefs { close_to_tray: prefs.close_to_tray })
+}
+
+/// Непрочитанные во «Входящих» — для значка в трее и на панели задач.
+#[tauri::command]
+pub fn set_unread(app: AppHandle, count: u32) {
+    host::set_unread(&app, count);
+}
+
+/// Показать главное окно (щелчок по уведомлению и т. п.).
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) {
+    host::show_main(&app);
 }
 
 /// Сессия, которая начнётся после верного кода TOTP.
@@ -132,6 +210,8 @@ pub struct LoginResult {
 async fn start_session(app: &AppHandle, state: &AppState, creds: Credentials, profile: Settings) -> Result<()> {
     let conn = imap::connect(&creds).await?;
     open_store(app, state, &creds, &profile).await;
+    let generation = state.session.fetch_add(1, Ordering::SeqCst) + 1;
+    tauri::async_runtime::spawn(run_scheduler(app.clone(), generation));
     if let Some(old) = state.conn.lock().await.replace(conn) {
         old.logout().await;
     }
@@ -477,6 +557,7 @@ pub async fn login(
         nextcloud_uid: mine.map(|p| p.nextcloud_uid.clone()).unwrap_or_default(),
         signature: mine.and_then(|p| p.signature.clone()),
         offline_days: mine.and_then(|p| p.offline_days),
+        categories: mine.and_then(|p| p.categories.clone()),
     };
 
     let creds = Credentials {
@@ -564,6 +645,9 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
             totp::remove(&account_key(&p.creds.username, &p.creds.host));
         }
     }
+    // Письма из «окна отмены» уходят, фоновые задачи сессии останавливаются.
+    state.outbox.flush().await;
+    state.session.fetch_add(1, Ordering::SeqCst);
     // Письма на компьютере удаляются вместе с паролем.
     close_store(&state).await;
     let account = match (state.creds.lock().await.as_ref(), state.pending.lock().await.as_ref()) {
@@ -864,7 +948,7 @@ pub async fn pick_attachments(app: AppHandle, state: State<'_, AppState>) -> Res
     Ok(out)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SendResult {
     /// Папка, куда сохранена копия, или `None`.
@@ -872,9 +956,83 @@ pub struct SendResult {
     warning: Option<String>,
 }
 
+// ---------------------------------------------------------------- исходящие: отмена и отложенная отправка
+
+#[derive(Clone, Copy, PartialEq)]
+enum OutCmd {
+    Wait,
+    Now,
+    Cancel,
+}
+
+type Delivery = Option<std::result::Result<SendResult, String>>;
+
+struct OutItem {
+    ctl: tokio::sync::watch::Sender<OutCmd>,
+    done: tokio::sync::watch::Receiver<Delivery>,
+    started: bool,
+}
+
+/// Письма, ожидающие окончания «окна отмены».
+#[derive(Default)]
+pub struct Outbox {
+    next: AtomicU64,
+    items: std::sync::Mutex<HashMap<u64, OutItem>>,
+}
+
+impl Outbox {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, OutItem>> {
+        self.items.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Есть письма, которые ещё не ушли.
+    pub fn pending(&self) -> bool {
+        self.lock().values().any(|i| i.done.borrow().is_none())
+    }
+
+    /// Отправить всё ожидающее сразу и дождаться (выход из программы).
+    pub async fn flush(&self) {
+        let waits: Vec<_> = self
+            .lock()
+            .values()
+            .map(|i| {
+                let _ = i.ctl.send(OutCmd::Now);
+                i.done.clone()
+            })
+            .collect();
+        for mut w in waits {
+            let _ = tokio::time::timeout(Duration::from_secs(90), w.wait_for(|d| d.is_some())).await;
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTicket {
+    /// Письмо в «окне отмены»: ждать `send_wait`, отменить `send_cancel`.
+    id: Option<u64>,
+    /// Отправлено сразу.
+    result: Option<SendResult>,
+    /// Отложенная отправка: письмо в «Черновиках» до указанного времени.
+    scheduled_at: Option<String>,
+}
+
+/// Отправка и копия в «Отправленные» (письмо уже ушло — ошибка копии лишь предупреждение).
+async fn deliver(state: &AppState, profile: &Settings, creds: &Credentials, raw: &[u8], built: Option<&lettre::Message>) -> Result<SendResult> {
+    match built {
+        Some(m) => smtp::send(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, m).await?,
+        None => smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, raw).await?,
+    }
+    match with_conn!(once state, c => imap::append_sent(c, raw)) {
+        Ok(folder) => Ok(SendResult { saved_to: Some(folder), warning: None }),
+        Err(e) => Ok(SendResult { saved_to: None, warning: Some(format!("Письмо отправлено, но копия не сохранена в «Отправленные»: {e}")) }),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn send_message(
+    app: AppHandle,
     state: State<'_, AppState>,
     to: String,
     cc: String,
@@ -884,9 +1042,23 @@ pub async fn send_message(
     in_reply_to: Option<String>,
     references: Option<String>,
     attachments: Vec<String>,
-) -> Result<SendResult> {
+    read_receipt: Option<bool>,
+    delay_secs: Option<u32>,
+    send_at: Option<String>,
+) -> Result<SendTicket> {
     let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
     let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+
+    let send_at = match send_at.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(t) => {
+            let at = chrono::DateTime::parse_from_rfc3339(t).map_err(|_| AppError::Other("Некорректное время отправки".into()))?;
+            if at.timestamp() < chrono::Utc::now().timestamp() + 30 {
+                return Err(AppError::Other("Время отправки уже прошло — выберите время позже".into()));
+            }
+            Some(at.to_rfc3339())
+        }
+        None => None,
+    };
 
     let mut files = Vec::new();
     let mut total = 0u64;
@@ -924,25 +1096,418 @@ pub async fn send_message(
         in_reply_to,
         references,
         attachments: files,
+        read_receipt: read_receipt.unwrap_or(false),
+        extra_headers: send_at.iter().map(|t| (imap::SEND_AT_HEADER.to_string(), t.clone())).collect(),
     })?;
-    smtp::send(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, &message).await?;
+    let raw = message.formatted();
 
-    {
-        let mut picked = state.picked.lock().await;
-        for id in &attachments {
-            picked.remove(id);
+    // Отложенная отправка: письмо ждёт в «Черновиках» (видно и в веб-почте) и
+    // уходит в срок, пока программа запущена, — или при следующем запуске.
+    if let Some(at) = send_at {
+        with_conn!(once state, c => imap::append_draft(c, &raw))?;
+        forget_picked(&state, &attachments).await;
+        return Ok(SendTicket { id: None, result: None, scheduled_at: Some(at) });
+    }
+
+    let delay = delay_secs.unwrap_or(0).min(60);
+    if delay == 0 {
+        let result = deliver(&state, &profile, &creds, &raw, Some(&message)).await?;
+        forget_picked(&state, &attachments).await;
+        return Ok(SendTicket { id: None, result: Some(result), scheduled_at: None });
+    }
+
+    // «Окно отмены»: письмо уходит через `delay` секунд, если его не отменили.
+    let id = state.outbox.next.fetch_add(1, Ordering::SeqCst) + 1;
+    let (ctl_tx, mut ctl_rx) = tokio::sync::watch::channel(OutCmd::Wait);
+    let (done_tx, done_rx) = tokio::sync::watch::channel::<Delivery>(None);
+    state.outbox.lock().insert(id, OutItem { ctl: ctl_tx, done: done_rx, started: false });
+    tauri::async_runtime::spawn(async move {
+        use tauri::Manager;
+        let state = app.state::<AppState>();
+        let sleep = tokio::time::sleep(Duration::from_secs(u64::from(delay)));
+        tokio::pin!(sleep);
+        loop {
+            tokio::select! {
+                _ = &mut sleep => break,
+                changed = ctl_rx.changed() => {
+                    let cmd = if changed.is_ok() { *ctl_rx.borrow() } else { OutCmd::Now };
+                    match cmd {
+                        OutCmd::Now => break,
+                        OutCmd::Cancel => {
+                            let _ = done_tx.send(Some(Err("Отправка отменена".into())));
+                            return;
+                        }
+                        OutCmd::Wait => {}
+                    }
+                }
+            }
+        }
+        {
+            let mut items = state.outbox.lock();
+            match items.get_mut(&id) {
+                Some(item) if *item.ctl.borrow() == OutCmd::Cancel => {
+                    let _ = done_tx.send(Some(Err("Отправка отменена".into())));
+                    return;
+                }
+                Some(item) => item.started = true,
+                None => return,
+            }
+        }
+        let result = deliver(&state, &profile, &creds, &raw, Some(&message)).await;
+        if result.is_ok() {
+            forget_picked(&state, &attachments).await;
+        }
+        let _ = done_tx.send(Some(result.map_err(|e| e.to_string())));
+    });
+    Ok(SendTicket { id: Some(id), result: None, scheduled_at: None })
+}
+
+async fn forget_picked(state: &AppState, ids: &[String]) {
+    let mut picked = state.picked.lock().await;
+    for id in ids {
+        picked.remove(id);
+    }
+}
+
+/// Дождаться отправки письма из «окна отмены».
+#[tauri::command]
+pub async fn send_wait(state: State<'_, AppState>, id: u64) -> Result<SendResult> {
+    let mut done = state.outbox.lock().get(&id).map(|i| i.done.clone()).ok_or(AppError::NotFound)?;
+    let result = done.wait_for(|d| d.is_some()).await.map_err(|_| AppError::Other("Отправка прервана".into()))?.clone();
+    state.outbox.lock().remove(&id);
+    result.expect("checked above").map_err(AppError::Other)
+}
+
+/// Отменить отправку, пока письмо не ушло. `false` — уже отправляется.
+#[tauri::command]
+pub async fn send_cancel(state: State<'_, AppState>, id: u64) -> Result<bool> {
+    let items = state.outbox.lock();
+    let Some(item) = items.get(&id) else { return Ok(false) };
+    if item.started || item.done.borrow().is_some() {
+        return Ok(false);
+    }
+    let _ = item.ctl.send(OutCmd::Cancel);
+    Ok(true)
+}
+
+/// Отправить сразу, не дожидаясь конца «окна отмены».
+#[tauri::command]
+pub async fn send_now(state: State<'_, AppState>, id: u64) -> Result<()> {
+    if let Some(item) = state.outbox.lock().get(&id) {
+        let _ = item.ctl.send(OutCmd::Now);
+    }
+    Ok(())
+}
+
+/// Запланированные письма (ждут в «Черновиках»).
+#[tauri::command]
+pub async fn scheduled_list(state: State<'_, AppState>) -> Result<Vec<imap::Scheduled>> {
+    with_conn!(state, c => imap::scheduled(c))
+}
+
+/// Отправить запланированное письмо сейчас.
+#[tauri::command]
+pub async fn scheduled_send_now(state: State<'_, AppState>, folder: String, uid: u32) -> Result<SendResult> {
+    send_scheduled(&state, &folder, uid, "manual").await?.ok_or_else(|| AppError::Other("Письмо уже отправляется с другого компьютера".into()))
+}
+
+/// Отменить отложенную отправку: письмо остаётся обычным черновиком.
+#[tauri::command]
+pub async fn scheduled_cancel(state: State<'_, AppState>, folder: String, uid: u32) -> Result<()> {
+    with_conn!(once state, c => async {
+        let raw = imap::raw_of(c, &folder, uid).await?;
+        let plain = smtp::strip_header(&raw, imap::SEND_AT_HEADER);
+        imap::append_draft(c, &plain).await?;
+        imap::remove_message(c, &folder, uid).await
+    })
+}
+
+/// Отправка одного запланированного письма (с захватом, чтобы не отправить дважды).
+/// `None` — письмо отправляет другая копия программы.
+async fn send_scheduled(state: &AppState, folder: &str, uid: u32, tag: &str) -> Result<Option<SendResult>> {
+    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let token = format!("{}{}{}", chrono::Utc::now().timestamp(), tag.chars().take(4).collect::<String>(), &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let mut conn = imap::connect(&creds).await?;
+    let result = async {
+        if !imap::claim(&mut conn, folder, uid, &token).await? {
+            return Ok(None);
+        }
+        let raw = imap::raw_of(&mut conn, folder, uid).await?;
+        let final_raw = smtp::finalize_scheduled(&raw, imap::SEND_AT_HEADER);
+        match deliver(state, &profile, &creds, &final_raw, None).await {
+            Ok(r) => {
+                imap::remove_message(&mut conn, folder, uid).await?;
+                Ok(Some(r))
+            }
+            Err(e) => {
+                // Не ушло — снимаем свою метку захвата, попробуем в следующий раз.
+                let _ = imap::set_keyword(&mut conn, folder, &[uid], &format!("atomclaim{token}"), false).await;
+                Err(e)
+            }
         }
     }
+    .await;
+    conn.logout().await;
+    result
+}
 
-    // Копия в «Отправленные»: письмо уже ушло, поэтому ошибка здесь — предупреждение.
-    let raw = message.formatted();
-    match with_conn!(once state, c => imap::append_sent(c, &raw)) {
-        Ok(folder) => Ok(SendResult { saved_to: Some(folder), warning: None }),
-        Err(e) => Ok(SendResult {
-            saved_to: None,
-            warning: Some(format!("Письмо отправлено, но копия не сохранена в «Отправленные»: {e}")),
-        }),
+async fn scheduled_now(state: &AppState) -> Result<Vec<imap::Scheduled>> {
+    with_conn!(state, c => imap::scheduled(c))
+}
+
+/// Фоновая отправка запланированных писем, пока сессия та же.
+async fn run_scheduler(app: AppHandle, generation: u64) {
+    use tauri::Manager;
+    let every = if cfg!(debug_assertions) && std::env::var_os("RRCKI_E2E_POLL_SECS").is_some() { 5 } else { 60 };
+    loop {
+        tokio::time::sleep(Duration::from_secs(every)).await;
+        let state = app.state::<AppState>();
+        if state.session.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        let list = match scheduled_now(&state).await {
+            Ok(l) => l,
+            Err(e) => {
+                log::warn!("scheduled mail check failed: {e}");
+                continue;
+            }
+        };
+        let now = chrono::Utc::now();
+        for s in list {
+            let due = chrono::DateTime::parse_from_rfc3339(&s.send_at).is_ok_and(|t| t <= now);
+            if !due || state.session.load(Ordering::SeqCst) != generation {
+                continue;
+            }
+            match send_scheduled(&state, &s.folder, s.uid, "auto").await {
+                Ok(Some(_)) => {
+                    let _ = host::notify(&app, "Отложенное письмо отправлено", if s.subject.is_empty() { "(без темы)" } else { &s.subject });
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    log::warn!("scheduled send failed: {e}");
+                    let _ = host::notify(&app, "Отложенное письмо не отправлено", &format!("{}: {e}", s.subject));
+                }
+            }
+        }
     }
+}
+
+// ---------------------------------------------------------------- категории, сроки, шаблоны
+
+#[derive(Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Category {
+    /// Ключевое слово IMAP ($label2… или своё).
+    keyword: String,
+    name: String,
+    color: String,
+}
+
+/// Метки веб-почты SOGo по умолчанию — с русскими названиями.
+fn default_categories() -> Vec<Category> {
+    [("$label1", "Важное", "#f00"), ("$label2", "Работа", "#ff9a00"), ("$label3", "Личное", "#009900"), ("$label4", "К исполнению", "#3333ff"), ("$label5", "Позже", "#993399")]
+        .iter()
+        .map(|(k, n, c)| Category { keyword: (*k).into(), name: (*n).into(), color: (*c).into() })
+        .collect()
+}
+
+/// Английские названия меток SOGo по умолчанию показываем по-русски.
+fn localize_label(name: &str) -> String {
+    match name {
+        "Important" => "Важное",
+        "Work" => "Работа",
+        "Personal" => "Личное",
+        "To Do" => "К исполнению",
+        "Later" => "Позже",
+        other => other,
+    }
+    .to_string()
+}
+
+fn valid_color(c: &str) -> bool {
+    let h = c.strip_prefix('#').unwrap_or("");
+    (h.len() == 3 || h.len() == 6) && h.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Категории писем — общие с веб-почтой (SOGo: SOGoMailLabelsColors).
+#[tauri::command]
+pub async fn categories_get(state: State<'_, AppState>) -> Result<Vec<Category>> {
+    if let Ok((_, base)) = dav_client(&state).await {
+        if let Ok((_, d)) = sogo_defaults(&state, &base).await {
+            if let Some(map) = d.get("SOGoMailLabelsColors").and_then(|v| v.as_object()) {
+                let mut list: Vec<Category> = map
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        let arr = v.as_array()?;
+                        Some(Category { keyword: k.clone(), name: localize_label(arr.first()?.as_str()?), color: arr.get(1)?.as_str()?.to_string() })
+                    })
+                    .filter(|c| imap::valid_keyword(&c.keyword))
+                    .collect();
+                list.sort_by(|a, b| a.keyword.cmp(&b.keyword));
+                if !list.is_empty() {
+                    return Ok(list);
+                }
+            }
+            return Ok(default_categories());
+        }
+    }
+    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    Ok(profile
+        .categories
+        .map(|l| l.into_iter().map(|(keyword, name, color)| Category { keyword, name, color }).collect())
+        .unwrap_or_else(default_categories))
+}
+
+/// Сохранить категории (в веб-почте SOGo; если она недоступна — в программе).
+#[tauri::command]
+pub async fn categories_save(app: AppHandle, state: State<'_, AppState>, categories: Vec<Category>) -> Result<Option<String>> {
+    for c in &categories {
+        if !imap::valid_keyword(&c.keyword) || c.name.trim().is_empty() || c.name.len() > 60 || !valid_color(&c.color) {
+            return Err(AppError::Other(format!("Некорректная категория «{}»", c.name)));
+        }
+    }
+    let profile = {
+        let mut guard = state.profile.lock().await;
+        let p = guard.as_mut().ok_or(AppError::NotLoggedIn)?;
+        p.categories = Some(categories.iter().map(|c| (c.keyword.clone(), c.name.trim().to_string(), c.color.clone())).collect());
+        p.clone()
+    };
+    settings::save(&app, &profile)?;
+    let synced = async {
+        let (_, base) = dav_client(&state).await?;
+        let (session, mut defaults) = sogo_defaults(&state, &base).await?;
+        let map: serde_json::Map<String, serde_json::Value> =
+            categories.iter().map(|c| (c.keyword.clone(), serde_json::json!([c.name.trim(), c.color]))).collect();
+        defaults["SOGoMailLabelsColors"] = serde_json::Value::Object(map);
+        session.save_defaults(&defaults).await
+    }
+    .await;
+    Ok(synced.err().map(|e| format!("Категории сохранены в программе, но не в веб-почте: {e}")))
+}
+
+/// Поставить или снять категорию (ключевое слово) у писем.
+#[tauri::command]
+pub async fn set_keywords(state: State<'_, AppState>, folder: String, uids: Vec<u32>, keyword: String, value: bool) -> Result<()> {
+    with_conn!(state, c => imap::set_keyword(c, &folder, &uids, &keyword, value))?;
+    if let Some(st) = local(&state).await {
+        for uid in &uids {
+            st.patch(&folder, *uid, |m| {
+                m.keywords.retain(|k| !k.eq_ignore_ascii_case(&keyword));
+                if value {
+                    m.keywords.push(keyword.clone());
+                }
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Флажок со сроком (RFC 3339) или без срока (`None`). Срок хранится на сервере
+/// ключевым словом — виден на всех компьютерах пользователя.
+#[tauri::command]
+pub async fn set_due(state: State<'_, AppState>, folder: String, uid: u32, due: Option<String>) -> Result<()> {
+    let due = match due {
+        Some(d) => Some(chrono::DateTime::parse_from_rfc3339(&d).map_err(|_| AppError::Other("Некорректная дата".into()))?.with_timezone(&chrono::Utc)),
+        None => None,
+    };
+    with_conn!(state, c => imap::set_due(c, &folder, uid, due))?;
+    if let Some(st) = local(&state).await {
+        st.patch(&folder, uid, |m| {
+            m.flagged = true;
+            m.keywords.retain(|k| !k.starts_with(imap::DUE_PREFIX));
+            if let Some(at) = due {
+                m.keywords.push(imap::due_keyword(&at));
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Письма с флажком и сроком во всех своих папках (для напоминаний).
+#[tauri::command]
+pub async fn due_list(state: State<'_, AppState>) -> Result<Vec<imap::MessageSummary>> {
+    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let mut conn = imap::connect(&creds).await?;
+    let folders = imap::list_folders(&mut conn).await?;
+    let mut out = Vec::new();
+    for f in folders.iter().filter(|f| f.selectable && !imap::is_shared(f) && !matches!(f.role, imap::FolderRole::Trash | imap::FolderRole::Junk)) {
+        match imap::due_in(&mut conn, &f.id).await {
+            Ok(items) => out.extend(items),
+            Err(e) if e.is_connection() => return Err(e),
+            Err(e) => log::warn!("due scan failed in a folder: {e}"),
+        }
+    }
+    conn.logout().await;
+    out.sort_by_key(|m| imap::due_of(&m.keywords));
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn templates_list(state: State<'_, AppState>) -> Result<Vec<imap::Template>> {
+    with_conn!(state, c => imap::templates(c))
+}
+
+/// Сохранить шаблон письма (папка «Templates» на сервере — как в Thunderbird).
+#[tauri::command]
+pub async fn template_save(state: State<'_, AppState>, name: String, text: String, html: Option<String>) -> Result<()> {
+    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let name = name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err(AppError::Other("Укажите название шаблона".into()));
+    }
+    let msg = smtp::build(smtp::Outgoing {
+        from_name: Some(profile.display_name.clone()),
+        from_address: profile.email(),
+        to: vec![profile.email()],
+        cc: vec![],
+        subject: name,
+        body: text,
+        html,
+        in_reply_to: None,
+        references: None,
+        attachments: vec![],
+        read_receipt: false,
+        extra_headers: vec![],
+    })?;
+    let raw = msg.formatted();
+    with_conn!(once state, c => imap::append_template(c, &raw))
+}
+
+#[tauri::command]
+pub async fn template_delete(state: State<'_, AppState>, folder: String, uid: u32) -> Result<()> {
+    with_conn!(state, c => imap::remove_message(c, &folder, uid))
+}
+
+// ---------------------------------------------------------------- уведомления о прочтении
+
+/// Ответ на запрос уведомления о прочтении: `send` — отправить, иначе только
+/// отметить, что вопрос решён (больше не спрашивать). Метка $MDNSent — как у Thunderbird.
+#[tauri::command]
+pub async fn mdn_respond(state: State<'_, AppState>, folder: String, uid: u32, send: bool) -> Result<()> {
+    if send {
+        let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+        let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+        let raw = match local_raw(&state, &folder, uid).await {
+            Some(r) => r,
+            None => with_conn!(state, c => imap::raw_of(c, &folder, uid))?,
+        };
+        let msg = mail_parser::MessageParser::default().parse_headers(&raw).ok_or(AppError::NotFound)?;
+        let to = msg
+            .header_raw("Disposition-Notification-To")
+            .and_then(|v| smtp::split_addresses(v).into_iter().next())
+            .map(|a| a.rsplit('<').next().unwrap_or(&a).trim_end_matches('>').trim().to_string())
+            .filter(|a| a.contains('@'))
+            .ok_or_else(|| AppError::Other("Отправитель не запрашивал уведомление".into()))?;
+        let id = msg.message_id().map(|i| format!("<{}>", i.trim_matches(['<', '>'])));
+        let mdn = smtp::build_mdn(&profile.display_name, &profile.email(), &to, msg.subject().unwrap_or_default(), id.as_deref());
+        smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, &mdn).await?;
+    }
+    with_conn!(state, c => imap::set_keyword(c, &folder, &[uid], "$MDNSent", true))?;
+    if let Some(st) = local(&state).await {
+        st.patch(&folder, uid, |m| m.keywords.push("$MDNSent".into()));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- календарь и контакты
@@ -1588,6 +2153,7 @@ pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> 
     let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
     host::close_message_windows(&app);
     close_store(&state).await;
+    state.session.fetch_add(1, Ordering::SeqCst);
     *state.pending.lock().await = Some(Pending { creds, profile, remember: None });
     *state.creds.lock().await = None;
     *state.nc.lock().await = None;
@@ -2417,6 +2983,25 @@ macro_rules! app_commands {
             crate::commands::clear_offline,
             crate::commands::signature_get,
             crate::commands::signature_save,
+            crate::commands::send_wait,
+            crate::commands::send_cancel,
+            crate::commands::send_now,
+            crate::commands::scheduled_list,
+            crate::commands::scheduled_send_now,
+            crate::commands::scheduled_cancel,
+            crate::commands::mdn_respond,
+            crate::commands::desktop_prefs_get,
+            crate::commands::desktop_prefs_set,
+            crate::commands::set_unread,
+            crate::commands::show_main_window,
+            crate::commands::categories_get,
+            crate::commands::categories_save,
+            crate::commands::set_keywords,
+            crate::commands::set_due,
+            crate::commands::due_list,
+            crate::commands::templates_list,
+            crate::commands::template_save,
+            crate::commands::template_delete,
             crate::commands::get_policy,
             crate::commands::nc_editors,
             crate::commands::nc_edit,

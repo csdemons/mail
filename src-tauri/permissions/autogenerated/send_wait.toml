@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-send-wait"
+description = "Enables the send_wait command without any pre-configured scope."
+commands.allow = ["send_wait"]
+
+[[permission]]
+identifier = "deny-send-wait"
+description = "Denies the send_wait command without any pre-configured scope."
+commands.deny = ["send_wait"]

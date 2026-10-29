@@ -8,6 +8,8 @@ import { AttachmentList } from './AttachmentViewer'
 import Composer from './Composer'
 import MessageBody from './MessageBody'
 import AddressLine from './AddressLine'
+import MdnBar from './MdnBar'
+import { useOutbox } from './sending'
 import { trashFor } from './FolderPicker'
 import { buildDraft, ensureArchive, initials, senderLabel, withSignature } from './mailActions'
 import type { Contact, Draft, Folder, MessageDetail, Settings } from './types'
@@ -65,6 +67,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
 
   const me = profile?.username ?? ''
   const [signature, setSignature] = useState('')
+  const outbox = useOutbox((d) => setDraft(d), (t) => setNotice(t))
   useEffect(() => { api.signatureGet().then(setSignature).catch(() => undefined) }, [])
   const startDraft = useCallback((mode: 'reply' | 'replyAll' | 'forward') => {
     if (!detail) return
@@ -177,11 +180,13 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
           </div>
         </div>
         {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} onEdit={ncConnected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(folder, uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined} />}
+        <MdnBar detail={detail} me={me} onNotice={setNotice} onDone={() => setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] })} />
         <MessageBody detail={detail} scale={font / 15} onNotice={setNotice} />
       </div> : <div className="empty-reader">
         {error ? <><strong>Не удалось открыть письмо</strong><span>{error}</span></> : <span>Загрузка письма…</span>}
       </div>}
 
+      {outbox.element}
       {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={16} /></button></div>}
 
       {confirmDelete && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setConfirmDelete(false) }}>
@@ -205,6 +210,11 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
           onSent={(text) => {
             setDraft(null)
             setNotice(text)
+            if (draft.mode !== 'forward') setDetail((d) => d && { ...d, answered: true })
+          }}
+          onQueued={(id, snapshot, delay) => {
+            setDraft(null)
+            outbox.queued(id, snapshot, delay)
             if (draft.mode !== 'forward') setDetail((d) => d && { ...d, answered: true })
           }}
         />

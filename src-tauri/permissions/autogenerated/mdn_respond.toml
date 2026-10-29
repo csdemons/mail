@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mdn-respond"
+description = "Enables the mdn_respond command without any pre-configured scope."
+commands.allow = ["mdn_respond"]
+
+[[permission]]
+identifier = "deny-mdn-respond"
+description = "Denies the mdn_respond command without any pre-configured scope."
+commands.deny = ["mdn_respond"]
