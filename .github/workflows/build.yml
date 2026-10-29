@@ -56,8 +56,17 @@ jobs:
           command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
           (cd src-tauri && cargo audit)
           (cd legacy && cargo audit)
-      - run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy
         working-directory: src-tauri
+        # Замечания — ещё и аннотациями: их видно в API без загрузки полного журнала.
+        run: |
+          if ! cargo clippy --all-targets --message-format=short -- -D warnings 2>clippy.txt; then
+            cat clippy.txt
+            grep -E '^[^ ]+:[0-9]+:[0-9]+: (error|warning)' clippy.txt | head -20 \
+              | sed -E 's#^([^:]+):([0-9]+):[0-9]+: (.*)$#::error file=src-tauri/\1,line=\2::\3#'
+            exit 1
+          fi
+          cat clippy.txt
       - run: cargo test
         working-directory: src-tauri
 
