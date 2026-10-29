@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-totp-setup-confirm"
+description = "Enables the totp_setup_confirm command without any pre-configured scope."
+commands.allow = ["totp_setup_confirm"]
+
+[[permission]]
+identifier = "deny-totp-setup-confirm"
+description = "Denies the totp_setup_confirm command without any pre-configured scope."
+commands.deny = ["totp_setup_confirm"]

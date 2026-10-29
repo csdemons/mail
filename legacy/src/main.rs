@@ -23,6 +23,8 @@ mod imap;
 mod nextcloud;
 #[path = "../../src-tauri/src/settings.rs"]
 mod settings;
+#[path = "../../src-tauri/src/totp.rs"]
+mod totp;
 #[path = "../../src-tauri/src/smtp.rs"]
 mod smtp;
 #[path = "../../src-tauri/src/sogo.rs"]

@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
+  Reply, Search, Send, Settings, ShieldCheck, Lock, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
 } from 'lucide-react'
 
 import {
@@ -28,6 +28,7 @@ import ContextMenu from './ContextMenu'
 import type { MenuItem } from './ContextMenu'
 import { AttachmentList } from './AttachmentViewer'
 import MessageBody from './MessageBody'
+import TotpSettings, { AUTOLOCK_KEY, loadAutolock } from './TotpSettings'
 import { buildDraft, ensureArchive } from './mailActions'
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
 import { appInFront, loadPrefs, notify, savePrefs } from './notifications'
@@ -91,9 +92,48 @@ interface Props {
   account: Account
   initialNotice: string
   onLogout: () => void
+  onLock: () => void
 }
 
-export default function App({ account, initialNotice, onLogout }: Props) {
+export default function App({ account, initialNotice, onLogout, onLock }: Props) {
+  // Защита кодом: блокировка по Ctrl+L, из меню и при бездействии.
+  const [totpOn, setTotpOn] = useState(false)
+  const [autolock, setAutolock] = useState(loadAutolock)
+  useEffect(() => { api.totpStatus().then((s) => setTotpOn(s.enabled)).catch(() => undefined) }, [])
+  const lockRef = useRef(onLock)
+  lockRef.current = onLock
+  const composingRef = useRef(false)
+  useEffect(() => {
+    if (!totpOn) return
+    function onKey(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'l') {
+        event.preventDefault()
+        lockRef.current()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [totpOn])
+  useEffect(() => {
+    if (!totpOn || autolock <= 0) return
+    let last = Date.now()
+    const touch = () => { last = Date.now() }
+    const events = ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart'] as const
+    events.forEach((e) => window.addEventListener(e, touch, { passive: true, capture: true }))
+    const timer = window.setInterval(() => {
+      // Незаконченное письмо не теряем: пока открыт редактор, автоблокировка ждёт.
+      if (Date.now() - last >= autolock * 60_000 && !composingRef.current) lockRef.current()
+    }, 10_000)
+    return () => {
+      window.clearInterval(timer)
+      events.forEach((e) => window.removeEventListener(e, touch, { capture: true }))
+    }
+  }, [totpOn, autolock])
+  function updateAutolock(minutes: number) {
+    setAutolock(minutes)
+    try { localStorage.setItem(AUTOLOCK_KEY, String(minutes)) } catch { /* нет хранилища */ }
+  }
+
   const [dark, setDark] = useState(() => {
     try {
       const saved = localStorage.getItem('rrcki-mail.theme')
@@ -151,6 +191,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
   const [ncStatus, setNcStatus] = useState<NcStatus | null>(null)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
+  composingRef.current = draft !== null
   const [contacts, setContacts] = useState<Contact[]>([])
   const contactsRequested = useRef(false)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -843,6 +884,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
         {showAccountMenu && <div className="account-menu popover">
           <strong>Учётная запись</strong>
           <div className="account-menu-item"><span className="status-dot" /> {account.username} <small>{account.host}:{account.port}</small></div>
+          {totpOn && <button className="text-button" onClick={() => { setShowAccountMenu(false); onLock() }}><Lock size={15} /> Заблокировать <kbd>Ctrl+L</kbd></button>}
           <button className="text-button" onClick={() => { setShowAccountMenu(false); onLogout() }}><LogOut size={15} /> Выйти</button>
         </div>}
       </header>
@@ -1155,6 +1197,7 @@ export default function App({ account, initialNotice, onLogout }: Props) {
             <label><input type="checkbox" checked={prefs.preview} onChange={(e) => updatePrefs({ preview: e.target.checked })} /> Показывать тему письма и текст сообщения</label>
             <button className="text-button" onClick={() => notify('Atom Mail', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
           </div>
+          <TotpSettings onChange={setTotpOn} onLock={() => { setShowSettings(false); onLock() }} autolock={autolock} onAutolock={updateAutolock} />
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">
             <button className="secondary-button" onClick={() => { setShowSettings(false); setFilterSeed(null); setShowFilters(true) }}><ListFilter size={16} /> Фильтры почты</button>

@@ -95,6 +95,12 @@ const COMMANDS: &[&str] = &[
         "update_event",
         "update_profile",
         "update_progress",
+        "totp_unlock",
+        "totp_status",
+        "totp_setup_confirm",
+        "totp_setup_begin",
+        "totp_disable",
+        "lock_app",
 ];
 
 fn main() {

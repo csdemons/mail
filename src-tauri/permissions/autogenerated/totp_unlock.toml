@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-totp-unlock"
+description = "Enables the totp_unlock command without any pre-configured scope."
+commands.allow = ["totp_unlock"]
+
+[[permission]]
+identifier = "deny-totp-unlock"
+description = "Denies the totp_unlock command without any pre-configured scope."
+commands.deny = ["totp_unlock"]

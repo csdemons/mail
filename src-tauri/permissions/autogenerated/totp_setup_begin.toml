@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-totp-setup-begin"
+description = "Enables the totp_setup_begin command without any pre-configured scope."
+commands.allow = ["totp_setup_begin"]
+
+[[permission]]
+identifier = "deny-totp-setup-begin"
+description = "Denies the totp_setup_begin command without any pre-configured scope."
+commands.deny = ["totp_setup_begin"]

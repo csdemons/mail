@@ -8,6 +8,7 @@ pub mod nextcloud;
 #[doc(hidden)]
 pub mod imap;
 mod settings;
+mod totp;
 #[doc(hidden)]
 pub mod smtp;
 pub mod sogo;

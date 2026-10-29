@@ -1081,6 +1081,106 @@ except Exception:
 finally:
     d.quit()
 
+# 14b. защита кодом (TOTP): включение, блокировка, разблокировка, резервный код
+import hmac as _hmac, hashlib as _hashlib, base64 as _b64, struct as _struct
+TOTP = {'secret': None, 'last': -1, 'recovery': []}
+def totp_code():
+    """Следующий ещё не использованный код (программа не принимает один шаг дважды)."""
+    while True:
+        now = int(time.time()) // 30
+        step = max(now - 1, TOTP['last'] + 1)
+        if step <= now + 1:
+            break
+        time.sleep(2)
+    TOTP['last'] = step
+    key = _b64.b32decode(TOTP['secret'] + '=' * (-len(TOTP['secret']) % 8))
+    h = _hmac.new(key, _struct.pack('>Q', step), _hashlib.sha1).digest()
+    o = h[19] & 15
+    return '%06d' % ((_struct.unpack('>I', h[o:o + 4])[0] & 0x7fffffff) % 1000000)
+
+def unlock(d, code):
+    inp = wait(d, '.lock-card input')
+    set_value(d, inp, code)
+    d.find_element(By.CSS_SELECTOR, '.lock-card .login-submit').click()
+
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    sec = wait(d, '.totp-settings')
+    [b for b in sec.find_elements(By.TAG_NAME, 'button') if 'Включить защиту кодом' in b.text][0].click()
+    qr = wait(d, '.totp-qr')
+    assert qr.get_attribute('src').startswith('data:image/svg+xml'), qr.get_attribute('src')[:60]
+    assert d.execute_script('return arguments[0].naturalWidth', qr) > 0, 'QR not rendered'
+    TOTP['secret'] = d.find_element(By.CSS_SELECTOR, '.totp-secret').get_attribute('data-secret')
+    assert len(TOTP['secret']) == 32, TOTP['secret']
+    ok('totp: setup shows QR code and manual key')
+    inp = d.find_element(By.CSS_SELECTOR, 'input[aria-label="Код подтверждения"]')
+    set_value(d, inp, '000000' if totp_code() != '000000' else '111111')
+    d.find_element(By.CSS_SELECTOR, '.totp-setup .primary-button').click()
+    W(d, 10).until(lambda d: 'Неверный код' in d.find_element(By.CSS_SELECTOR, '.totp-settings').text)
+    TOTP['last'] -= 1
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Код подтверждения"]'), totp_code())
+    d.find_element(By.CSS_SELECTOR, '.totp-setup .primary-button').click()
+    codes = wait(d, '.totp-codes pre').text.split()
+    assert len(codes) == 8 and all(len(c) == 9 and c[4] == '-' for c in codes), codes
+    TOTP['recovery'] = codes
+    d.save_screenshot(f'{OUT}/40-totp-codes.png')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.totp-codes button') if 'сохранил' in b.text][0].click()
+    W(d, 10).until(lambda d: 'резервных кодов: 8' in d.find_element(By.CSS_SELECTOR, '.totp-settings').text)
+    ok('totp: wrong code rejected, right code enables protection, 8 recovery codes shown once')
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+    # Ctrl+L — блокировка: почта отключена, переписки не видно
+    from selenium.webdriver.common.action_chains import ActionChains
+    d.find_element(By.CSS_SELECTOR, '.message-row').click()
+    ActionChains(d).key_down(Keys.CONTROL).send_keys('l').key_up(Keys.CONTROL).perform()
+    wait(d, '.lock-card', 15)
+    assert not d.find_elements(By.CSS_SELECTOR, '.message-row')
+    r = d.execute_async_script("const cb = arguments[0]; window.__TAURI_INTERNALS__.invoke('list_messages', {folder: 'INBOX', beforeUid: null, limit: 5}).then(() => cb('allowed'), (e) => cb('denied:' + JSON.stringify(e)))")
+    assert r.startswith('denied'), r
+    d.save_screenshot(f'{OUT}/41-totp-locked.png')
+    ok('totp: Ctrl+L locks the app, mail commands refused while locked')
+    unlock(d, '123456' if totp_code() != '123456' else '654321'); TOTP['last'] -= 1
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.lock-card .login-error'))
+    unlock(d, totp_code())
+    wait(d, '.message-row', 30)
+    ok('totp: wrong code keeps it locked, correct code unlocks and reconnects mail')
+    # блокировка из меню и разблокировка резервным кодом
+    d.find_element(By.CSS_SELECTOR, '.account-switch').click()
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.account-menu button') if 'Заблокировать' in b.text][0].click()
+    wait(d, '.lock-card', 15)
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.lock-card button') if 'резервный код' in b.text][0].click()
+    unlock(d, TOTP['recovery'][0].upper())
+    wait(d, '.message-row', 30)
+    d.find_element(By.CSS_SELECTOR, '.account-switch').click()
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.account-menu button') if 'Заблокировать' in b.text][0].click()
+    wait(d, '.lock-card', 15)
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.lock-card button') if 'резервный код' in b.text][0].click()
+    unlock(d, TOTP['recovery'][0])
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.lock-card .login-error'))
+    ok('totp: recovery code unlocks once and cannot be reused')
+finally:
+    d.quit()
+
+# 14c. перезапуск с включённой защитой: сохранённый пароль без кода не используется
+d = session()
+try:
+    wait(d, '.lock-card', 30)
+    assert not d.find_elements(By.CSS_SELECTOR, '.message-row')
+    ok('totp: after restart the app starts locked (saved password not used without code)')
+    unlock(d, totp_code())
+    wait(d, '.message-row', 30)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    sec = wait(d, '.totp-settings')
+    assert 'резервных кодов: 7' in sec.text, sec.text
+    [b for b in sec.find_elements(By.TAG_NAME, 'button') if 'Отключить защиту' in b.text][0].click()
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Код для отключения"]'), TOTP['recovery'][1])
+    [b for b in sec.find_elements(By.TAG_NAME, 'button') if b.text == 'Отключить'][0].click()
+    W(d, 10).until(lambda d: 'Включить защиту кодом' in d.find_element(By.CSS_SELECTOR, '.totp-settings').text)
+    ok('totp: protection disabled with a recovery code')
+finally:
+    d.quit()
+
 # 15. перезапуск → автовход из keyring
 d = session()
 try:

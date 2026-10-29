@@ -3561,6 +3561,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quick-xml"
 version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3824,7 +3830,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rrcki-mail"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -3834,6 +3840,8 @@ dependencies = [
  "chrono-tz",
  "ed25519-dalek",
  "futures",
+ "getrandom 0.2.17",
+ "hmac",
  "ical",
  "keyring",
  "lettre",
@@ -3843,11 +3851,13 @@ dependencies = [
  "mime_guess",
  "native-tls",
  "percent-encoding",
+ "qrcode",
  "reqwest 0.12.28",
  "roxmltree",
  "rrule",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "tauri",
  "tauri-build",

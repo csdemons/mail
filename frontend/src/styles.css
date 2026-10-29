@@ -766,3 +766,22 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 /* Ссылки в письмах: реальный адрес и предупреждение */
 .link-status { position: sticky; bottom: 0; max-width: 100%; margin-top: 4px; padding: 3px 8px; border-radius: 6px; background: var(--hover); color: var(--muted, #667085); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .link-full { font-size: 12px; overflow-wrap: anywhere; color: var(--muted, #667085); }
+
+/* Защита кодом (TOTP) */
+.totp-settings { display: flex; flex-direction: column; gap: 8px; }
+.totp-settings .status-pill { align-self: flex-start; color: #1a8e55; background: #e8f8ef; padding: 4px 8px; border-radius: 6px; font-size: 12px; }
+.settings-hint { font-size: 12.5px; color: #64748b; line-height: 1.45; }
+.totp-setup { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.totp-qr { width: 180px; height: 180px; background: #fff; border-radius: 8px; border: 1px solid #e2e8f0; flex: none; }
+.totp-steps { display: flex; flex-direction: column; gap: 8px; font-size: 13px; flex: 1; min-width: 220px; }
+.totp-secret { font-family: ui-monospace, "DejaVu Sans Mono", monospace; user-select: all; word-break: break-all; background: #f1f5f9; padding: 2px 6px; border-radius: 5px; }
+.totp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.totp-row input, .totp-row select { padding: 7px 9px; border: 1px solid #d0d7e2; border-radius: 8px; font: inherit; background: inherit; color: inherit; }
+.totp-input { letter-spacing: 0.3em; font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 18px !important; width: 9.5em; }
+.totp-codes { display: flex; flex-direction: column; gap: 6px; border: 1px solid #fcd34d; background: #fffbeb; color: #78350f; border-radius: 10px; padding: 12px; font-size: 13px; }
+.totp-codes pre { margin: 0; font: 15px/1.6 ui-monospace, "DejaVu Sans Mono", monospace; columns: 2; user-select: all; }
+.theme-dark .totp-codes { background: #3a2f12; color: #fde68a; border-color: #a16207; }
+.theme-dark .totp-secret { background: #1f2937; }
+.theme-dark .settings-hint { color: #94a3b8; }
+.lock-card .text-button { align-self: center; }
+.lock-reset { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #7a2e0e; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 9px; padding: 10px 12px; }

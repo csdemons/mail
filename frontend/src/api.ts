@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  Account, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
+  Account, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
 } from './types'
@@ -114,7 +114,13 @@ export const api = {
   talkSend: (token: string, message: string, replyTo: number | null = null) =>
     invoke<void>('talk_send', { token, message, replyTo }),
   autoLogin: () => invoke<Account | null>('auto_login'),
-  logout: () => invoke<void>('logout'),
+  logout: (resetTotp = false) => invoke<void>('logout', { resetTotp }),
+  totpStatus: () => invoke<TotpStatus>('totp_status'),
+  totpSetupBegin: () => invoke<TotpSetup>('totp_setup_begin'),
+  totpSetupConfirm: (code: string) => invoke<string[]>('totp_setup_confirm', { code }),
+  totpDisable: (code: string) => invoke<void>('totp_disable', { code }),
+  totpUnlock: (code: string) => invoke<LoginResult>('totp_unlock', { code }),
+  lockApp: () => invoke<void>('lock_app'),
   listFolders: () => invoke<Folder[]>('list_folders'),
   /** `beforeUid` — UID последнего показанного письма (курсор догрузки). */
   listMessages: (folder: string, beforeUid: number | null = null, limit = PAGE_SIZE) =>

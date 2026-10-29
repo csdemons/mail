@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::error::{AppError, Result};
 use crate::host;
-use crate::{dav, imap, nextcloud, settings, smtp, sogo, updater};
+use crate::{dav, imap, nextcloud, settings, smtp, sogo, totp, updater};
 use crate::imap::{Connection, Credentials, FlagKind, Folder, MessageDetail, MessagePage};
 use crate::settings::Settings;
 
@@ -44,6 +44,25 @@ pub struct AppState {
     /// Найденное обновление и ход его скачивания.
     update: Mutex<Option<(updater::UpdateInfo, updater::ManifestAsset)>>,
     update_progress: updater::Progress,
+    /// Вход, ожидающий кода TOTP (программа заблокирована): почта не подключена.
+    pending: Mutex<Option<Pending>>,
+    /// Новый секрет TOTP, пока пользователь не подтвердил его кодом.
+    totp_setup: Mutex<Option<(String, String)>>,
+    /// Последний принятый шаг TOTP по учётной записи — код не принимается дважды.
+    totp_used: Mutex<HashMap<String, u64>>,
+    totp_throttle: Mutex<totp::Throttle>,
+}
+
+/// Сессия, которая начнётся после верного кода TOTP.
+struct Pending {
+    creds: Credentials,
+    profile: Settings,
+    /// Ручной вход: сохранить пароль (Some(true)), забыть (Some(false)); блокировка — None.
+    remember: Option<bool>,
+}
+
+fn account_key(username: &str, host: &str) -> String {
+    format!("{}@{}", username.to_lowercase(), host.to_lowercase())
 }
 
 /// Выполняет операцию на открытом соединении. Если соединение оборвалось
@@ -93,6 +112,8 @@ pub struct Account {
     username: String,
     host: String,
     port: u16,
+    /// Программа заблокирована: нужен код TOTP (почта ещё не подключена).
+    locked: bool,
 }
 
 #[derive(Serialize)]
@@ -136,6 +157,7 @@ fn account_of(s: &Settings) -> Account {
         username: s.username.clone(),
         host: s.host.clone(),
         port: s.port,
+        locked: false,
     }
 }
 
@@ -212,6 +234,15 @@ pub async fn login(
         username,
         password: password.clone(),
     };
+    if totp::load(&account_key(&s.username, &s.host)).is_some() {
+        // Пароль проверяем сразу, а почту подключаем только после кода TOTP.
+        imap::connect(&creds).await?.logout().await;
+        if let Err(e) = settings::save(&app, &s) {
+            log::warn!("settings not saved: {e}");
+        }
+        *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: Some(remember) });
+        return Ok(LoginResult { account: Account { locked: true, ..account_of(&s) }, warning: None });
+    }
     start_session(&state, creds, s.clone()).await?;
 
     // Вход уже выполнен: ошибки сохранения настроек/пароля не отменяют его,
@@ -254,6 +285,11 @@ pub async fn auto_login(app: AppHandle, state: State<'_, AppState>) -> Result<Op
         username: s.username.clone(),
         password,
     };
+    if totp::load(&account_key(&s.username, &s.host)).is_some() {
+        // Сохранённый пароль используется только после кода из приложения.
+        *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: None });
+        return Ok(Some(Account { locked: true, ..account_of(&s) }));
+    }
     match start_session(&state, creds, s.clone()).await {
         Ok(()) => Ok(Some(account_of(&s))),
         Err(AppError::AuthFailed) => {
@@ -266,9 +302,17 @@ pub async fn auto_login(app: AppHandle, state: State<'_, AppState>) -> Result<Op
 }
 
 #[tauri::command]
-pub async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
+pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Option<bool>) -> Result<()> {
     // Окна писем показывают данные этой учётной записи.
     host::close_message_windows(&app);
+    // Телефон потерян: с экрана блокировки можно выйти со сбросом защиты кодом.
+    // Сохранённый пароль при этом тоже забывается — снова войти можно только зная
+    // пароль почты (с ним переписку и так можно прочитать в веб-почте).
+    if reset_totp == Some(true) {
+        if let Some(p) = state.pending.lock().await.as_ref() {
+            totp::remove(&account_key(&p.creds.username, &p.creds.host));
+        }
+    }
     // «Выйти и забыть пароль» забывает и подключение к Nextcloud: пароль приложения
     // отзывается на сервере и удаляется из системного хранилища.
     *state.nc_flow.lock().await = None;
@@ -289,6 +333,8 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
             let _ = settings::save(&app, &s);
         }
     }
+    *state.pending.lock().await = None;
+    *state.totp_setup.lock().await = None;
     *state.creds.lock().await = None;
     *state.profile.lock().await = None;
     *state.calendars.lock().await = None;
@@ -1151,6 +1197,165 @@ pub fn get_policy() -> crate::policy::UiPolicy {
     crate::policy::load().ui()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TotpStatus {
+    enabled: bool,
+    keyring_available: bool,
+    recovery_left: usize,
+}
+
+async fn current_account(state: &AppState) -> Result<String> {
+    if let Some(c) = state.creds.lock().await.as_ref() {
+        return Ok(account_key(&c.username, &c.host));
+    }
+    if let Some(p) = state.pending.lock().await.as_ref() {
+        return Ok(account_key(&p.creds.username, &p.creds.host));
+    }
+    Err(AppError::NotLoggedIn)
+}
+
+/// Проверка кода TOTP или резервного кода (резервный удаляется после использования).
+async fn check_totp(state: &AppState, account: &str, code: &str) -> Result<()> {
+    state.totp_throttle.lock().await.check()?;
+    let mut stored = totp::load(account).ok_or_else(|| AppError::Other("Защита кодом не включена".into()))?;
+    let code = code.trim();
+    let ok = if code.contains('-') || code.len() > 7 {
+        let ok = totp::use_recovery(&mut stored, code);
+        if ok {
+            totp::store(account, &stored)?;
+        }
+        ok
+    } else {
+        let last = state.totp_used.lock().await.get(account).copied();
+        match totp::verify(&stored.secret, code, totp::now_step(), last) {
+            Some(step) => {
+                state.totp_used.lock().await.insert(account.to_string(), step);
+                true
+            }
+            None => false,
+        }
+    };
+    let mut t = state.totp_throttle.lock().await;
+    if ok {
+        t.ok();
+        Ok(())
+    } else {
+        t.fail();
+        Err(AppError::Other("Неверный код".into()))
+    }
+}
+
+#[tauri::command]
+pub async fn totp_status(state: State<'_, AppState>) -> Result<TotpStatus> {
+    let account = current_account(&state).await?;
+    let stored = totp::load(&account);
+    Ok(TotpStatus {
+        enabled: stored.is_some(),
+        keyring_available: stored.is_some() || totp::keyring_available(&account),
+        recovery_left: stored.map_or(0, |s| s.recovery.len()),
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TotpSetup {
+    secret: String,
+    uri: String,
+    qr_svg: String,
+}
+
+/// Начать настройку: новый секрет и QR-код для приложения-аутентификатора.
+#[tauri::command]
+pub async fn totp_setup_begin(state: State<'_, AppState>) -> Result<TotpSetup> {
+    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let account = account_key(&creds.username, &creds.host);
+    let secret = totp::new_secret()?;
+    let uri = totp::otpauth_uri(&secret, &creds.username);
+    let qr_svg = totp::qr_svg(&uri)?;
+    *state.totp_setup.lock().await = Some((account, secret.clone()));
+    Ok(TotpSetup { secret, uri, qr_svg })
+}
+
+/// Подтвердить настройку кодом из приложения; возвращает резервные коды (показываются один раз).
+#[tauri::command]
+pub async fn totp_setup_confirm(state: State<'_, AppState>, code: String) -> Result<Vec<String>> {
+    state.totp_throttle.lock().await.check()?;
+    let (account, secret) = state.totp_setup.lock().await.clone().ok_or_else(|| AppError::Other("Сначала начните настройку".into()))?;
+    let Some(step) = totp::verify(&secret, &code, totp::now_step(), None) else {
+        state.totp_throttle.lock().await.fail();
+        return Err(AppError::Other("Неверный код — проверьте время на телефоне и введите новый код".into()));
+    };
+    let (codes, hashes) = totp::new_recovery_codes()?;
+    totp::store(&account, &totp::Stored { secret, recovery: hashes })?;
+    state.totp_used.lock().await.insert(account, step);
+    state.totp_throttle.lock().await.ok();
+    *state.totp_setup.lock().await = None;
+    Ok(codes)
+}
+
+/// Отключить защиту — нужен текущий код (или резервный).
+#[tauri::command]
+pub async fn totp_disable(state: State<'_, AppState>, code: String) -> Result<()> {
+    let account = current_account(&state).await?;
+    check_totp(&state, &account, &code).await?;
+    totp::remove(&account);
+    Ok(())
+}
+
+/// Заблокировать программу: почта отключается, для продолжения нужен код.
+#[tauri::command]
+pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
+    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    if totp::load(&account_key(&creds.username, &creds.host)).is_none() {
+        return Err(AppError::Other("Сначала включите защиту кодом в настройках".into()));
+    }
+    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    host::close_message_windows(&app);
+    *state.pending.lock().await = Some(Pending { creds, profile, remember: None });
+    *state.creds.lock().await = None;
+    *state.nc.lock().await = None;
+    *state.calendars.lock().await = None;
+    *state.books.lock().await = None;
+    state.picked.lock().await.clear();
+    if let Some(Ok(session)) = state.sogo.lock().await.take() {
+        session.logout().await;
+    }
+    if let Some(conn) = state.conn.lock().await.take() {
+        conn.logout().await;
+    }
+    Ok(())
+}
+
+/// Разблокировать кодом TOTP (или резервным) и подключить почту.
+#[tauri::command]
+pub async fn totp_unlock(state: State<'_, AppState>, code: String) -> Result<LoginResult> {
+    let account = {
+        let p = state.pending.lock().await;
+        let p = p.as_ref().ok_or_else(|| AppError::Other("Программа не заблокирована".into()))?;
+        account_key(&p.creds.username, &p.creds.host)
+    };
+    check_totp(&state, &account, &code).await?;
+    let p = state.pending.lock().await.take().ok_or(AppError::NotLoggedIn)?;
+    let mut warning = None;
+    if let Err(e) = start_session(&state, p.creds.clone(), p.profile.clone()).await {
+        if matches!(e, AppError::AuthFailed) && p.remember.is_none() {
+            settings::forget_password(&p.profile);
+        }
+        return Err(e);
+    }
+    match p.remember {
+        Some(true) => {
+            if settings::store_password(&p.profile, &p.creds.password).is_err() {
+                warning = Some("Не удалось сохранить пароль в системном хранилище — при следующем запуске его нужно будет ввести снова.".to_string());
+            }
+        }
+        Some(false) => settings::forget_password(&p.profile),
+        None => {}
+    }
+    Ok(LoginResult { account: account_of(&p.profile), warning })
+}
+
 /// Аватар Nextcloud: `kind` = "user" (ID пользователя) или "room" (токен беседы Talk).
 #[tauri::command]
 pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> Result<Option<String>> {
@@ -1913,6 +2118,12 @@ macro_rules! app_commands {
             crate::commands::attachment_data,
             crate::commands::message_html_remote,
             crate::commands::nc_avatar,
+            crate::commands::totp_status,
+            crate::commands::totp_setup_begin,
+            crate::commands::totp_setup_confirm,
+            crate::commands::totp_disable,
+            crate::commands::lock_app,
+            crate::commands::totp_unlock,
             crate::commands::get_policy,
             crate::commands::nc_editors,
             crate::commands::nc_edit,

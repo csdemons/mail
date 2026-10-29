@@ -6,6 +6,20 @@ export interface Account {
   username: string
   host: string
   port: number
+  /** Программа заблокирована: нужен код TOTP. */
+  locked?: boolean
+}
+
+export interface TotpStatus {
+  enabled: boolean
+  keyringAvailable: boolean
+  recoveryLeft: number
+}
+
+export interface TotpSetup {
+  secret: string
+  uri: string
+  qrSvg: string
 }
 
 export interface Settings {

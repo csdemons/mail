@@ -4,6 +4,7 @@ import { api, errorText, resetSession } from './api'
 import App from './App'
 import MessageWindow from './MessageWindow'
 import Login from './Login'
+import LockScreen from './LockScreen'
 import UpdateNotice from './UpdateNotice'
 import kurchatovLogo from './assets/kurchatov-logo.png'
 import type { Account, Settings } from './types'
@@ -11,6 +12,7 @@ import type { Account, Settings } from './types'
 type State =
   | { kind: 'starting' }
   | { kind: 'login'; settings: Settings | null; error: string }
+  | { kind: 'locked'; account: Account }
   | { kind: 'ready'; account: Account; warning: string }
 
 export default function Root() {
@@ -30,9 +32,9 @@ function MainRoot() {
       try {
         const account = await api.autoLogin()
         if (cancelled) return
-        setState(account
-          ? { kind: 'ready', account, warning: '' }
-          : { kind: 'login', settings, error: '' })
+        setState(!account
+          ? { kind: 'login', settings, error: '' }
+          : account.locked ? { kind: 'locked', account } : { kind: 'ready', account, warning: '' })
       } catch (error) {
         if (!cancelled) setState({ kind: 'login', settings, error: errorText(error) })
       }
@@ -49,6 +51,23 @@ function MainRoot() {
     )
   }
 
+  async function logout(resetTotp = false) {
+    const settings = await api.getSettings().catch(() => null)
+    await api.logout(resetTotp).catch(() => undefined)
+    resetSession()
+    setState({ kind: 'login', settings, error: '' })
+  }
+
+  if (state.kind === 'locked') {
+    return (
+      <LockScreen
+        account={state.account}
+        onUnlocked={(result) => { resetSession(); setState({ kind: 'ready', account: result.account, warning: result.warning ?? '' }) }}
+        onLogout={(reset) => void logout(reset)}
+      />
+    )
+  }
+
   if (state.kind === 'login') {
     return (
       <>
@@ -56,7 +75,12 @@ function MainRoot() {
       <Login
         initial={state.settings}
         initialError={state.error}
-        onLoggedIn={(result) => { resetSession(); setState({ kind: 'ready', account: result.account, warning: result.warning ?? '' }) }}
+        onLoggedIn={(result) => {
+          resetSession()
+          setState(result.account.locked
+            ? { kind: 'locked', account: result.account }
+            : { kind: 'ready', account: result.account, warning: result.warning ?? '' })
+        }}
       />
       </>
     )
@@ -68,11 +92,10 @@ function MainRoot() {
     <App
       account={state.account}
       initialNotice={state.warning}
-      onLogout={async () => {
-        const settings = await api.getSettings().catch(() => null)
-        await api.logout().catch(() => undefined)
-        resetSession()
-        setState({ kind: 'login', settings, error: '' })
+      onLogout={() => void logout()}
+      onLock={() => {
+        const account = state.account
+        void api.lockApp().then(() => { resetSession(); setState({ kind: 'locked', account }) }).catch(() => undefined)
       }}
     />
     </>
