@@ -87,6 +87,7 @@ def push_update(token, kind, msg):
 USERS = [{'id': 'ivanov', 'label': 'Иванов Иван', 'subline': 'ivanov@nrcki.ru'},
          {'id': 'petrova', 'label': 'Петрова Анна', 'subline': 'petrova@nrcki.ru'},
          {'id': 'sidorov', 'label': 'Сидоров Олег', 'subline': 'sidorov@nrcki.ru'}]
+HIDDEN_USER = {'id': 'smirnov', 'label': 'Смирнов Пётр', 'subline': 'smirnov@nrcki.ru'}
 
 
 def room_view(r):
@@ -435,7 +436,7 @@ class H(BaseHTTPRequestHandler):
         if method == 'POST' and p == '/ocs/v2.php/apps/spreed/api/v4/room':
             b = self.body()
             if int(b.get('roomType', 0)) == 1:
-                u = next((x for x in USERS if x['id'] == b.get('invite')), None)
+                u = next((x for x in USERS + [HIDDEN_USER] if x['id'] == b.get('invite')), None)
                 if not u:
                     return self.send(404, {})
                 r = next((x for x in state['rooms'] if x['type'] == 1 and x['name'] == u['id']), None)
@@ -454,7 +455,9 @@ class H(BaseHTTPRequestHandler):
             return self.ocs({})
         if method == 'GET' and p == '/ocs/v2.php/core/autocomplete/get':
             sq = q.get('search', '').lower()
-            return self.ocs([u for u in USERS if sq in (u['label'] + u['id']).lower()])
+            # Как при ограничении автодополнения: Смирнов находится только по точному e-mail.
+            hidden = [HIDDEN_USER] if sq == HIDDEN_USER['subline'] else []
+            return self.ocs([u for u in USERS if sq in (u['label'] + u['id']).lower()] + hidden)
         R = '/ocs/v2.php/apps/spreed/api/v1/reaction/'
         if p.startswith(R):
             token, mid = p[len(R):].split('/')

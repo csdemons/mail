@@ -2524,10 +2524,30 @@ pub async fn talk_mentions(state: State<'_, AppState>, token: String, search: St
 
 #[tauri::command]
 pub async fn nc_search_users(state: State<'_, AppState>, search: String) -> Result<Vec<nextcloud::NcUser>> {
-    if search.trim().chars().count() < 2 {
+    let q = search.trim().to_string();
+    if q.chars().count() < 2 {
         return Ok(Vec::new());
     }
-    nc(&state).await?.search_users(search.trim()).await
+    let nc = nc(&state).await?;
+    let mut users = nc.search_users(&q).await?;
+    // Nextcloud часто ограничивает подсказки «теми, с кем уже общались» или своей
+    // группой, но находит сотрудника по точному e-mail. Поэтому дополняем поиск
+    // корпоративной адресной книгой: имя → e-mail → пользователь Nextcloud.
+    if users.len() < 5 && !q.contains('@') {
+        if let Ok(contacts) = search_contacts(state.clone(), q.clone()).await {
+            let emails: Vec<String> = contacts.iter().filter_map(|c| c.emails.first().cloned()).take(12).collect();
+            let found = futures::future::join_all(emails.iter().map(|e| nc.search_users(e))).await;
+            for (email, list) in emails.iter().zip(found) {
+                let Ok(list) = list else { continue };
+                // Только однозначное совпадение по адресу.
+                let exact: Vec<_> = list.into_iter().filter(|u| u.sub.eq_ignore_ascii_case(email) || u.id.eq_ignore_ascii_case(email)).collect();
+                if exact.len() == 1 && !users.iter().any(|u| u.id == exact[0].id) {
+                    users.push(exact.into_iter().next().expect("one"));
+                }
+            }
+        }
+    }
+    Ok(users)
 }
 
 #[tauri::command]

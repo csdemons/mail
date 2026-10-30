@@ -855,3 +855,5 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .tpl-item { display: flex; align-items: center; gap: 4px; }
 .tpl-item .schedule-preset { flex: 1; }
 .due-input { padding: 8px 10px; border: 1px solid var(--line, #d0d7e2); border-radius: 8px; font: inherit; background: inherit; color: inherit; }
+.talk-people { border-top: 1px solid var(--line, #e5e7eb); }
+.empty-state.compact { padding: 12px; min-height: 0; }

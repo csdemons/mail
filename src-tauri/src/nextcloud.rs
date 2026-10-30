@@ -885,7 +885,7 @@ impl Nc {
     /// Поиск сотрудников Nextcloud (для новой беседы).
     pub async fn search_users(&self, search: &str) -> Result<Vec<NcUser>> {
         let q = [("search", search.to_string()), ("itemType", "call".to_string()), ("itemId", "new".to_string()),
-            ("shareTypes[]", "0".to_string()), ("limit", "10".to_string())];
+            ("shareTypes[]", "0".to_string()), ("limit", "25".to_string())];
         let (_, _, d) = self.ocs(Method::GET, "ocs/v2.php/core/autocomplete/get", &q, None, "Поиск пользователей").await?;
         Ok(d.as_array().map(|a| a.iter().map(|u| NcUser {
             id: text(&u["id"]),

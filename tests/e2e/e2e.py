@@ -619,6 +619,19 @@ try:
     W(d, 15).until(lambda d: 'Сидоров Олег' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').text)
     ok('new 1:1 conversation created and opened')
 
+    # Поиск сотрудников из списка бесед: в том числе тех, кого Nextcloud не подсказывает
+    # (ограничение автодополнения), — через корпоративную адресную книгу по e-mail.
+    assert dav_put('/test@rrcki.ru/contacts/smirnov.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:smirnov\r\nFN:Смирнов Пётр\r\nEMAIL:smirnov@nrcki.ru\r\nEND:VCARD\r\n') in (200, 201, 204)
+    rooms_search = d.find_element(By.CSS_SELECTOR, '.talk-rooms .search-box input')
+    rooms_search.send_keys('Петров')
+    W(d, 15).until(lambda d: any('Петрова Анна' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.talk-people .person-row')))
+    clear(rooms_search); rooms_search.send_keys('Смирнов')
+    W(d, 20).until(lambda d: any('Смирнов Пётр' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.talk-people .person-row')))
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-people .person-row') if 'Смирнов Пётр' in r.get_attribute('textContent')][0].click()
+    W(d, 15).until(lambda d: 'Смирнов Пётр' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').get_attribute('textContent'))
+    dav_delete('/test@rrcki.ru/contacts/smirnov.vcf')
+    ok('chat search finds employees in Nextcloud, including via the address book (exact e-mail)')
+
     # 20. Файлы Nextcloud: папки, публичная ссылка, ссылка в письме, доступ сотруднику, загрузка, удаление.
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Файлы']]").click()
     def file_row(name):
@@ -1392,7 +1405,8 @@ try:
     assert prefs['tray'] is True and prefs['closeToTray'] is True, prefs
     assert inv('set_unread', {'count': 7}).get('err') is None
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
-    auto = [l for l in wait(d, '.settings-modal').find_elements(By.CSS_SELECTOR, 'label') if 'Запускать вместе с системой' in l.get_attribute('textContent')][0].find_element(By.TAG_NAME, 'input')
+    autostart_label = lambda d: [l for l in d.find_elements(By.CSS_SELECTOR, '.settings-modal label') if 'Запускать вместе с системой' in l.get_attribute('textContent')]
+    auto = W(d, 15).until(autostart_label)[0].find_element(By.TAG_NAME, 'input')
     auto.click()
     desktop_file = os.path.join(os.environ['XDG_CONFIG_HOME'], 'autostart', 'ru.rrcki.mail.desktop')
     W(d, 10).until(lambda d: os.path.exists(desktop_file))
@@ -1508,7 +1522,7 @@ d = session()
 try:
     wait(d, '.message-row', 30); ok('auto-login from keyring after restart')
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
-    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 3 and not d.find_elements(By.CSS_SELECTOR, '.nc-connect.card'))
+    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 4 and not d.find_elements(By.CSS_SELECTOR, '.nc-connect.card'))
     ok('Nextcloud still connected after restart (app password from keyring)')
     d.find_element(By.CSS_SELECTOR, '.account-switch').click()
     [b for b in d.find_elements(By.CSS_SELECTOR, '.account-menu button') if 'Выйти' in b.text][0].click()

@@ -264,11 +264,39 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     return (rooms ?? []).filter((r) => !q || r.name.toLowerCase().includes(q))
   }, [rooms, query])
 
+  // Поиск сотрудников Nextcloud прямо из списка бесед — не только тех, с кем уже переписывались.
+  const [people, setPeople] = useState<NcUser[]>([])
+  const [peopleBusy, setPeopleBusy] = useState(false)
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 2) { setPeople([]); return }
+    let cancelled = false
+    const t = setTimeout(() => {
+      setPeopleBusy(true)
+      api.ncSearchUsers(q)
+        .then((list) => { if (!cancelled) setPeople(list) })
+        .catch(() => { if (!cancelled) setPeople([]) })
+        .finally(() => { if (!cancelled) setPeopleBusy(false) })
+    }, 300)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [query])
+  const peers = new Set((rooms ?? []).filter((r) => r.kind === 1 && r.peer).map((r) => r.peer))
+  async function chatWith(u: NcUser) {
+    try {
+      const tok = await api.talkCreate([u.id], null)
+      setQuery('')
+      await loadRooms()
+      setToken(tok)
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+
   return (
     <div className="module-view talk-view">
       <aside className="message-column talk-rooms">
         <div className="list-toolbar">
-          <label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Беседы" /></label>
+          <label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Беседы и сотрудники" /></label>
           <button className="icon-button soft" aria-label="Новая беседа" title="Новая беседа" onClick={() => setNewChat(true)}><MessageSquarePlus size={17} /></button>
           <button className="icon-button soft" aria-label="Обновить" onClick={() => void loadRooms()}><RefreshCw size={17} /></button>
         </div>
@@ -285,6 +313,19 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
               </div>
             </button>
           ))}
+          {query.trim().length >= 2 && <div className="talk-people">
+            <div className="message-list-header"><span>Сотрудники</span>{peopleBusy && <span>поиск…</span>}</div>
+            {!peopleBusy && people.length === 0 && <div className="empty-state compact"><span>Никого не найдено в Nextcloud</span></div>}
+            {people.filter((u) => !visibleRooms.some((r) => r.kind === 1 && r.peer === u.id)).map((u) => (
+              <button key={u.id} className="message-row room-row person-row" title="Написать" onClick={() => void chatWith(u)}>
+                <Avatar id={u.id} name={u.label} />
+                <div className="message-summary">
+                  <div className="message-topline"><span className="sender-name">{u.label}</span></div>
+                  <div className="message-preview">{peers.has(u.id) ? 'Открыть беседу' : (u.sub || 'Начать беседу')}</div>
+                </div>
+              </button>
+            ))}
+          </div>}
         </div>
       </aside>
 
