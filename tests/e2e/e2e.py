@@ -1517,6 +1517,99 @@ except Exception:
 finally:
     d.quit()
 
+# 14f. перетаскивание файлов, печать, спам, отписка, «отложить»
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    d.execute_script('document.hasFocus = () => true')
+    def row(subj):
+        return [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if subj in r.find_element(By.CSS_SELECTOR, '.message-subject').get_attribute('textContent')]
+    def open_row(subj):
+        r = W(d, 20).until(lambda d: row(subj))[0]
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'})", r); r.click()
+        W(d, 15).until(lambda d: subj in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
+    def menu_click(label):
+        [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if label in b.get_attribute('textContent')][0].click()
+    def add_mail(subj, headers=None, text='x'):
+        m = EmailMessage(); m['From'] = 'Рассылка <news@lists.nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj
+        for k, v in (headers or {}).items(): m[k] = v
+        m.set_content(text); M = imap(); M.append('INBOX', '', imaplib.Time2Internaldate(time.time()), m.as_bytes()); M.logout()
+    def refresh():
+        d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+
+    # Перетаскивание файла в окно письма — вложение.
+    before = len(outbox())
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    wait(d, '.compose-modal')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@nrcki.ru')
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'), 'E2E перетаскивание')
+    d.execute_script("""
+      const dt = new DataTransfer(); dt.items.add(new File(['перетащенный файл'], 'Смета.txt', {type: 'text/plain'}));
+      const t = document.querySelector('.compose-modal');
+      t.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer: dt}));
+      t.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt}));""")
+    W(d, 10).until(lambda d: any('Смета.txt' in c.get_attribute('textContent') for c in d.find_elements(By.CSS_SELECTOR, '.compose-files .file-chip')))
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    W(d, 20).until(lambda d: len(outbox()) > before and any(subject_of(p)[0] == 'E2E перетаскивание' for p in outbox()))
+    raw = [subject_of(p)[1] for p in outbox() if subject_of(p)[0] == 'E2E перетаскивание'][0]
+    assert b'filename' in raw and ('Смета.txt'.encode() in raw or b'=?utf-8?' in raw.lower()), raw[:800]
+    ok('drag and drop a file into the composer attaches it')
+
+    # Печать: документ с заголовками и текстом письма.
+    open_row('Отчёт с вложением')
+    d.execute_script('window.__E2E_PRINT = []')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Печать"]').click()
+    printed = W(d, 5).until(lambda d: d.execute_script('return window.__E2E_PRINT'))[0]
+    assert 'Отчёт с вложением' in printed and 'yushkov_do@nrcki.ru' in printed and 'Во вложении отчёт' in printed and 'Отчёт за октябрь.txt' in printed, printed[:500]
+    ok('print: headers, body and attachment names in the print document')
+
+    # «Это спам» и обратно.
+    add_mail('E2E spam')
+    refresh(); open_row('E2E spam')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Это спам"]').click()
+    W(d, 15).until(lambda d: not row('E2E spam'))
+    junk = [f['id'] for f in inv('list_folders')['ok'] if f['role'] == 'junk'][0]
+    W(d, 10).until(lambda d: 'E2E spam' in subjects(junk))
+    assert '$Junk' in flags_u(junk, 'E2E spam')
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Спам' in f.get_attribute('textContent')][0].click()
+    open_row('E2E spam')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Не спам"]').click()
+    W(d, 15).until(lambda d: 'E2E spam' in subjects('INBOX'))
+    assert '$NotJunk' in flags_u('INBOX', 'E2E spam')
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Входящие' in f.get_attribute('textContent')][0].click()
+    ok('spam: moved to Junk with $Junk, back to Inbox with $NotJunk')
+
+    # Отписка: RFC 8058 одним запросом и письмом на адрес отписки.
+    add_mail('E2E рассылка 1', {'List-Unsubscribe': '<mailto:unsub@lists.nrcki.ru?subject=unsubscribe-1>, <https://localhost:8443/unsub/42>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'})
+    add_mail('E2E рассылка 2', {'List-Unsubscribe': '<mailto:unsub@lists.nrcki.ru?subject=unsubscribe-2>'})
+    refresh(); open_row('E2E рассылка 1')
+    [b for b in wait(d, '.unsub-bar').find_elements(By.TAG_NAME, 'button') if 'Отписаться' in b.text][0].click()
+    W(d, 15).until(lambda d: any(u['id'] == '42' and 'One-Click' in u['body'] for u in nc_mock('GET', '/test/state')['unsubscribed']))
+    open_row('E2E рассылка 2')
+    [b for b in wait(d, '.unsub-bar').find_elements(By.TAG_NAME, 'button') if 'Отписаться' in b.text][0].click()
+    W(d, 15).until(lambda d: any(subject_of(p)[0] == 'unsubscribe-2' for p in outbox()))
+    ok('unsubscribe: one-click POST (RFC 8058), otherwise e-mail to the unsubscribe address')
+
+    # «Отложить»: письмо уходит в «Отложенные» и возвращается во «Входящие» непрочитанным.
+    add_mail('E2E отложить')
+    refresh(); open_row('E2E отложить')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Отложить"]').click()
+    menu_click('Выбрать дату')
+    set_value(d, wait(d, '.settings-modal input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 60)))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if b.text == 'Отложить'][0].click()
+    W(d, 15).until(lambda d: not row('E2E отложить'))
+    snoozed = W(d, 10).until(lambda d: [f['id'] for f in inv('list_folders')['ok'] if 'Отложенные' in f['name']])[0]
+    assert 'E2E отложить' in subjects(snoozed) and 'atomsnooze-' in flags_u(snoozed, 'E2E отложить')
+    d.save_screenshot(f'{OUT}/50-snoozed.png')
+    W(d, 200).until(lambda d: 'E2E отложить' in subjects('INBOX'))
+    fl = flags_u('INBOX', 'E2E отложить')
+    assert '\\Seen' not in fl and 'atomsnooze-' not in fl, fl
+    ok('snooze: moved to Snoozed, returned to Inbox as unread on time')
+except Exception:
+    d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
+finally:
+    d.quit()
+
 # 15. перезапуск → автовход из keyring
 d = session()
 try:
@@ -1540,6 +1633,25 @@ try:
     wait(d, '.login-card', 30)
     assert d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').get_attribute('value') == 'test@rrcki.ru'
     ok('after logout: login screen, username prefilled, password not remembered')
+finally:
+    d.quit()
+# 17. вход «адрес + пароль»: серверы определяются автоматически (autoconfig)
+for f in glob.glob(os.environ['XDG_CONFIG_HOME'] + '/*/settings.json'):
+    os.remove(f)
+d = session()
+try:
+    wait(d, '.login-card', 30)
+    assert 'определятся автоматически' in d.find_element(By.CSS_SELECTOR, '.login-server-toggle').get_attribute('textContent')
+    d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').send_keys('test@rrcki.ru')
+    d.find_element(By.CSS_SELECTOR, 'input[type=password]').send_keys('Secret-123')
+    d.find_element(By.CSS_SELECTOR, '.login-submit').click()
+    wait(d, '.message-row', 40)
+    cfg = [json.load(open(f)) for f in glob.glob(os.environ['XDG_CONFIG_HOME'] + '/*/settings.json')][0]
+    assert cfg['host'] == 'localhost' and cfg['port'] == 10993 and cfg['smtpPort'] == 465, cfg
+    ok('login with address and password only: servers discovered (autoconfig)')
+    r = d.execute_async_script("const cb = arguments[0]; window.__TAURI_INTERNALS__.invoke('discover_servers', {email: 'someone@yandex.ru'}).then(cb, (e) => cb(String(e)))")
+    assert r['imapHost'] == 'imap.yandex.ru' and r['smtpPort'] == 465 and 'пароль приложения' in r['note'], r
+    ok('known providers (Yandex, Mail.ru, Gmail…) need no network lookup')
 finally:
     d.quit()
 print('ALL E2E PASSED')

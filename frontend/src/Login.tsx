@@ -31,7 +31,10 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
   useEffect(() => {
     api.getPolicy().then((p) => { setRemember(p.rememberPassword); setAllowRemember(p.allowRememberPassword) }).catch(() => undefined)
   }, [])
-  const [showServer, setShowServer] = useState(Boolean(initial && initial.host !== DEFAULT_HOST))
+  const [showServer, setShowServer] = useState(false)
+  /** Серверы определены автоматически (или взяты из прошлого входа) — показываем, какие. */
+  const [found, setFound] = useState<string>(initial ? `${initial.host}:${initial.port}, SMTP ${initial.smtpHost}:${initial.smtpPort}` : '')
+  const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(initialError)
 
@@ -47,9 +50,30 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
     setBusy(true)
     setError('')
     try {
+      let server = { host, port: portNumber, smtpHost, smtpPort: smtpPortNumber, login: username.trim() }
+      const domainOf = (s: string) => s.split('@')[1]?.toLowerCase() ?? ''
+      const sameAsBefore = initial && domainOf(initial.username) === domainOf(username)
+      // Адрес и пароль: серверы — из прошлого входа того же домена или автоопределением.
+      if (!showServer && !sameAsBefore) {
+        if (!username.includes('@')) {
+          setShowServer(true)
+          throw new Error('Введите адрес почты целиком (например, ivanov@yandex.ru) или укажите серверы вручную')
+        }
+        let d
+        try {
+          d = await api.discoverServers(username)
+        } catch (err) {
+          setShowServer(true)
+          throw err
+        }
+        setHost(d.imapHost); setPort(String(d.imapPort)); setSmtpHost(d.smtpHost); setSmtpPort(String(d.smtpPort))
+        setFound(`${d.imapHost}:${d.imapPort}, SMTP ${d.smtpHost}:${d.smtpPort} — ${d.source}`)
+        setNote(d.note ?? '')
+        server = { host: d.imapHost, port: d.imapPort, smtpHost: d.smtpHost, smtpPort: d.smtpPort, login: d.username.includes('@') ? d.username : username.trim() }
+      }
       const result = await api.login({
-        host, port: portNumber, username, password, remember,
-        smtpHost, smtpPort: smtpPortNumber, davUrl,
+        host: server.host, port: server.port, username: server.login, password, remember,
+        smtpHost: server.smtpHost, smtpPort: server.smtpPort, davUrl,
       })
       setPassword('')
       onLoggedIn(result)
@@ -68,12 +92,12 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
           <span>Atom Mail</span>
         </div>
         <h1>Вход в почту</h1>
-        <p className="login-hint">Используйте корпоративную учётную запись почтового сервера.</p>
+        <p className="login-hint">Адрес почты и пароль — серверы программа определит сама (Яндекс, Mail.ru, Gmail, корпоративная почта).</p>
 
         <label className="login-field">
-          <span>Логин</span>
+          <span>Адрес почты</span>
           <input autoFocus required autoComplete="username" value={username}
-            onChange={(e) => setUsername(e.target.value)} placeholder="user@nrcki.ru" />
+            onChange={(e) => setUsername(e.target.value)} placeholder="ivanov@nrcki.ru" />
         </label>
         <label className="login-field">
           <span>Пароль</span>
@@ -108,7 +132,7 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
           </label>
         </>) : (
           <button type="button" className="text-button login-server-toggle" onClick={() => setShowServer(true)}>
-            <ServerCog size={15} /> Серверы: {host}:{port}, SMTP {smtpHost}:{smtpPort}
+            <ServerCog size={15} /> {found ? `Серверы: ${found}` : 'Серверы определятся автоматически'} · Настроить вручную
           </button>
         )}
 
@@ -117,6 +141,7 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
           <span>Запомнить пароль в системном хранилище</span>
         </label>
 
+        {note && <div className="login-note-warn" role="note">{note}</div>}
         {error && <div className="login-error" role="alert">{error}</div>}
 
         <button className="primary-button login-submit" type="submit" disabled={busy}>

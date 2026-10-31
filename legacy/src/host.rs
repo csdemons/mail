@@ -90,6 +90,7 @@ pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Res
         .inner_size(920.0, 820.0)
         .min_inner_size(480.0, 400.0)
         .initialization_script(init)
+        .disable_file_drop_handler()
         .build()
         .map_err(|e| AppError::Other(format!("Не удалось открыть окно: {e}")))?;
     Ok(())

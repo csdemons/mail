@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "RRCKI Mail",
-    "version": "0.16.1"
+    "version": "0.17.0"
   },
   "tauri": {
     "allowlist": {

@@ -284,6 +284,12 @@ async fn attachment(state: &AppState, folder: &str, uid: u32, index: usize) -> R
     with_conn!(state, c => imap::get_attachment(c, folder, uid, index))
 }
 
+/// Серверы почты по адресу (вход «адрес + пароль»).
+#[tauri::command]
+pub async fn discover_servers(email: String) -> Result<crate::discover::Discovered> {
+    crate::discover::discover(&email).await
+}
+
 /// Папки из локального хранилища — показываются сразу, до ответа сервера.
 #[tauri::command]
 pub async fn cached_folders(state: State<'_, AppState>) -> Result<Option<Vec<Folder>>> {
@@ -1165,7 +1171,12 @@ pub async fn send_message(
 async fn forget_picked(state: &AppState, ids: &[String]) {
     let mut picked = state.picked.lock().await;
     for id in ids {
-        picked.remove(id);
+        // Перетащенный файл лежит в своём временном каталоге — убираем и его.
+        if let Some(path) = picked.remove(id) {
+            if let Some(dir) = path.parent().filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with("drop-"))) {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
     }
 }
 
@@ -1265,6 +1276,13 @@ async fn run_scheduler(app: AppHandle, generation: u64) {
         let state = app.state::<AppState>();
         if state.session.load(Ordering::SeqCst) != generation {
             return;
+        }
+        match return_snoozed(&state).await {
+            Ok(n) if n > 0 => {
+                let _ = host::notify(&app, "Отложенные письма вернулись", &format!("Во «Входящих»: {n}"));
+            }
+            Err(e) => log::warn!("snoozed mail check failed: {e}"),
+            _ => {}
         }
         let list = match scheduled_now(&state).await {
             Ok(l) => l,
@@ -1477,6 +1495,175 @@ pub async fn template_save(state: State<'_, AppState>, name: String, text: Strin
 #[tauri::command]
 pub async fn template_delete(state: State<'_, AppState>, folder: String, uid: u32) -> Result<()> {
     with_conn!(state, c => imap::remove_message(c, &folder, uid))
+}
+
+// ---------------------------------------------------------------- перетаскивание, спам, отписка, «отложить»
+
+/// Файл, перетащенный в письмо: содержимое приходит из окна (base64), сохраняется
+/// в личный временный каталог и дальше вкладывается как выбранный в диалоге.
+#[tauri::command]
+pub async fn attach_data(state: State<'_, AppState>, name: String, data: String) -> Result<PickedFile> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|_| AppError::Other("Файл не прочитан".into()))?;
+    if bytes.len() as u64 > MAX_OUTGOING_MB * 1024 * 1024 {
+        return Err(AppError::Other(format!("Файл больше {MAX_OUTGOING_MB} МБ — отправьте его ссылкой Nextcloud")));
+    }
+    let safe = imap::sanitize_filename(&name);
+    let dir = crate::updater::private_dir("drop")?;
+    let path = dir.join(if safe.is_empty() { "file".to_string() } else { safe.clone() });
+    {
+        use std::io::Write as _;
+        let mut f = crate::updater::create_new_file(&path)?;
+        f.write_all(&bytes)?;
+    }
+    let id = state.next_pick.fetch_add(1, Ordering::Relaxed).to_string();
+    state.picked.lock().await.insert(id.clone(), path);
+    Ok(PickedFile { id, name: safe, size: bytes.len() as u64 })
+}
+
+/// «Это спам» — в «Спам» с меткой $Junk; «Не спам» — во «Входящие» с меткой $NotJunk
+/// (метки понимают фильтры спама сервера и Thunderbird).
+#[tauri::command]
+pub async fn mark_spam(state: State<'_, AppState>, folder: String, uids: Vec<u32>, spam: bool) -> Result<String> {
+    let target = with_conn!(once state, c => async {
+        let (add, remove) = if spam { ("$Junk", "$NotJunk") } else { ("$NotJunk", "$Junk") };
+        imap::set_keyword(c, &folder, &uids, remove, false).await?;
+        imap::set_keyword(c, &folder, &uids, add, true).await?;
+        let target = if spam { imap::junk_folder(c).await? } else { "INBOX".to_string() };
+        if target != folder {
+            imap::move_messages(c, &folder, &uids, &target).await?;
+        }
+        Ok(target)
+    })?;
+    if let Some(st) = local(&state).await {
+        st.remove(&folder, &uids);
+    }
+    Ok(target)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsubscribeResult {
+    /// Готово (одним запросом или письмом).
+    done: bool,
+    /// Отписка только на сайте рассылки — адрес для браузера.
+    open_url: Option<String>,
+    how: String,
+}
+
+/// Отписаться от рассылки: RFC 8058 (один POST, без браузера), иначе письмом
+/// на адрес отписки, иначе — ссылка для браузера.
+#[tauri::command]
+pub async fn unsubscribe(state: State<'_, AppState>, folder: String, uid: u32) -> Result<UnsubscribeResult> {
+    let raw = match local_raw(&state, &folder, uid).await {
+        Some(r) => r,
+        None => with_conn!(state, c => imap::raw_of(c, &folder, uid))?,
+    };
+    let msg = mail_parser::MessageParser::default().parse_headers(&raw).ok_or(AppError::NotFound)?;
+    let u = imap::unsubscribe_of(&msg).ok_or_else(|| AppError::Other("В письме нет способа отписаться".into()))?;
+    if let (true, Some(link)) = (u.one_click, u.https.as_deref()) {
+        let url = url::Url::parse(link).map_err(|_| AppError::Other("Некорректная ссылка отписки".into()))?;
+        // Тот же контроль, что и для картинок: только публичный интернет, без перенаправлений.
+        let policy = crate::policy::load();
+        let host = url.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']').to_string();
+        // E2E: сервер рассылки — мок на localhost (в релизе только публичные адреса).
+        let allow_local = cfg!(debug_assertions) && std::env::var_os("RRCKI_E2E_ALLOW_LOCAL_IMAGES").is_some();
+        if let Some(addr) = crate::html::resolve_public(&url, allow_local, &policy).await {
+            let mut b = reqwest::Client::builder().timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none());
+            if policy.remote_images != crate::policy::RemoteImages::Proxy {
+                b = b.no_proxy().resolve(&host, addr);
+            }
+            let client = b.build().map_err(|e| AppError::Other(e.to_string()))?;
+            let resp = client
+                .post(url.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body("List-Unsubscribe=One-Click")
+                .send()
+                .await;
+            if resp.as_ref().is_ok_and(|r| r.status().is_success() || r.status().is_redirection()) {
+                return Ok(UnsubscribeResult { done: true, open_url: None, how: "запросом на сервер рассылки".into() });
+            }
+        }
+    }
+    if let Some(mailto) = u.mailto.as_deref() {
+        let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+        let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+        let rest = &mailto["mailto:".len()..];
+        let (addr, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let addr = percent_encoding::percent_decode_str(addr).decode_utf8_lossy().to_string();
+        let param = |k: &str| query.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| a.eq_ignore_ascii_case(k)).map(|(_, v)| percent_encoding::percent_decode_str(&v.replace('+', " ")).decode_utf8_lossy().to_string()));
+        let message = smtp::build(smtp::Outgoing {
+            from_name: Some(profile.display_name.clone()),
+            from_address: profile.email(),
+            to: vec![addr],
+            cc: vec![],
+            subject: param("subject").unwrap_or_else(|| "unsubscribe".into()),
+            body: param("body").unwrap_or_else(|| "unsubscribe".into()),
+            html: None,
+            in_reply_to: None,
+            references: None,
+            attachments: vec![],
+            read_receipt: false,
+            extra_headers: vec![],
+        })?;
+        smtp::send(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, &message).await?;
+        return Ok(UnsubscribeResult { done: true, open_url: None, how: "письмом на адрес отписки".into() });
+    }
+    Ok(UnsubscribeResult { done: false, open_url: u.https, how: "на сайте рассылки".into() })
+}
+
+/// «Отложить»: письма уходят в папку «Отложенные» и в срок возвращаются во «Входящие»
+/// непрочитанными (срок — ключевое слово на сервере, видно на всех компьютерах).
+#[tauri::command]
+pub async fn snooze(state: State<'_, AppState>, folder: String, uids: Vec<u32>, until: String) -> Result<String> {
+    let at = chrono::DateTime::parse_from_rfc3339(&until).map_err(|_| AppError::Other("Некорректное время".into()))?.with_timezone(&chrono::Utc);
+    if at <= chrono::Utc::now() {
+        return Err(AppError::Other("Выберите время в будущем".into()));
+    }
+    // Срок — с точностью до минуты, округляется вверх (не раньше выбранного времени).
+    let at = if at.timestamp() % 60 == 0 { at } else { at + chrono::Duration::seconds(60 - at.timestamp() % 60) };
+    let kw = format!("{}{}", imap::SNOOZE_PREFIX, at.format("%Y%m%d%H%M"));
+    let target = with_conn!(once state, c => async {
+        let target = imap::snoozed_folder(c, true).await?.expect("created");
+        imap::clear_snooze(c, &folder, &uids).await?;
+        imap::set_keyword(c, &folder, &uids, &kw, true).await?;
+        if target != folder {
+            imap::move_messages(c, &folder, &uids, &target).await?;
+        }
+        Ok(target)
+    })?;
+    if let Some(st) = local(&state).await {
+        st.remove(&folder, &uids);
+    }
+    Ok(target)
+}
+
+/// Вернуть отложенные письма во «Входящие» сейчас.
+#[tauri::command]
+pub async fn unsnooze(state: State<'_, AppState>, folder: String, uids: Vec<u32>) -> Result<()> {
+    with_conn!(once state, c => async {
+        imap::clear_snooze(c, &folder, &uids).await?;
+        imap::move_messages(c, &folder, &uids, "INBOX").await
+    })?;
+    if let Some(st) = local(&state).await {
+        st.remove(&folder, &uids);
+    }
+    Ok(())
+}
+
+/// Срок наступил — письма возвращаются во «Входящие» непрочитанными.
+async fn return_snoozed(state: &AppState) -> Result<usize> {
+    with_conn!(once state, c => async {
+        let Some(folder) = imap::snoozed_folder(c, false).await? else { return Ok(0) };
+        let due = imap::snoozed_due(c, &folder, chrono::Utc::now()).await?;
+        if due.is_empty() {
+            return Ok(0);
+        }
+        imap::clear_snooze(c, &folder, &due).await?;
+        let _: () = imap::set_flag_many(c, &folder, &due, FlagKind::Seen, false).await?;
+        imap::move_messages(c, &folder, &due, "INBOX").await?;
+        Ok(due.len())
+    })
 }
 
 // ---------------------------------------------------------------- уведомления о прочтении
@@ -3015,6 +3202,12 @@ macro_rules! app_commands {
             crate::commands::set_unread,
             crate::commands::show_main_window,
             crate::commands::categories_get,
+            crate::commands::discover_servers,
+            crate::commands::attach_data,
+            crate::commands::mark_spam,
+            crate::commands::unsubscribe,
+            crate::commands::snooze,
+            crate::commands::unsnooze,
             crate::commands::categories_save,
             crate::commands::set_keywords,
             crate::commands::set_due,

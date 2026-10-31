@@ -27,6 +27,7 @@ export RRCKI_E2E_UPDATE_PUBKEY=$(openssl pkey -in "$(dirname "$0")/../servers/up
 export RRCKI_E2E_POLL_SECS=8  # фоновая проверка почты/чата для уведомлений
 export RRCKI_E2E_NOTIFY_LOG="$E2E_HOME/notify.log"
 export RRCKI_E2E_VARIANT=test
+export RRCKI_E2E_AUTOCONFIG_URL=https://localhost:8443/autoconfig/mail/config-v1.1.xml  # автоопределение серверов
 tauri-driver >/tmp/tauri-driver.log 2>&1 &
 TD=$!
 sleep 2

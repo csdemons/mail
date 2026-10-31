@@ -133,6 +133,12 @@
     "allow-due-list",
     "allow-templates-list",
     "allow-template-save",
-    "allow-template-delete"
+    "allow-template-delete",
+    "allow-discover-servers",
+    "allow-attach-data",
+    "allow-mark-spam",
+    "allow-unsubscribe",
+    "allow-snooze",
+    "allow-unsnooze"
   ]
 }

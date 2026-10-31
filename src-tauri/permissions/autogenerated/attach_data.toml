@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-attach-data"
+description = "Enables the attach_data command without any pre-configured scope."
+commands.allow = ["attach_data"]
+
+[[permission]]
+identifier = "deny-attach-data"
+description = "Denies the attach_data command without any pre-configured scope."
+commands.deny = ["attach_data"]

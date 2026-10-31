@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mark-spam"
+description = "Enables the mark_spam command without any pre-configured scope."
+commands.allow = ["mark_spam"]
+
+[[permission]]
+identifier = "deny-mark-spam"
+description = "Denies the mark_spam command without any pre-configured scope."
+commands.deny = ["mark_spam"]

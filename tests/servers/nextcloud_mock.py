@@ -147,6 +147,17 @@ class H(BaseHTTPRequestHandler):
         p, q = u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
         base = f'https://localhost:{self.server.server_port}'
 
+        # --- Без входа: отписка от рассылки (RFC 8058) и autoconfig почты
+        if method == 'POST' and p.startswith('/unsub/'):
+            state.setdefault('unsubscribed', []).append({'id': p.split('/')[-1], 'body': self.rfile.read(int(self.headers.get('Content-Length', 0))).decode()})
+            return self.send(200, {})
+        if method == 'GET' and p == '/autoconfig/mail/config-v1.1.xml':
+            xml = ('<?xml version="1.0"?><clientConfig version="1.1"><emailProvider id="rrcki.ru">'
+                   '<incomingServer type="imap"><hostname>localhost</hostname><port>10993</port><socketType>SSL</socketType><username>%EMAILADDRESS%</username></incomingServer>'
+                   '<outgoingServer type="smtp"><hostname>localhost</hostname><port>465</port><socketType>SSL</socketType><username>%EMAILADDRESS%</username></outgoingServer>'
+                   '</emailProvider></clientConfig>').encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/xml'); self.send_header('Content-Length', str(len(xml))); self.end_headers(); self.wfile.write(xml)
+            return
         # --- Аватары: пользователя (PNG) и беседы Talk (SVG)
         if method == 'GET' and p.startswith('/index.php/avatar/'):
             import zlib, struct
@@ -217,7 +228,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0)} | {'messages': state['messages'],
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'],
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:

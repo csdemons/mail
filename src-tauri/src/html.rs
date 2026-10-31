@@ -183,7 +183,7 @@ const MAX_REDIRECTS: usize = 3;
 /// Проверяет адрес и разрешает имя: все IP должны быть публичными. Возвращает
 /// адрес, к которому подключаться (имя закрепляется за ним — повторное
 /// DNS-разрешение не подменит его на внутренний, DNS rebinding).
-async fn resolve_public(url: &url::Url, allow_local: bool, policy: &crate::policy::Policy) -> Option<std::net::SocketAddr> {
+pub async fn resolve_public(url: &url::Url, allow_local: bool, policy: &crate::policy::Policy) -> Option<std::net::SocketAddr> {
     if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
         return None;
     }

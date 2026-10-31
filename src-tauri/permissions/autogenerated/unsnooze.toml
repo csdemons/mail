@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-unsnooze"
+description = "Enables the unsnooze command without any pre-configured scope."
+commands.allow = ["unsnooze"]
+
+[[permission]]
+identifier = "deny-unsnooze"
+description = "Denies the unsnooze command without any pre-configured scope."
+commands.deny = ["unsnooze"]

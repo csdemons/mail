@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, Lock, CalendarClock, Tag, MessagesSquare, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
+  Reply, Search, Send, Settings, ShieldCheck, Lock, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
 } from 'lucide-react'
 
 import {
@@ -31,6 +31,7 @@ import MessageBody from './MessageBody'
 import AddressLine from './AddressLine'
 import MdnBar from './MdnBar'
 import DuePicker from './DuePicker'
+import { printMessage, snoozePresets, snoozedUntil } from './mailTools'
 import { categoriesOf, dueLabel, dueOf, duePresets, threadKeys, userCategories, withDue } from './mailExtras'
 import ScheduledMail from './ScheduledMail'
 import { useOutbox } from './sending'
@@ -235,6 +236,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   const [openThreads, setOpenThreads] = useState<Set<string>>(new Set())
   const [popMenu, setPopMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const [duePick, setDuePick] = useState<MessageSummary[] | null>(null)
+  const [snoozePick, setSnoozePick] = useState<MessageSummary[] | null>(null)
 
   // Напоминания по флажкам со сроком: проверка раз в 2 минуты (и при запуске).
   useEffect(() => {
@@ -657,6 +659,61 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
     ]
   }
 
+  /** «Это спам» / «Не спам» (в папке «Спам»). */
+  async function markSpam(items: MessageSummary[], spam: boolean) {
+    for (const g of byFolder(items)) {
+      try {
+        const target = await api.markSpam(g[0].folder, g.map((m) => m.uid), spam)
+        dropFromList(g, target)
+        setNotice(spam ? `${g.length === 1 ? 'Письмо перенесено' : `Писем: ${g.length} —`} в «Спам».` : 'Письмо возвращено во «Входящие».')
+      } catch (e) {
+        setNotice(`Не удалось: ${errorText(e)}`)
+      }
+    }
+  }
+
+  /** «Отложить»: письмо вернётся во «Входящие» в выбранное время. */
+  async function snoozeItems(items: MessageSummary[], until: Date) {
+    for (const g of byFolder(items)) {
+      try {
+        const target = await api.snooze(g[0].folder, g.map((m) => m.uid), until.toISOString())
+        dropFromList(g, target)
+        setNotice(`Отложено до ${dueLabel(until)} — письмо вернётся во «Входящие».`)
+      } catch (e) {
+        setNotice(`Не удалось отложить: ${errorText(e)}`)
+      }
+    }
+  }
+
+  async function unsnoozeItems(items: MessageSummary[]) {
+    for (const g of byFolder(items)) {
+      try {
+        await api.unsnooze(g[0].folder, g.map((m) => m.uid))
+        dropFromList(g, 'INBOX')
+        setNotice('Письмо возвращено во «Входящие».')
+      } catch (e) {
+        setNotice(`Не удалось: ${errorText(e)}`)
+      }
+    }
+  }
+
+  function snoozeMenuItems(items: MessageSummary[]): MenuItem[] {
+    return [
+      ...snoozePresets().map((p) => ({ label: p.label, icon: <AlarmClock size={15} />, hint: dueLabel(p.at), onSelect: () => void snoozeItems(items, p.at) })),
+      { label: 'Выбрать дату и время…', icon: <CalendarClock size={15} />, onSelect: () => setSnoozePick(items) },
+    ]
+  }
+
+  async function doUnsubscribe(d: MessageDetail) {
+    try {
+      const r = await api.unsubscribe(d.folder, d.uid)
+      if (r.done) setNotice(`Вы отписаны от рассылки (${r.how}).`)
+      else if (r.openUrl) { setNotice('Отписка — на сайте рассылки: открываю в браузере.'); void api.openLink(r.openUrl).catch(() => undefined) }
+    } catch (e) {
+      setNotice(`Не удалось отписаться: ${errorText(e)}`)
+    }
+  }
+
   function openPop(e: React.MouseEvent, items: MenuItem[]) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
     setPopMenu({ x: r.left, y: r.bottom + 4, items })
@@ -1034,6 +1091,10 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
         ? { label: 'Снять флажок', icon: <Flag size={15} />, onSelect: each('flagged', false) }
         : { label: 'Поставить флажок', icon: <Flag size={15} />, onSelect: each('flagged', true) },
       { label: 'Флажок со сроком…', icon: <CalendarClock size={15} />, onSelect: () => setDuePick(items) },
+      items.some((m) => snoozedUntil(m.keywords))
+        ? { label: 'Вернуть во «Входящие» сейчас', icon: <AlarmClock size={15} />, onSelect: () => void unsnoozeItems(items) }
+        : { label: 'Отложить до завтра утром', icon: <AlarmClock size={15} />, onSelect: () => void snoozeItems(items, snoozePresets().find((p) => p.label === 'Завтра утром')!.at) },
+      { label: 'Отложить до…', icon: <AlarmClock size={15} />, onSelect: () => setSnoozePick(items) },
       { separator: true },
       ...userCategories(categories).map((c) => {
         const has = items.every((m) => (m.keywords ?? []).some((k) => k.toLowerCase() === c.keyword.toLowerCase()))
@@ -1044,6 +1105,11 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
       { label: 'Переместить в папку…', icon: <FolderInput size={15} />, onSelect: () => setMovePicker(items) },
     )
     if (one) list.push({ label: 'Создать фильтр по отправителю…', icon: <ListFilter size={15} />, onSelect: () => { setFilterSeed(one); setShowFilters(true) } })
+    const inJunk = folders.find((f) => f.id === items[0]?.folder)?.role === 'junk'
+    list.push(inJunk
+      ? { label: 'Не спам', icon: <ShieldCheck size={15} />, onSelect: () => void markSpam(items, false) }
+      : { label: 'Это спам', icon: <ShieldAlert size={15} />, onSelect: () => void markSpam(items, true) })
+    if (one) list.push({ label: 'Печать…', icon: <Printer size={15} />, onSelect: () => { void (detail && messageKey(detail) === messageKey(one) ? Promise.resolve(detail) : api.getMessage(one.folder, one.uid)).then(printMessage).catch((e) => setNotice(errorText(e))) } })
     list.push(
       { separator: true },
       { label: items.length > 1 ? `Удалить (${items.length})` : 'Удалить', icon: <Trash2 size={15} />, hint: 'Del', danger: true, onSelect: () => requestDelete(items) },
@@ -1296,7 +1362,8 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
                       {m.subject || '(без темы)'}
                     </div>
                     {searching && <div className="message-folder">{folderName(m.folder)}</div>}
-                    {(cats.length > 0 || due) && <div className="message-tags">
+                    {(cats.length > 0 || due || snoozedUntil(m.keywords)) && <div className="message-tags">
+                      {snoozedUntil(m.keywords) && <span className="snooze-tag" title="Отложено"><AlarmClock size={11} /> до {dueLabel(snoozedUntil(m.keywords)!)}</span>}
                       {due && <span className={`due-tag ${due.getTime() < Date.now() ? 'overdue' : ''}`} title="Срок флажка"><Flag size={11} /> {dueLabel(due)}</span>}
                       {cats.map((c) => <span key={c.keyword} className="cat-tag" style={{ borderColor: c.color, color: c.color }}><span className="cat-dot" style={{ background: c.color }} />{c.name}</span>)}
                     </div>}
@@ -1357,6 +1424,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
               </button>
               <button className="icon-button" aria-label="Срок" title="Флажок со сроком (напоминание)" onClick={(e) => openPop(e, dueMenuItems([selected]))}><CalendarClock size={18} /></button>
               <button className="icon-button" aria-label="Категории" title="Категории" onClick={(e) => openPop(e, categoryMenuItems([selected]))}><Tag size={18} /></button>
+              <button className="icon-button" aria-label="Отложить" title="Отложить (вернётся во «Входящие» в срок)" onClick={(e) => openPop(e, snoozeMenuItems([selected]))}><AlarmClock size={18} /></button>
               <button className="icon-button" aria-label="Непрочитанное" title={selected.unread ? 'Отметить прочитанным' : 'Отметить непрочитанным'} onClick={() => void toggleFlag(selected, 'seen')}>
                 <Mail size={18} />
               </button>
@@ -1372,6 +1440,10 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
                 <Trash2 size={18} />
               </button>
               <span className="toolbar-sep" />
+              {currentFolder?.role === 'junk'
+                ? <button className="icon-button" aria-label="Не спам" title="Не спам — вернуть во «Входящие»" onClick={() => void markSpam([selected], false)}><ShieldCheck size={18} /></button>
+                : <button className="icon-button" aria-label="Это спам" title="Это спам" onClick={() => void markSpam([selected], true)}><ShieldAlert size={18} /></button>}
+              <button className="icon-button" aria-label="Печать" title="Печать или сохранение в PDF" disabled={!detail} onClick={() => detail && printMessage(detail)}><Printer size={18} /></button>
               <button className="icon-button" aria-label="Открыть в новом окне" title="Открыть в отдельном окне" onClick={() => openInWindow(selected)}><ExternalLink size={18} /></button>
             </>}
             <button className="icon-button soft" aria-label="Скрыть чтение" onClick={() => setReaderOpen(false)}><PanelRightClose size={18} /></button>
@@ -1384,6 +1456,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
                 <span className="sender-line"><AddressLine strong entries={[detail.fromName ? `${detail.fromName} <${detail.fromAddress}>` : detail.fromAddress]} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>
                 {detail.to.length > 0 && <span>Кому: <AddressLine entries={detail.to} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>}
                 {detail.cc.length > 0 && <span>Копия: <AddressLine entries={detail.cc} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>}
+                {detail.unsubscribe && <span className="unsub-bar">Это рассылка · <button className="text-button" onClick={() => void doUnsubscribe(detail)}>Отписаться</button></span>}
                 <small>{formatFullDate(detail.date)}</small>
               </div>
             </div>
@@ -1439,6 +1512,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
 
       {outbox.element}
       {popMenu && <ContextMenu x={popMenu.x} y={popMenu.y} items={popMenu.items} onClose={() => setPopMenu(null)} />}
+      {snoozePick && <DuePicker title="Отложить письмо" hint="В это время письмо вернётся во «Входящие» непрочитанным" action="Отложить" onClose={() => setSnoozePick(null)} onPick={(d) => { const items = snoozePick; setSnoozePick(null); void snoozeItems(items, d) }} />}
       {duePick && <DuePicker onClose={() => setDuePick(null)} onPick={(d) => { const items = duePick; setDuePick(null); void setDueFor(items, d) }} />}
       {showScheduled && <ScheduledMail items={scheduled} onClose={() => setShowScheduled(false)} onChanged={loadScheduled} onNotice={setNotice} />}
       {rowMenu && <ContextMenu x={rowMenu.x} y={rowMenu.y} items={rowMenuItems(rowMenu.items)} onClose={() => setRowMenu(null)} />}

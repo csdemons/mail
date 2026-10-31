@@ -857,3 +857,11 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .due-input { padding: 8px 10px; border: 1px solid var(--line, #d0d7e2); border-radius: 8px; font: inherit; background: inherit; color: inherit; }
 .talk-people { border-top: 1px solid var(--line, #e5e7eb); }
 .empty-state.compact { padding: 12px; min-height: 0; }
+.login-note-warn { color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 9px; padding: 10px 12px; font-size: 13px; }
+.compose-modal { position: relative; }
+.compose-modal.dropping { outline: 2px dashed #2474ed; outline-offset: -6px; }
+.drop-overlay { position: absolute; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; gap: 10px; background: color-mix(in srgb, var(--surface, #fff) 85%, transparent); color: #2474ed; font-weight: 600; font-size: 15px; border-radius: inherit; pointer-events: none; }
+.unsub-bar { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted, #64748b); margin-top: 2px; }
+.unsub-bar .text-button { padding: 0; font-size: 12px; }
+.snooze-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: #4338ca; background: #e0e7ff; border-radius: 999px; padding: 0 6px; line-height: 16px; }
+.theme-dark .snooze-tag { background: #1e1b4b; color: #c7d2fe; }

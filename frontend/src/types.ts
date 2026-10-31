@@ -114,6 +114,8 @@ export interface MessageDetail extends MessageSummary {
   attachments: AttachmentInfo[]
   /** Отправитель просит уведомление о прочтении. */
   dispositionTo: string | null
+  /** Рассылка: как отписаться. */
+  unsubscribe: { https: string | null; mailto: string | null; oneClick: boolean } | null
 }
 
 export interface PickedFile {

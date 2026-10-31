@@ -306,10 +306,15 @@ fn check_asset(asset: &ManifestAsset) -> Result<()> {
 /// `~/.cache/rrcki-mail` (0700, владелец — мы), внутри — новый каталог (mkdir
 /// не принимает существующий), файлы создаются с O_EXCL и без перехода по ссылкам.
 pub fn private_download_dir() -> Result<PathBuf> {
+    private_dir("update")
+}
+
+/// Новый личный каталог (0700) для временных файлов: обновление, перетащенные вложения.
+pub fn private_dir(prefix: &str) -> Result<PathBuf> {
     let base = private_base()?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     for n in 0..20u32 {
-        let dir = base.join(format!("update-{}-{stamp:x}-{n}", std::process::id()));
+        let dir = base.join(format!("{prefix}-{}-{stamp:x}-{n}", std::process::id()));
         #[allow(unused_mut)] // mode() — только в unix
         let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
@@ -323,7 +328,7 @@ pub fn private_download_dir() -> Result<PathBuf> {
             Err(e) => return Err(e.into()),
         }
     }
-    Err(AppError::Other("Не удалось создать каталог для обновления".into()))
+    Err(AppError::Other("Не удалось создать временный каталог".into()))
 }
 
 #[cfg(unix)]
@@ -361,7 +366,7 @@ fn private_base() -> Result<PathBuf> {
 }
 
 /// Новый файл: не перезаписывает существующий и не идёт по символьной ссылке.
-fn create_new_file(path: &Path) -> std::io::Result<std::fs::File> {
+pub fn create_new_file(path: &Path) -> std::io::Result<std::fs::File> {
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create_new(true);
     #[cfg(unix)]

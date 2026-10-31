@@ -23,6 +23,8 @@ mod imap;
 mod nextcloud;
 #[path = "../../src-tauri/src/settings.rs"]
 mod settings;
+#[path = "../../src-tauri/src/discover.rs"]
+mod discover;
 #[path = "../../src-tauri/src/desktop.rs"]
 mod desktop;
 #[path = "../../src-tauri/src/store.rs"]

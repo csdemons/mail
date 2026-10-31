@@ -485,6 +485,36 @@ pub struct MessageDetail {
     pub attachments: Vec<AttachmentInfo>,
     /// Отправитель просит уведомление о прочтении (адрес из Disposition-Notification-To).
     pub disposition_to: Option<String>,
+    /// Рассылка: способы отписаться (List-Unsubscribe).
+    pub unsubscribe: Option<Unsubscribe>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Unsubscribe {
+    pub https: Option<String>,
+    pub mailto: Option<String>,
+    /// RFC 8058: отписка одним POST-запросом, без браузера.
+    pub one_click: bool,
+}
+
+/// List-Unsubscribe: `<mailto:…>, <https://…>` и List-Unsubscribe-Post (RFC 2369, 8058).
+pub fn unsubscribe_of(msg: &mail_parser::Message<'_>) -> Option<Unsubscribe> {
+    let raw = msg.header_raw("List-Unsubscribe")?;
+    let mut https = None;
+    let mut mailto = None;
+    for part in raw.split(',') {
+        let v: String = part.trim().trim_start_matches('<').trim_end_matches('>').chars().filter(|c| !c.is_whitespace()).collect();
+        let lower = v.to_ascii_lowercase();
+        if lower.starts_with("https://") && https.is_none() && url::Url::parse(&v).is_ok() {
+            https = Some(v);
+        } else if lower.starts_with("mailto:") && mailto.is_none() {
+            mailto = Some(v);
+        }
+    }
+    let one_click = https.is_some()
+        && msg.header_raw("List-Unsubscribe-Post").is_some_and(|p| p.to_ascii_lowercase().replace(' ', "").contains("list-unsubscribe=one-click"));
+    (https.is_some() || mailto.is_some()).then_some(Unsubscribe { https, mailto, one_click })
 }
 
 fn addresses(addr: Option<&mail_parser::Address<'_>>) -> Vec<String> {
@@ -934,6 +964,7 @@ fn detail_from(summary: MessageSummary, body: &[u8], parsed: Option<&mail_parser
 
     let mut summary = summary;
     summary.has_attachments = !attachments.is_empty();
+    let unsubscribe = parsed.and_then(unsubscribe_of);
     let disposition_to = parsed
         .and_then(|m| m.header_raw("Disposition-Notification-To"))
         .map(|v| v.trim().to_string())
@@ -950,6 +981,7 @@ fn detail_from(summary: MessageSummary, body: &[u8], parsed: Option<&mail_parser
         remote_images,
         attachments,
         disposition_to,
+        unsubscribe,
     }
 }
 
@@ -1321,6 +1353,71 @@ pub async fn due_in(conn: &mut Connection, folder: &str) -> Result<Vec<MessageSu
     index_summaries(conn, folder, &with_due).await
 }
 
+// ---------------------------------------------------------------- спам и «отложить»
+
+/// Папка «Спам» своего ящика (создаётся при необходимости).
+pub async fn junk_folder(conn: &mut Connection) -> Result<String> {
+    if let Some(f) = role_folder(conn, FolderRole::Junk).await? {
+        return Ok(f);
+    }
+    conn.session.create("Junk").await?;
+    Ok("Junk".into())
+}
+
+/// Папка «Отложенные» (создаётся при первом использовании).
+pub async fn snoozed_folder(conn: &mut Connection, create: bool) -> Result<Option<String>> {
+    let names: Vec<_> = conn.session.list(Some(""), Some("*")).await?.try_collect().await?;
+    let found = names.iter().map(|n| n.name().to_string()).find(|n| {
+        let leaf = utf7_imap::decode_utf7_imap(n.clone()).to_lowercase();
+        leaf == "отложенные" || leaf == "snoozed"
+    });
+    drop(names);
+    if found.is_some() || !create {
+        return Ok(found);
+    }
+    let name = utf7_imap::encode_utf7_imap("Отложенные".to_string());
+    conn.session.create(&name).await?;
+    Ok(Some(name))
+}
+
+/// Префикс ключевого слова «вернуть во Входящие»: `atomsnooze-ГГГГММДДЧЧММ` (UTC).
+pub const SNOOZE_PREFIX: &str = "atomsnooze-";
+
+/// Письма «Отложенных», срок которых наступил.
+pub async fn snoozed_due(conn: &mut Connection, folder: &str, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<u32>> {
+    conn.ensure_selected(folder).await?;
+    let uids: Vec<u32> = conn.session.uid_search("UNDELETED").await?.into_iter().collect();
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(&uids), "(UID FLAGS)").await?.try_collect().await?;
+    Ok(fetches
+        .iter()
+        .filter_map(|f| {
+            let until = f.flags().find_map(|x| match x {
+                Flag::Custom(k) => k.strip_prefix(SNOOZE_PREFIX).and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y%m%d%H%M").ok()),
+                _ => None,
+            })?;
+            (until.and_utc() <= now).then_some(f.uid?)
+        })
+        .collect())
+}
+
+/// Снять все ключевые слова «отложено» у писем.
+pub async fn clear_snooze(conn: &mut Connection, folder: &str, uids: &[u32]) -> Result<()> {
+    conn.ensure_selected(folder).await?;
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), "(UID FLAGS)").await?.try_collect().await?;
+    let kws: std::collections::BTreeSet<String> = fetches
+        .iter()
+        .flat_map(|f| f.flags().filter_map(|x| match x { Flag::Custom(k) if k.starts_with(SNOOZE_PREFIX) => Some(k.to_string()), _ => None }).collect::<Vec<_>>())
+        .collect();
+    if !kws.is_empty() {
+        let list: Vec<String> = kws.into_iter().collect();
+        let _: Vec<Fetch> = conn.session.uid_store(uid_set(uids), format!("-FLAGS.SILENT ({})", list.join(" "))).await?.try_collect().await?;
+    }
+    Ok(())
+}
+
 /// Поставить или снять ключевое слово (категория, $MDNSent) у писем.
 pub async fn set_keyword(conn: &mut Connection, folder: &str, uids: &[u32], keyword: &str, value: bool) -> Result<()> {
     if !valid_keyword(keyword) {
@@ -1347,6 +1444,14 @@ pub enum FlagKind {
 
 /// Ключевое слово «Важное» — совместимо с меткой «Важное» веб-почты SOGo.
 pub const IMPORTANT: &str = "$label1";
+
+/// Флаг сразу у нескольких писем.
+pub async fn set_flag_many(conn: &mut Connection, folder: &str, uids: &[u32], flag: FlagKind, value: bool) -> Result<()> {
+    for uid in uids {
+        set_flag(conn, folder, *uid, flag, value).await?;
+    }
+    Ok(())
+}
 
 pub async fn set_flag(
     conn: &mut Connection,

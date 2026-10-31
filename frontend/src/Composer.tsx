@@ -6,6 +6,7 @@ import RichEditor, { type RichEditorHandle } from './RichEditor'
 import NcFilePicker from './NcFilePicker'
 import type { Contact, Draft, MailTemplate, PickedFile } from './types'
 import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './sending'
+import { fileToBase64 } from './mailTools'
 
 interface Props {
   from: string
@@ -119,6 +120,20 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   const [files, setFiles] = useState<PickedFile[]>(draft.files ?? [])
   const [receipt, setReceipt] = useState(draft.readReceipt ?? loadSendPrefs().receiptDefault)
   const [schedOpen, setSchedOpen] = useState(false)
+  const [dropping, setDropping] = useState(false)
+
+  /** Файлы, перетащенные в окно письма (из проводника или с рабочего стола), — во вложения. */
+  async function dropFiles(list: FileList) {
+    setDropping(false)
+    for (const file of Array.from(list)) {
+      try {
+        const picked = await api.attachData(file.name, await fileToBase64(file))
+        setFiles((l) => [...l, picked])
+      } catch (e) {
+        setError(`${file.name}: ${errorText(e)}`)
+      }
+    }
+  }
   const [tplOpen, setTplOpen] = useState(false)
   const [templates, setTemplates] = useState<MailTemplate[] | null>(null)
   const [tplName, setTplName] = useState('')
@@ -210,7 +225,14 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}>
-      <form className="compose-modal" onSubmit={submit}>
+      <form
+        className={`compose-modal ${dropping ? 'dropping' : ''}`}
+        onSubmit={submit}
+        onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDropping(true) } }}
+        onDragLeave={(e) => { if (e.currentTarget === e.target) setDropping(false) }}
+        onDrop={(e) => { if (e.dataTransfer.files.length > 0) { e.preventDefault(); e.stopPropagation(); void dropFiles(e.dataTransfer.files) } }}
+      >
+        {dropping && <div className="drop-overlay"><Paperclip size={22} /> Отпустите, чтобы вложить файлы</div>}
         <div className="compose-header">
           <div><strong>{TITLES[draft.mode]}</strong><small>От: {from}</small></div>
           <button type="button" className="icon-button" disabled={busy} onClick={onClose} aria-label="Закрыть"><X size={18} /></button>

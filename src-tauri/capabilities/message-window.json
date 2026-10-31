@@ -40,6 +40,10 @@
     "allow-set-keywords",
     "allow-set-due",
     "allow-templates-list",
-    "allow-template-save"
+    "allow-template-save",
+    "allow-attach-data",
+    "allow-mark-spam",
+    "allow-unsubscribe",
+    "allow-snooze"
   ]
 }
