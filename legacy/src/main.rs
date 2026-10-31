@@ -35,6 +35,10 @@ mod mbox;
 mod pst;
 #[path = "../../src-tauri/src/transfer.rs"]
 mod transfer;
+#[path = "../../src-tauri/src/winacl.rs"]
+mod winacl;
+#[path = "../../src-tauri/src/netio.rs"]
+mod netio;
 #[path = "../../src-tauri/src/totp.rs"]
 mod totp;
 #[path = "../../src-tauri/src/smtp.rs"]
@@ -43,6 +47,24 @@ mod smtp;
 mod sogo;
 #[path = "../../src-tauri/src/updater.rs"]
 mod updater;
+
+/// Команды, разрешённые окнам писем (тот же список, что в capabilities сборки на Tauri 2).
+fn message_window_commands() -> &'static std::collections::HashSet<String> {
+    static SET: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let caps: serde_json::Value = serde_json::from_str(include_str!("../../src-tauri/capabilities/message-window.json")).expect("message-window.json");
+        caps["permissions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str()?.strip_prefix("allow-").map(|c| c.replace('-', "_")))
+            .collect()
+    })
+}
+
+fn window_may_call(label: &str, command: &str) -> bool {
+    label == "main" || (label.starts_with("msg-") && message_window_commands().contains(command))
+}
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -54,7 +76,23 @@ fn main() {
             commands::setup_desktop(&handle);
             Ok(())
         })
-        .invoke_handler(commands::app_commands!())
+        .invoke_handler({
+            // В Tauri 1 нет разрешений по окнам (capabilities), поэтому то же правило,
+            // что в сборке на Tauri 2, проверяется здесь: главное окно — все команды,
+            // окна писем (msg-*) — только список из message-window.json, остальные
+            // окна (редактор документов doc-*) — ни одной.
+            let handler = commands::app_commands!();
+            move |invoke: tauri::Invoke<tauri::Wry>| {
+                let label = invoke.message.window().label().to_string();
+                let command = invoke.message.command().to_string();
+                if window_may_call(&label, &command) {
+                    handler(invoke)
+                } else {
+                    log::warn!("command {command} refused for window {label}");
+                    invoke.resolver.reject(format!("Команда «{command}» недоступна в этом окне"));
+                }
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while running RRCKI Mail")
         .run(|app, event| {
@@ -62,4 +100,19 @@ fn main() {
                 commands::on_exit_requested(app, || api.prevent_exit());
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_get_only_their_commands() {
+        assert!(window_may_call("main", "logout"));
+        assert!(window_may_call("msg-1", "get_message"));
+        assert!(!window_may_call("msg-1", "logout"));
+        assert!(!window_may_call("msg-1", "account_switch"));
+        assert!(!window_may_call("doc-1", "get_message"));
+        assert!(!window_may_call("other", "list_folders"));
+    }
 }

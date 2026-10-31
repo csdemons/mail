@@ -12,6 +12,8 @@ mod discover;
 mod desktop;
 mod store;
 mod totp;
+mod netio;
+mod winacl;
 mod mbox;
 mod pst;
 mod transfer;

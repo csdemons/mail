@@ -190,6 +190,7 @@ fn create_private_dir(dir: &Path) -> Result<()> {
         if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
             return Err(fail("не является каталогом (ссылка?)".into()));
         }
+        crate::winacl::restrict(dir);
     }
     Ok(())
 }
@@ -640,27 +641,62 @@ async fn sync_folder(store: &Store, conn: &mut imap::Connection, folder: &str) -
     }
     store.evict(folder);
     // Исходники за срок хранения, новые сначала.
-    let want: Vec<u32> = {
+    let want: Vec<(u32, u32)> = {
         let mut inner = store.lock();
         let idx = store.ensure_loaded(&mut inner, folder);
-        let mut w: Vec<(i64, u32)> = idx.items.values().filter(|e| !e.cached && store.wanted(&e.s, now)).map(|e| (e.timestamp(), e.s.uid)).collect();
+        let mut w: Vec<(i64, u32, u32)> = idx.items.values().filter(|e| !e.cached && store.wanted(&e.s, now)).map(|e| (e.timestamp(), e.s.uid, e.s.size)).collect();
         w.sort_by_key(|h| std::cmp::Reverse(h.0));
-        w.into_iter().map(|(_, u)| u).take(2000).collect()
+        w.into_iter().map(|(_, u, size)| (u, size)).take(2000).collect()
     };
-    for chunk in want.chunks(10) {
+    for batch in body_batches(&want) {
         if store.is_closed() {
             return Ok(());
         }
-        for (uid, raw) in imap::raw_bodies(conn, chunk).await? {
+        // Письма сохраняются по одному: в памяти — не больше одной порции.
+        for (uid, raw) in imap::raw_bodies(conn, &batch, MAX_RAW_BYTES).await? {
             store.put_raw(folder, uid, &raw);
         }
     }
     Ok(())
 }
 
+/// Объём одной порции загрузки исходников (по размерам из индекса).
+const BATCH_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Порции UID: не больше 10 писем и не больше `BATCH_BYTES` (большое письмо — отдельно).
+pub fn body_batches(want: &[(u32, u32)]) -> Vec<Vec<u32>> {
+    let mut out: Vec<Vec<u32>> = Vec::new();
+    let mut cur: Vec<u32> = Vec::new();
+    let mut bytes = 0u64;
+    for &(uid, size) in want {
+        let size = u64::from(size);
+        if !cur.is_empty() && (cur.len() >= 10 || bytes + size > BATCH_BYTES) {
+            out.push(std::mem::take(&mut cur));
+            bytes = 0;
+        }
+        cur.push(uid);
+        bytes += size;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_batches_bounded_by_count_and_bytes() {
+        let mb = 1024 * 1024;
+        let small: Vec<(u32, u32)> = (1..=25).map(|u| (u, 1000)).collect();
+        assert_eq!(body_batches(&small).iter().map(Vec::len).collect::<Vec<_>>(), [10, 10, 5]);
+        let big = [(1, 9 * mb), (2, 9 * mb), (3, 15 * mb), (4, 1000)];
+        assert_eq!(body_batches(&big), vec![vec![1], vec![2], vec![3, 4]]);
+        let mixed = [(1, 5 * mb), (2, 5 * mb), (3, 5 * mb), (4, 5 * mb)];
+        assert_eq!(body_batches(&mixed), vec![vec![1, 2, 3], vec![4]]);
+    }
 
     fn summary(folder: &str, uid: u32, subject: &str, days_ago: i64) -> MessageSummary {
         MessageSummary {

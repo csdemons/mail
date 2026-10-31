@@ -74,6 +74,8 @@ pub struct AppState {
     others: Mutex<HashMap<String, Connection>>,
     /// Последний UID «Входящих» других учётных записей (для уведомлений).
     others_last: Mutex<HashMap<String, u32>>,
+    /// Переключение, отключение учётной записи и выход выполняются по одному.
+    switching: Mutex<()>,
 }
 
 impl AppState {
@@ -651,6 +653,7 @@ pub async fn auto_login(app: AppHandle, state: State<'_, AppState>) -> Result<Op
 
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Option<bool>) -> Result<()> {
+    let _one_at_a_time = state.switching.lock().await;
     // Окна писем показывают данные этой учётной записи.
     host::close_message_windows(&app);
     // Телефон потерян: с экрана блокировки можно выйти со сбросом защиты кодом.
@@ -720,6 +723,12 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
         if let Err(e) = settings::remove_account(&app, &key) {
             log::warn!("account list not updated: {e}");
         }
+    }
+    // Последняя учётная запись — в памяти не остаётся ни паролей, ни соединений.
+    if settings::load_accounts(&app).is_empty() {
+        state.session_passwords.lock().await.clear();
+        state.others_last.lock().await.clear();
+        drop_others(&state).await;
     }
     Ok(())
 }
@@ -3449,6 +3458,7 @@ pub async fn account_add(
 /// остаётся в памяти, чтобы вернуться без ввода.
 #[tauri::command]
 pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<LoginResult> {
+    let _one_at_a_time = state.switching.lock().await;
     let s = settings::load_accounts(&app)
         .into_iter()
         .find(|a| settings::account_key(a) == key)
@@ -3497,6 +3507,7 @@ pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: Str
 /// Отключить неактивную учётную запись: забыть пароль и письма на компьютере.
 #[tauri::command]
 pub async fn account_remove(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<()> {
+    let _one_at_a_time = state.switching.lock().await;
     if active_key(&state).await.as_deref() == Some(key.as_str()) {
         return Err(AppError::Other("Это текущая учётная запись — для неё «Выйти»".into()));
     }

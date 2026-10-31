@@ -903,3 +903,4 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .unified-account { position: absolute; left: 6px; top: 12px; bottom: 12px; width: 4px; border-radius: 2px; }
 .unified-label { display: flex; align-items: center; gap: 4px; }
 .unified-errors { padding: 6px 12px; font-size: 12px; color: #b45309; }
+.transfer-warning { color: #b45309; }

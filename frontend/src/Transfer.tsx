@@ -184,6 +184,7 @@ export function TransferSettings({ folders, label, onNotice, onImported }: {
 
       <strong className="transfer-sub"><Archive size={15} /> Резервная копия писем</strong>
       <span className="settings-hint">Папки сохраняются в файлы .mbox в выбранной папке компьютера — их открывает Thunderbird, а импорт выше возвращает письма на сервер с флагами.</span>
+      <span className="settings-hint transfer-warning" role="note">Файлы копии не зашифрованы: в них вся переписка открытым текстом. Сохраняйте копию только на зашифрованный диск или носитель и не оставляйте в общих папках.</span>
       <label><input type="radio" name="backup-scope" checked={allFolders} onChange={() => setAllFolders(true)} /> Все папки</label>
       <label><input type="radio" name="backup-scope" checked={!allFolders} onChange={() => setAllFolders(false)} /> Выбранные папки</label>
       {!allFolders && <div className="transfer-backup-folders" aria-label="Папки для копии">

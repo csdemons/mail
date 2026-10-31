@@ -146,7 +146,27 @@ jobs:
         timeout-minutes: 20
         working-directory: src-tauri
         run: cargo test --lib
-      - run: npx tauri build --target universal-apple-darwin --bundles app,dmg
+      # Подпись Developer ID и нотаризация Apple — если в секретах среды есть сертификат
+      # (APPLE_CERTIFICATE — .p12 в base64, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+      # APPLE_ID, APPLE_PASSWORD — пароль приложения, APPLE_TEAM_ID); иначе подпись ad-hoc.
+      - name: Build (.app, .dmg)
+        shell: bash
+        env:
+          MAC_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          MAC_CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          MAC_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MAC_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          MAC_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$MAC_CERT" ] && [ -n "$MAC_IDENTITY" ]; then
+            export APPLE_CERTIFICATE="$MAC_CERT" APPLE_CERTIFICATE_PASSWORD="$MAC_CERT_PASSWORD" APPLE_SIGNING_IDENTITY="$MAC_IDENTITY"
+            if [ -n "$MAC_APPLE_ID" ]; then export APPLE_ID="$MAC_APPLE_ID" APPLE_PASSWORD="$MAC_APPLE_PASSWORD" APPLE_TEAM_ID="$MAC_TEAM_ID"; fi
+            echo "Подпись Developer ID: $MAC_IDENTITY"
+          else
+            echo "::warning::Нет сертификата Apple Developer ID — программа для macOS подписана ad-hoc (Gatekeeper спросит разрешение при первом запуске)."
+          fi
+          npx tauri build --target universal-apple-darwin --bundles app,dmg
       - name: Archive .app (встроенное обновление) и проверка подписи
         shell: bash
         run: |

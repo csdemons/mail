@@ -145,7 +145,14 @@ fn write_private(path: &std::path::Path, raw: &[u8]) -> Result<()> {
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(not(unix))]
-    std::fs::write(&tmp, raw)?;
+    {
+        std::fs::write(&tmp, raw)?;
+        // Windows: явный DACL — только пользователь, SYSTEM и администраторы.
+        if let Some(dir) = path.parent() {
+            crate::winacl::restrict(dir);
+        }
+        crate::winacl::restrict(&tmp);
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

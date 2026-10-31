@@ -234,6 +234,9 @@ fn notify_test_log(title: &str, body: &str) -> bool {
 
 /// Всплывающее уведомление ОС (Windows — центр уведомлений, Linux — служба уведомлений рабочего стола).
 pub fn notify(app: &AppHandle, title: &str, body: &str) -> Result<()> {
+    // Политика администратора: что из письма можно показывать в уведомлении ОС.
+    let (title, body) = crate::policy::load().redact_notification(title, body);
+    let (title, body) = (title.as_str(), body.as_str());
     if notify_test_log(title, body) {
         return Ok(());
     }

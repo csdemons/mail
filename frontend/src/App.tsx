@@ -316,6 +316,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const acc = useAccounts(() => pollSecs.current, () => prefsRef.current, setNotice)
   const switchAccount = (key: string, open?: MessageSummary) => { setNotice('Переключение учётной записи…'); void onSwitch(key, open).then((err) => { if (err) setNotice(err) }) }
   const [unified, setUnified] = useState(false)
+  const [notifyPolicy, setNotifyPolicy] = useState<'full' | 'sender' | 'none'>('full')
+  useEffect(() => { api.getPolicy().then((p) => setNotifyPolicy(p.notificationContent ?? 'full')).catch(() => undefined) }, [])
   // Значок в трее: непрочитанные во «Входящих» всех учётных записей.
   const othersUnseen = Object.values(acc.unread).reduce<number>((a, n) => a + (n ?? 0), 0)
   useEffect(() => { void api.setUnread(inboxUnseen + othersUnseen).catch(() => undefined) }, [inboxUnseen, othersUnseen])
@@ -1597,7 +1599,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <label><input type="checkbox" checked={prefs.mail} onChange={(e) => updatePrefs({ mail: e.target.checked })} /> О новых письмах</label>
             <label><input type="checkbox" checked={prefs.shared} disabled={!prefs.mail} onChange={(e) => updatePrefs({ shared: e.target.checked })} /> Включая подключённые (общие) ящики</label>
             <label><input type="checkbox" checked={prefs.chat} onChange={(e) => updatePrefs({ chat: e.target.checked })} /> О сообщениях в чате</label>
-            <label><input type="checkbox" checked={prefs.preview} onChange={(e) => updatePrefs({ preview: e.target.checked })} /> Показывать тему письма и текст сообщения</label>
+            <label><input type="checkbox" checked={prefs.preview && notifyPolicy === 'full'} disabled={notifyPolicy !== 'full'} onChange={(e) => updatePrefs({ preview: e.target.checked })} /> Показывать тему письма и текст сообщения</label>
+            {notifyPolicy !== 'full' && <span className="settings-hint">{notifyPolicy === 'none' ? 'Администратор разрешил показывать в уведомлениях только сам факт нового письма или сообщения.' : 'Администратор запретил показывать в уведомлениях тему и текст.'}</span>}
             <button className="text-button" onClick={() => notify('Atom Mail', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
           </div>
           <SignatureSettings signature={signature} onSaved={(text, msg) => { setSignature(text); setNotice(msg) }} />

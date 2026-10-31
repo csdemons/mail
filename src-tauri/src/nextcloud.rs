@@ -103,7 +103,7 @@ pub async fn login_flow_start(base: &Url) -> Result<LoginFlow> {
     if !resp.status().is_success() {
         return Err(status_error(resp.status(), "Вход в Nextcloud"));
     }
-    let v: Value = resp.json().await.map_err(net_error)?;
+    let v: Value = crate::netio::json_limited(resp, crate::netio::SMALL_LIMIT).await?;
     let s = |p: &str| v.pointer(p).and_then(Value::as_str).map(str::to_string);
     let endpoint = s("/poll/endpoint").ok_or_else(|| AppError::Other("Nextcloud не вернул адрес проверки входа".into()))?;
     let poll_endpoint = Url::parse(&endpoint).map_err(|e| AppError::Other(e.to_string()))?;
@@ -133,7 +133,7 @@ pub async fn login_flow_poll(base: &Url, flow: &LoginFlow) -> Result<Option<NcCr
     if !resp.status().is_success() {
         return Err(status_error(resp.status(), "Вход в Nextcloud"));
     }
-    let v: Value = resp.json().await.map_err(net_error)?;
+    let v: Value = crate::netio::json_limited(resp, crate::netio::SMALL_LIMIT).await?;
     let login = v["loginName"].as_str().unwrap_or_default().to_string();
     let app_password = v["appPassword"].as_str().unwrap_or_default().to_string();
     if login.is_empty() || app_password.is_empty() {
@@ -194,7 +194,7 @@ impl Nc {
         if !status.is_success() {
             return Err(status_error(status, what));
         }
-        let text = resp.text().await.map_err(net_error)?;
+        let text = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
         let v = if text.trim().is_empty() { Value::Null } else {
             serde_json::from_str(&text).map_err(|_| AppError::Other(format!("{what}: Nextcloud вернул не JSON")))?
         };
@@ -240,10 +240,10 @@ impl Nc {
         if !ct.starts_with("image/") {
             return Ok(None);
         }
-        let bytes = resp.bytes().await.map_err(net_error)?;
-        if bytes.len() > 2 * 1024 * 1024 {
+        // Аватар больше 2 МБ не нужен: загрузка прерывается на пределе.
+        let Ok(bytes) = crate::netio::read_limited(resp, 2 * 1024 * 1024).await else {
             return Ok(None);
-        }
+        };
         Ok(Some(format!("data:{ct};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes))))
     }
 
@@ -1085,7 +1085,7 @@ impl Nc {
         if resp.status().as_u16() != 207 {
             return Err(status_error(resp.status(), "Файлы"));
         }
-        let xml = resp.text().await.map_err(net_error)?;
+        let xml = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
         let root = self.files_root_path()?;
         let decoded_root = percent_encoding::percent_decode_str(&root).decode_utf8_lossy().to_string();
         let mut list: Vec<NcFile> = parse_file_list(&xml, &decoded_root)?.into_iter().filter(|f| f.path != path).collect();
@@ -1288,7 +1288,7 @@ impl Nc {
         if resp.status().as_u16() != 207 {
             return Err(status_error(resp.status(), "Файл"));
         }
-        let xml = resp.text().await.map_err(net_error)?;
+        let xml = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
         let root = self.files_root_path()?;
         let decoded_root = percent_encoding::percent_decode_str(&root).decode_utf8_lossy().to_string();
         parse_file_list(&xml, &decoded_root)?
@@ -1350,6 +1350,26 @@ mod tests {
         assert!(!ok("http://eurooffice.nrcki.ru/"));
         let local = url::Url::parse("https://localhost:8443/x").unwrap();
         assert!(!editor_url_allowed(&local, &url::Url::parse("https://example.org/").unwrap()));
+        // Служебные адреса: только about:blank и blob: своих серверов.
+        assert!(!ok("data:text/html,<form>login</form>"));
+        assert!(!ok("javascript:alert(1)"));
+        assert!(!ok("about:config"));
+        assert!(ok("blob:https://eurooffice.nrcki.ru/1234-5678"));
+        assert!(!ok("blob:https://evil.example/1234"));
+        // Порт, логин в адресе, похожие имена.
+        assert!(!ok("https://eurooffice.nrcki.ru:8443/"));
+        assert!(!ok("https://cloud.nrcki.ru@evil.example/"));
+        assert!(!ok("https://evilnrcki.ru/"));
+        assert!(!ok("https://cloud.nrcki.ru.evil.example/"));
+        assert!(ok("https://NRCKI.ru/"));
+        // IP-адрес и публичный домен второго уровня — только сам сервер.
+        let ip = url::Url::parse("https://10.0.0.5/x").unwrap();
+        assert!(editor_url_allowed(&ip, &url::Url::parse("https://10.0.0.5/y").unwrap()));
+        assert!(!editor_url_allowed(&ip, &url::Url::parse("https://1.0.0.5/").unwrap()));
+        let uk = url::Url::parse("https://nc.example.co.uk/").unwrap();
+        assert!(editor_url_allowed(&uk, &url::Url::parse("https://docs.example.co.uk/").unwrap()));
+        let suffix = url::Url::parse("https://firm.co.uk/").unwrap();
+        assert!(!editor_url_allowed(&suffix, &url::Url::parse("https://other.co.uk/").unwrap()));
     }
 
     #[test]
@@ -1532,18 +1552,33 @@ pub enum UploadSource {
     File(std::path::PathBuf),
 }
 
-/// Адрес можно открыть в окне редактора: тот же сервер, что Nextcloud, или его
-/// поддомен в том же домене (сервер документов, например eurooffice.<домен>), только https.
+/// Адрес можно открыть в окне редактора: тот же сервер, что Nextcloud (схема, хост и
+/// порт), или по https на стандартном порту — поддомен родительского домена Nextcloud
+/// (сервер документов, например eurooffice.<домен>). Для IP-адресов, localhost и
+/// адресов в «публичных» доменах второго уровня (co.uk, com.ru, msk.ru …) — только
+/// сам сервер. Из служебных адресов — только about:blank/about:srcdoc и blob: своих
+/// серверов; data: и javascript: запрещены (подложная страница прямо в окне).
 pub fn editor_url_allowed(base: &url::Url, u: &url::Url) -> bool {
-    if matches!(u.scheme(), "about" | "blob" | "data") {
-        return true;
+    match u.scheme() {
+        "about" => return matches!(u.as_str(), "about:blank" | "about:srcdoc"),
+        "blob" => return url::Url::parse(u.path()).is_ok_and(|inner| inner.scheme() != "blob" && editor_url_allowed(base, &inner)),
+        "https" | "http" => {}
+        _ => return false,
     }
     let (Some(host), Some(base_host)) = (u.host_str(), base.host_str()) else { return false };
     if u.scheme() == base.scheme() && host == base_host && u.port_or_known_default() == base.port_or_known_default() {
         return true;
     }
-    // Родительский домен Nextcloud (cloud.nrcki.ru → nrcki.ru); для адресов вида localhost — только сам хост.
-    let parent = base_host.split_once('.').map(|(_, p)| p).filter(|p| p.contains('.'));
-    u.scheme() == "https" && parent.is_some_and(|p| host == p || host.ends_with(&format!(".{p}")))
+    if u.scheme() != "https" || u.port().is_some_and(|p| p != 443) || !u.username().is_empty() {
+        return false;
+    }
+    // Родительский домен Nextcloud (cloud.nrcki.ru → nrcki.ru) — только для доменных имён.
+    if !matches!(base.host(), Some(url::Host::Domain(_))) {
+        return false;
+    }
+    let Some(parent) = base_host.split_once('.').map(|(_, p)| p).filter(|p| p.contains('.')) else { return false };
+    let labels: Vec<&str> = parent.split('.').collect();
+    let public_suffix = labels.len() == 2 && matches!(labels[0], "co" | "com" | "org" | "net" | "gov" | "edu" | "ac" | "msk" | "spb" | "nov" | "gob" | "or" | "ne");
+    !public_suffix && (host == parent || host.ends_with(&format!(".{parent}")))
 }
 

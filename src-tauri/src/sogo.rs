@@ -124,7 +124,7 @@ impl SogoSession {
         }
         let resp = req.send().await.map_err(net)?;
         let status = resp.status();
-        let text = resp.text().await.map_err(net)?;
+        let text = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
         Ok((status, text))
     }
 
@@ -158,7 +158,7 @@ impl SogoSession {
             }
             let resp = req.send().await.map_err(net)?;
             let status = resp.status();
-            let text = resp.text().await.map_err(net)?;
+            let text = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
             let list = serde_json::from_str::<Value>(&text).map(|v| parse_list(&v, source)).unwrap_or_default();
             log.push(format!("{label} → {status}, записей: {}, ответ: {}", list.len(), text.chars().take(200).collect::<String>()));
             if !list.is_empty() {
@@ -190,7 +190,7 @@ impl SogoSession {
     pub async fn defaults(&self) -> Result<Value> {
         let resp = self.req(reqwest::Method::GET, self.url("Preferences/jsonDefaults")?)?.send().await.map_err(net)?;
         let status = resp.status();
-        let text = resp.text().await.map_err(net)?;
+        let text = crate::netio::text_limited(resp, crate::netio::SMALL_LIMIT).await?;
         if !status.is_success() {
             return Err(AppError::Other(format!("SOGo: настройки недоступны (HTTP {status})")));
         }
@@ -211,7 +211,7 @@ impl SogoSession {
             .map_err(net)?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = crate::netio::text_limited(resp, 64 * 1024).await.unwrap_or_default();
             return Err(AppError::Other(format!("SOGo не сохранил фильтры (HTTP {status}): {}", text.chars().take(200).collect::<String>())));
         }
         Ok(())
@@ -226,7 +226,7 @@ impl SogoSession {
         }
         let resp = req.send().await.map_err(net)?;
         let status = resp.status();
-        Ok((status, resp.text().await.map_err(net)?))
+        Ok((status, crate::netio::text_limited(resp, crate::netio::SMALL_LIMIT).await?))
     }
 
     pub async fn logout(&self) {

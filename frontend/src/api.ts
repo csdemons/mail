@@ -279,6 +279,8 @@ export interface UiPolicy {
   rememberPassword: boolean
   allowRememberPassword: boolean
   shareLinkDays: number
+  /** Что администратор разрешает показывать во всплывающих уведомлениях. */
+  notificationContent?: 'full' | 'sender' | 'none'
 }
 
 /** Домен ссылки и, если текст ссылки выглядит как адрес другого сайта, — этот «показанный» домен. */

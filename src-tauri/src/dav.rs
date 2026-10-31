@@ -246,7 +246,7 @@ impl DavClient {
                     .map_err(|e| AppError::Other(format!("Некорректный редирект {loc}: {e}")))?;
                 continue;
             }
-            let text = resp.text().await.unwrap_or_default();
+            let text = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
             return Ok((status, url, text));
         }
         Err(AppError::Other("Слишком много перенаправлений".into()))
@@ -945,7 +945,7 @@ impl DavClient {
             .get("ETag")
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let text = resp.text().await.unwrap_or_default();
+        let text = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
         Ok((status, etag, text))
     }
 

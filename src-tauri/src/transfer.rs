@@ -432,7 +432,8 @@ async fn import_inner(creds: &Credentials, source: Source, root: &str, job: &Arc
     });
     let mut conn = imap::connect(creds).await?;
     let delimiter = imap::hierarchy_delimiter(&mut conn).await?;
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Item>(16);
+    // Очередь короткая: письмо может весить до 50 МБ, в памяти — не больше двух.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Item>(2);
     let producer = {
         let job = job.clone();
         let units = source.units.clone();
@@ -534,7 +535,9 @@ fn create_backup_dir(dir: &Path) -> Result<()> {
     };
     #[cfg(not(unix))]
     let b = std::fs::DirBuilder::new();
-    b.create(dir).map_err(|e| AppError::Other(format!("Не удалось создать папку {}: {e}", dir.display())))
+    b.create(dir).map_err(|e| AppError::Other(format!("Не удалось создать папку {}: {e}", dir.display())))?;
+    crate::winacl::restrict(dir);
+    Ok(())
 }
 
 /// Путь файла папки внутри каталога копии: «A.sbd/B.mbox» (как в Thunderbird,
@@ -580,6 +583,7 @@ async fn backup_inner(creds: &Credentials, folders: Vec<BackupFolder>, dir: &Pat
         }
     }
     let mut files = 0;
+    let max = crate::imap::MAX_MESSAGE_MB * 1024 * 1024;
     for (folder, uids) in plan {
         if job.cancelled() {
             break;
@@ -589,11 +593,23 @@ async fn backup_inner(creds: &Credentials, folders: Vec<BackupFolder>, dir: &Pat
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = std::fs::File::create(&path).map_err(|e| AppError::Other(format!("{}: {e}", path.display())))?;
+        // Новый файл только для владельца (0600), без перехода по ссылкам.
+        let file = crate::updater::create_new_file(&path).map_err(|e| AppError::Other(format!("{}: {e}", path.display())))?;
         let mut out = Some(std::io::BufWriter::new(file));
         files += 1;
         imap::all_uids(&mut conn, &folder.id).await?;
-        for chunk in uids.chunks(25) {
+        let too_big: Vec<u32> = uids.iter().filter(|(_, size)| *size > max).map(|(u, _)| *u).collect();
+        if !too_big.is_empty() {
+            job.note(format!("{}: писем больше {} МБ не сохранено: {}", folder.display.join(" / "), crate::imap::MAX_MESSAGE_MB, too_big.len()));
+            job.update(|s| {
+                s.skipped += too_big.len() as u64;
+                s.done += too_big.len() as u64;
+            });
+        }
+        let fitting: Vec<(u32, u32)> = uids.iter().copied().filter(|(_, size)| *size <= max).collect();
+        // Порции не больше 10 писем и 16 МБ: в памяти — одна порция.
+        for chunk in crate::store::body_batches(&fitting) {
+            let chunk = &chunk[..];
             if job.cancelled() {
                 break;
             }
@@ -628,6 +644,12 @@ async fn backup_inner(creds: &Credentials, folders: Vec<BackupFolder>, dir: &Pat
         if let Some(mut w) = out {
             use std::io::Write;
             w.flush()?;
+        }
+        if job.cancelled() {
+            // Недописанная папка — не копия: файл удаляется, готовые папки остаются.
+            let _ = std::fs::remove_file(&path);
+            files -= 1;
+            break;
         }
     }
     conn.logout().await;

@@ -8,12 +8,13 @@
 //!   "internalNetworks": ["10.0.0.0/8", "144.206.0.0/16"],
 //!   "rememberPassword": true,            // состояние галочки «Запомнить пароль» по умолчанию
 //!   "allowRememberPassword": true,       // false — запоминать пароль нельзя
-//!   "shareLinkDays": 30                  // срок публичных ссылок «Отправить ссылкой»; 0 — без срока
+//!   "shareLinkDays": 30,                 // срок публичных ссылок «Отправить ссылкой»; 0 — без срока
+//!   "notificationContent": "full"        // "full" | "sender" | "none" — что видно в уведомлениях ОС
 //! }
 //! ```
 //! Реестр (HKLM\SOFTWARE\Policies\RRCKI Mail): RemoteImages (REG_SZ), InternalNetworks
 //! (REG_SZ, через запятую), RememberPassword, AllowRememberPassword, ShareLinkDays,
-//! UpdateDisabled (REG_DWORD), UpdateUrl (REG_SZ).
+//! UpdateDisabled (REG_DWORD), UpdateUrl (REG_SZ), NotificationContent (REG_SZ).
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -32,6 +33,20 @@ pub enum RemoteImages {
     Off,
 }
 
+/// Что показывать во всплывающих уведомлениях ОС (они видны на экране блокировки и в
+/// центре уведомлений, в том числе посторонним).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationContent {
+    /// Отправитель и (если пользователь не отключил) тема или текст.
+    #[default]
+    Full,
+    /// Только отправитель/заголовок, без темы и текста.
+    Sender,
+    /// Только сам факт: «Atom Mail — новое уведомление».
+    None,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Policy {
@@ -44,6 +59,7 @@ pub struct Policy {
     pub local_store: Option<bool>,
     /// Наибольший срок хранения писем на компьютере, дней (0 — только индекс заголовков).
     pub offline_days: Option<u32>,
+    pub notification_content: NotificationContent,
 }
 
 /// То, что нужно интерфейсу.
@@ -56,6 +72,7 @@ pub struct UiPolicy {
     pub share_link_days: u32,
     pub local_store: bool,
     pub max_offline_days: u32,
+    pub notification_content: NotificationContent,
 }
 
 impl Policy {
@@ -68,6 +85,16 @@ impl Policy {
             share_link_days: self.share_link_days(),
             local_store: self.local_store(),
             max_offline_days: self.max_offline_days(),
+            notification_content: self.notification_content,
+        }
+    }
+
+    /// Текст уведомления по политике администратора.
+    pub fn redact_notification(&self, title: &str, body: &str) -> (String, String) {
+        match self.notification_content {
+            NotificationContent::Full => (title.to_string(), body.to_string()),
+            NotificationContent::Sender => (title.to_string(), "Откройте Atom Mail, чтобы прочитать".to_string()),
+            NotificationContent::None => ("Atom Mail".to_string(), "Новое уведомление — откройте программу".to_string()),
         }
     }
 
@@ -131,6 +158,14 @@ pub fn load() -> Policy {
         }
         if let Some(v) = registry::dword("OfflineDays") {
             p.offline_days = Some(v);
+        }
+        if let Some(v) = registry::string("NotificationContent") {
+            match v.trim().to_ascii_lowercase().as_str() {
+                "full" => p.notification_content = NotificationContent::Full,
+                "sender" => p.notification_content = NotificationContent::Sender,
+                "none" => p.notification_content = NotificationContent::None,
+                _ => {}
+            }
         }
     }
     p
@@ -203,6 +238,16 @@ pub mod registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_content_policy() {
+        let mut p: Policy = serde_json::from_str(r#"{"notificationContent": "sender"}"#).unwrap();
+        assert_eq!(p.redact_notification("Новое письмо — Иванов", "Тема: зарплата").1, "Откройте Atom Mail, чтобы прочитать");
+        p.notification_content = NotificationContent::None;
+        let (t, b) = p.redact_notification("Новое письмо — Иванов", "Тема");
+        assert!(!t.contains("Иванов") && !b.contains("Тема"));
+        assert_eq!(Policy::default().redact_notification("a", "b"), ("a".to_string(), "b".to_string()));
+    }
 
     #[test]
     fn networks() {

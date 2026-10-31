@@ -328,7 +328,10 @@ pub fn private_dir(prefix: &str) -> Result<PathBuf> {
             b.mode(0o700);
         }
         match b.create(&dir) {
-            Ok(()) => return Ok(dir),
+            Ok(()) => {
+                crate::winacl::restrict(&dir);
+                return Ok(dir);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.into()),
         }
@@ -494,6 +497,20 @@ pub fn install(variant: &str, file: &Path) -> Result<InstallResult> {
     }
 }
 
+fn codesign_valid(app: &Path) -> bool {
+    std::process::Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(app).status().is_ok_and(|s| s.success())
+}
+
+/// Team ID подписи (`None` — подпись ad-hoc или её нет).
+fn team_id(app: &Path) -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/codesign").arg("-dv").arg(app).output().ok()?;
+    parse_team_id(&String::from_utf8_lossy(&out.stderr))
+}
+
+fn parse_team_id(codesign_dv: &str) -> Option<String> {
+    codesign_dv.lines().find_map(|l| l.strip_prefix("TeamIdentifier=")).map(str::trim).filter(|t| !t.is_empty() && *t != "not set").map(str::to_string)
+}
+
 /// Папка программы `….app`, если запущена установленная программа.
 fn mac_bundle() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -516,6 +533,16 @@ fn install_mac(file: &Path) -> Result<InstallResult> {
     let Some(new_app) = new_app.filter(|_| ok) else {
         return reveal("Архив обновления не распаковался".into());
     };
+    // Подпись новой программы цела, а если текущая подписана сертификатом разработчика
+    // (Developer ID), новая подписана тем же разработчиком (Team ID).
+    if !codesign_valid(&new_app) {
+        return reveal("Подпись новой версии не прошла проверку — обновление не установлено".into());
+    }
+    if let Some(team) = team_id(&bundle) {
+        if team_id(&new_app).as_deref() != Some(team.as_str()) {
+            return reveal("Новая версия подписана другим разработчиком — обновление не установлено".into());
+        }
+    }
     let parent = bundle.parent().ok_or_else(|| AppError::Other("Папка программы неизвестна".into()))?;
     let staged = parent.join(format!(".{}.new", bundle.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
     let old = parent.join(format!(".{}.old", bundle.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
@@ -568,6 +595,12 @@ fn run_elevated(_file: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn team_id_from_codesign() {
+        assert_eq!(parse_team_id("Executable=/x\nTeamIdentifier=AB12CD34EF\nSealed Resources version=2"), Some("AB12CD34EF".into()));
+        assert_eq!(parse_team_id("Signature=adhoc\nTeamIdentifier=not set"), None);
+    }
 
     #[test]
     fn compares_versions() {

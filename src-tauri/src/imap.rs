@@ -1070,13 +1070,23 @@ pub async fn index_summaries(conn: &mut Connection, folder: &str, uids: &[u32]) 
         .collect())
 }
 
-/// Исходники писем (папка уже открыта `folder_flags`); слишком большие пропускаются.
-pub async fn raw_bodies(conn: &mut Connection, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
+/// Исходники писем (папка уже открыта `folder_flags`). Сервер отдаёт не больше
+/// `max_each + 1` байт каждого письма (частичная выборка `BODY.PEEK[]<0.N>`), поэтому
+/// размер ответа ограничен на уровне IMAP, даже если сервер сообщил неверный размер;
+/// письма больше `max_each` пропускаются.
+pub async fn raw_bodies(conn: &mut Connection, uids: &[u32], max_each: u32) -> Result<Vec<(u32, Vec<u8>)>> {
     if uids.is_empty() {
         return Ok(Vec::new());
     }
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), "(UID BODY.PEEK[])").await?.try_collect().await?;
-    Ok(fetches.iter().filter_map(|f| Some((f.uid?, f.body()?.to_vec()))).collect())
+    let query = format!("(UID BODY.PEEK[]<0.{}>)", u64::from(max_each) + 1);
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), query).await?.try_collect().await?;
+    Ok(fetches
+        .iter()
+        .filter_map(|f| {
+            let (uid, body) = (f.uid?, f.body()?);
+            (body.len() <= max_each as usize).then(|| (uid, body.to_vec()))
+        })
+        .collect())
 }
 
 /// Непрочитанные во «Входящих» (для других учётных записей — без SELECT).
@@ -1149,8 +1159,8 @@ pub async fn reconnect_now(conn: &mut Connection) -> Result<()> {
     conn.reconnect().await
 }
 
-/// UID всех писем папки (папка открывается только для чтения).
-pub async fn all_uids(conn: &mut Connection, folder: &str) -> Result<Vec<u32>> {
+/// UID и размеры всех писем папки (папка открывается только для чтения).
+pub async fn all_uids(conn: &mut Connection, folder: &str) -> Result<Vec<(u32, u32)>> {
     conn.selected = None;
     let mailbox = conn.session.examine(folder).await.map_err(|e| match e {
         async_imap::error::Error::No(_) => AppError::NotFound,
@@ -1159,9 +1169,10 @@ pub async fn all_uids(conn: &mut Connection, folder: &str) -> Result<Vec<u32>> {
     if mailbox.exists == 0 {
         return Ok(Vec::new());
     }
-    let mut uids: Vec<u32> = conn.session.uid_search("ALL").await?.into_iter().collect();
-    uids.sort_unstable();
-    Ok(uids)
+    let fetches: Vec<Fetch> = conn.session.uid_fetch("1:*", "(UID RFC822.SIZE)").await?.try_collect().await?;
+    let mut out: Vec<(u32, u32)> = fetches.iter().filter_map(|f| Some((f.uid?, f.size.unwrap_or(0)))).collect();
+    out.sort_unstable();
+    Ok(out)
 }
 
 /// Письмо для резервной копии.
@@ -1178,13 +1189,17 @@ pub async fn export_batch(conn: &mut Connection, uids: &[u32]) -> Result<Vec<Exp
     if uids.is_empty() {
         return Ok(Vec::new());
     }
-    let mut fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), "(UID FLAGS INTERNALDATE BODY.PEEK[])").await?.try_collect().await?;
+    // Не больше MAX_MESSAGE_MB на письмо — даже если сервер сообщил неверный размер.
+    let max = MAX_MESSAGE_MB as usize * 1024 * 1024;
+    let query = format!("(UID FLAGS INTERNALDATE BODY.PEEK[]<0.{}>)", max + 1);
+    let mut fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), query).await?.try_collect().await?;
     fetches.sort_by_key(|f| f.uid);
     Ok(fetches
         .iter()
         .filter_map(|f| {
             let flags = flag_state(f);
-            Some(Exported { raw: f.body()?.to_vec(), seen: !flags.unread, answered: flags.answered, flagged: flags.flagged, date: f.internal_date().map(|d| d.timestamp()) })
+            let body = f.body().filter(|b| b.len() <= max)?;
+            Some(Exported { raw: body.to_vec(), seen: !flags.unread, answered: flags.answered, flagged: flags.flagged, date: f.internal_date().map(|d| d.timestamp()) })
         })
         .collect())
 }

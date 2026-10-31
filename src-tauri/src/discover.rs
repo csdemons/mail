@@ -117,10 +117,7 @@ async fn autoconfig(domain: &str, email: &str) -> Option<Discovered> {
         if !resp.status().is_success() {
             continue;
         }
-        let Ok(body) = resp.text().await else { continue };
-        if body.len() > 256 * 1024 {
-            continue;
-        }
+        let Ok(body) = crate::netio::text_limited(resp, 256 * 1024).await else { continue };
         if let Some(mut found) = parse_autoconfig(&body, email) {
             found.source = source.into();
             return Some(found);
