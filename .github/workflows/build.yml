@@ -138,7 +138,7 @@ jobs:
         shell: bash
         run: |
           for i in 1 2 3; do
-            timeout 420 npm ci --no-audit --no-fund && exit 0
+            npm ci --no-audit --no-fund && exit 0  # в macOS нет timeout; предел — timeout-minutes шага
             echo "npm ci — попытка $i не удалась"; sleep 15
           done
           exit 1
