@@ -3198,6 +3198,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "outlook-pst"
+version = "1.2.0"
+dependencies = [
+ "byteorder",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "pango"
 version = "0.15.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3937,6 +3946,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "ed25519-dalek",
+ "encoding_rs",
  "env_logger",
  "futures",
  "getrandom 0.2.17",
@@ -3951,6 +3961,7 @@ dependencies = [
  "mime_guess",
  "native-tls",
  "open",
+ "outlook-pst",
  "percent-encoding",
  "qrcode",
  "reqwest",

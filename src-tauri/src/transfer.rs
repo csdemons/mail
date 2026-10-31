@@ -525,12 +525,15 @@ pub struct BackupFolder {
 
 /// Каталог копии: письма — личные данные, поэтому в Linux доступ только владельцу.
 fn create_backup_dir(dir: &Path) -> Result<()> {
-    let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let b = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut b = std::fs::DirBuilder::new();
         b.mode(0o700);
-    }
+        b
+    };
+    #[cfg(not(unix))]
+    let b = std::fs::DirBuilder::new();
     b.create(dir).map_err(|e| AppError::Other(format!("Не удалось создать папку {}: {e}", dir.display())))
 }
 
