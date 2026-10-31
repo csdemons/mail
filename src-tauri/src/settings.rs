@@ -114,13 +114,23 @@ pub fn load(app: &AppHandle) -> Option<Settings> {
 }
 
 pub fn save(app: &AppHandle, settings: &Settings) -> Result<()> {
-    let path = settings_path(app)?;
+    let raw = serde_json::to_vec_pretty(settings).map_err(|e| AppError::Other(e.to_string()))?;
+    write_private(&settings_path(app)?, &raw)?;
+    // Список учётных записей: сохранённая — первая в нём или обновлена на месте.
+    let mut list = load_accounts(app);
+    match list.iter_mut().find(|a| same_account(a, settings)) {
+        Some(a) => *a = settings.clone(),
+        None => list.push(settings.clone()),
+    }
+    save_accounts(app, &list)
+}
+
+/// Атомарная запись (временный файл + rename); в Linux каталог 0700, файл 0600 —
+/// другие пользователи компьютера не читают и не меняют настройки.
+fn write_private(path: &std::path::Path, raw: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let raw = serde_json::to_vec_pretty(settings).map_err(|e| AppError::Other(e.to_string()))?;
-    // Атомарно (временный файл + rename) и, в Linux, только для владельца:
-    // каталог 0700, файл 0600 — другие пользователи компьютера не читают и не меняют настройки.
     let tmp = path.with_extension("json.tmp");
     #[cfg(unix)]
     {
@@ -130,14 +140,50 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<()> {
             let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         }
         let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
-        f.write_all(&raw)?;
+        f.write_all(raw)?;
         f.sync_all()?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(not(unix))]
     std::fs::write(&tmp, raw)?;
-    std::fs::rename(&tmp, &path)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------- несколько учётных записей
+
+/// Ключ учётной записи: логин@сервер (так же называются записи в хранилище паролей).
+pub fn account_key(s: &Settings) -> String {
+    format!("{}@{}", s.username.to_lowercase(), s.host.to_lowercase())
+}
+
+fn same_account(a: &Settings, b: &Settings) -> bool {
+    account_key(a) == account_key(b)
+}
+
+fn accounts_path(app: &AppHandle) -> Result<PathBuf> {
+    Ok(crate::host::config_dir(app)?.join("accounts.json"))
+}
+
+/// Все подключённые учётные записи. До 0.19 был только settings.json — он и есть список.
+pub fn load_accounts(app: &AppHandle) -> Vec<Settings> {
+    let from_file = accounts_path(app).ok().and_then(|p| std::fs::read(p).ok()).and_then(|raw| serde_json::from_slice::<Vec<Settings>>(&raw).ok());
+    match from_file {
+        Some(list) => list,
+        None => load(app).into_iter().collect(),
+    }
+}
+
+pub fn save_accounts(app: &AppHandle, list: &[Settings]) -> Result<()> {
+    let raw = serde_json::to_vec_pretty(list).map_err(|e| AppError::Other(e.to_string()))?;
+    write_private(&accounts_path(app)?, &raw)
+}
+
+/// Убрать учётную запись из списка (пароль и письма удаляет вызывающий).
+pub fn remove_account(app: &AppHandle, key: &str) -> Result<()> {
+    let mut list = load_accounts(app);
+    list.retain(|a| account_key(a) != key);
+    save_accounts(app, &list)
 }
 
 fn entry(settings: &Settings) -> keyring::Result<keyring::Entry> {

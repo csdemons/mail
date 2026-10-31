@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type {
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus,
+  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox,
 } from './types'
 
 export interface LoginParams {
@@ -63,6 +63,13 @@ export const api = {
   templateSave: (name: string, text: string, html: string | null) => invoke<void>('template_save', { name, text, html }),
   templateDelete: (folder: string, uid: number) => invoke<void>('template_delete', { folder, uid }),
   listContacts: () => invoke<ContactsResult>('list_contacts'),
+  accountsList: () => invoke<AccountEntry[]>('accounts_list'),
+  accountAdd: (p: LoginParams) => invoke<AccountEntry>('account_add', { ...p }),
+  accountSwitch: (key: string) => invoke<LoginResult>('account_switch', { key }),
+  accountRemove: (key: string) => invoke<void>('account_remove', { key }),
+  accountsUnread: () => invoke<AccountUnread[]>('accounts_unread'),
+  accountsPoll: () => invoke<OtherNewMail[]>('accounts_poll'),
+  unifiedInbox: (limit: number) => invoke<UnifiedInbox>('unified_inbox', { limit }),
   importThunderbird: () => invoke<ImportSource[]>('import_thunderbird'),
   importPickFiles: () => invoke<ImportSource | null>('import_pick_files'),
   importPickFolder: () => invoke<ImportSource | null>('import_pick_folder'),

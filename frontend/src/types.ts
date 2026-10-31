@@ -476,3 +476,19 @@ export interface JobStatus {
   summary: string | null
   notes: string[]
 }
+
+/** Подключённая учётная запись (несколько ящиков). */
+export interface AccountEntry {
+  key: string
+  username: string
+  host: string
+  port: number
+  displayName: string
+  active: boolean
+  canSwitch: boolean
+}
+
+export interface AccountUnread { key: string; unread: number | null; error: string | null }
+export interface OtherNewMail { key: string; label: string; items: MessageSummary[] }
+export type UnifiedItem = MessageSummary & { account: string; label: string; active: boolean }
+export interface UnifiedInbox { items: UnifiedItem[]; errors: string[] }

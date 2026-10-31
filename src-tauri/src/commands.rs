@@ -68,6 +68,12 @@ pub struct AppState {
     jobs: crate::transfer::Jobs,
     /// Выбранные источники импорта: id → файлы (пути не уходят во frontend).
     import_sources: Mutex<HashMap<String, crate::transfer::Source>>,
+    /// Пароли учётных записей, добавленных без «Запомнить» (только в памяти процесса).
+    session_passwords: Mutex<HashMap<String, String>>,
+    /// Соединения с другими (неактивными) учётными записями: непрочитанные, общие «Входящие».
+    others: Mutex<HashMap<String, Connection>>,
+    /// Последний UID «Входящих» других учётных записей (для уведомлений).
+    others_last: Mutex<HashMap<String, u32>>,
 }
 
 impl AppState {
@@ -667,7 +673,7 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
         (None, Some(p)) => Some(account_key(&p.creds.username, &p.creds.host)),
         _ => settings::load(&app).map(|s| account_key(&s.username, &s.host)),
     };
-    if let (Some(account), Ok(root)) = (account, host::data_dir(&app)) {
+    if let (Some(account), Ok(root)) = (account.clone(), host::data_dir(&app)) {
         if let Ok(Err(e)) = tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await {
             log::warn!("local store not removed on logout: {e}");
         }
@@ -704,6 +710,16 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
     state.picked.lock().await.clear();
     if let Some(conn) = state.conn.lock().await.take() {
         conn.logout().await;
+    }
+    // Учётная запись уходит из списка; остальные остаются подключёнными.
+    if let Some(key) = account {
+        state.session_passwords.lock().await.remove(&key);
+        if let Some(c) = state.others.lock().await.remove(&key) {
+            c.logout().await;
+        }
+        if let Err(e) = settings::remove_account(&app, &key) {
+            log::warn!("account list not updated: {e}");
+        }
     }
     Ok(())
 }
@@ -2348,6 +2364,7 @@ pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> 
     close_store(&state).await;
     state.session.fetch_add(1, Ordering::SeqCst);
     state.jobs.cancel_all();
+    drop_others(&state).await;
     *state.pending.lock().await = Some(Pending { creds, profile, remember: None });
     *state.creds.lock().await = None;
     *state.nc.lock().await = None;
@@ -3320,6 +3337,336 @@ async fn import_contacts(mut client: dav::DavClient, book: dav::Collection, list
     Ok(text)
 }
 
+// ---------------------------------------------------------------- несколько учётных записей
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEntry {
+    key: String,
+    username: String,
+    host: String,
+    port: u16,
+    display_name: String,
+    active: bool,
+    /// Пароль известен (сохранён или введён в этой сессии) — можно переключиться.
+    can_switch: bool,
+}
+
+async fn active_key(state: &AppState) -> Option<String> {
+    if let Some(c) = state.creds.lock().await.as_ref() {
+        return Some(account_key(&c.username, &c.host));
+    }
+    state.pending.lock().await.as_ref().map(|p| account_key(&p.creds.username, &p.creds.host))
+}
+
+async fn password_of(state: &AppState, s: &Settings) -> Option<String> {
+    let key = settings::account_key(s);
+    if let Some(p) = state.session_passwords.lock().await.get(&key) {
+        return Some(p.clone());
+    }
+    let s = s.clone();
+    tokio::task::spawn_blocking(move || settings::load_password(&s)).await.ok().flatten()
+}
+
+fn creds_of(s: &Settings, password: String) -> Credentials {
+    Credentials { host: s.host.clone(), port: s.port, username: s.username.clone(), password }
+}
+
+/// Подключённые учётные записи (активная — первой).
+#[tauri::command]
+pub async fn accounts_list(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<AccountEntry>> {
+    let active = active_key(&state).await;
+    let mut out = Vec::new();
+    for s in settings::load_accounts(&app) {
+        let key = settings::account_key(&s);
+        let is_active = active.as_deref() == Some(key.as_str());
+        let can_switch = is_active || password_of(&state, &s).await.is_some();
+        out.push(AccountEntry { key, username: s.username.clone(), host: s.host.clone(), port: s.port, display_name: s.display_name.clone(), active: is_active, can_switch });
+    }
+    out.sort_by_key(|a| !a.active);
+    Ok(out)
+}
+
+/// Добавить учётную запись (без переключения на неё): пароль проверяется входом на сервер.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn account_add(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    remember: bool,
+    smtp_host: Option<String>,
+    smtp_port: Option<u16>,
+    dav_url: Option<String>,
+) -> Result<AccountEntry> {
+    if let Some(u) = dav_url.as_deref() {
+        settings::validate_dav_url(u)?;
+    }
+    let host = host.trim().to_string();
+    let username = username.trim().to_string();
+    if host.is_empty() || username.is_empty() || password.is_empty() {
+        return Err(AppError::Other("Укажите сервер, логин и пароль".into()));
+    }
+    let key = account_key(&username, &host);
+    let mut list = settings::load_accounts(&app);
+    if list.iter().any(|a| settings::account_key(a) == key) {
+        return Err(AppError::Other("Эта учётная запись уже подключена".into()));
+    }
+    if list.len() >= 10 {
+        return Err(AppError::Other("Можно подключить до 10 учётных записей".into()));
+    }
+    let s = Settings {
+        host: host.clone(),
+        port,
+        username: username.clone(),
+        smtp_host: smtp_host.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| host.clone()),
+        smtp_port: smtp_port.unwrap_or(settings::DEFAULT_SMTP_PORT),
+        dav_url: dav_url.map(|u| u.trim().to_string()).unwrap_or_default(),
+        display_name: String::new(),
+        nextcloud_url: settings::DEFAULT_NEXTCLOUD_URL.to_string(),
+        nextcloud_login: String::new(),
+        nextcloud_uid: String::new(),
+        signature: None,
+        offline_days: None,
+        categories: None,
+    };
+    let creds = creds_of(&s, password.clone());
+    let conn = imap::connect(&creds).await?;
+    let remember = remember && crate::policy::load().ui().allow_remember_password;
+    if !(remember && settings::store_password(&s, &password).is_ok()) {
+        state.session_passwords.lock().await.insert(key.clone(), password);
+    }
+    state.others.lock().await.insert(key.clone(), conn);
+    list.push(s.clone());
+    settings::save_accounts(&app, &list)?;
+    Ok(AccountEntry { key, username, host, port, display_name: String::new(), active: false, can_switch: true })
+}
+
+/// Переключиться на другую учётную запись: сессия текущей закрывается, её пароль
+/// остаётся в памяти, чтобы вернуться без ввода.
+#[tauri::command]
+pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<LoginResult> {
+    let s = settings::load_accounts(&app)
+        .into_iter()
+        .find(|a| settings::account_key(a) == key)
+        .ok_or_else(|| AppError::Other("Учётная запись не найдена".into()))?;
+    if active_key(&state).await.as_deref() == Some(key.as_str()) && state.creds.lock().await.is_some() {
+        return Ok(LoginResult { account: account_of(&s), warning: None });
+    }
+    let password = password_of(&state, &s).await.ok_or_else(|| AppError::Other("Пароль этой учётной записи не сохранён — удалите её и добавьте снова".into()))?;
+    let creds = creds_of(&s, password);
+    // Сначала проверяем вход: при ошибке остаёмся в текущей учётной записи.
+    let check = match state.others.lock().await.remove(&key) {
+        Some(c) => c,
+        None => imap::connect(&creds).await?,
+    };
+    check.logout().await;
+
+    host::close_message_windows(&app);
+    state.outbox.flush().await;
+    state.jobs.cancel_all();
+    state.import_sources.lock().await.clear();
+    if let Some(c) = state.creds.lock().await.clone() {
+        state.session_passwords.lock().await.insert(account_key(&c.username, &c.host), c.password);
+    }
+    if let Some(p) = state.pending.lock().await.take() {
+        state.session_passwords.lock().await.insert(account_key(&p.creds.username, &p.creds.host), p.creds.password);
+    }
+    *state.nc_flow.lock().await = None;
+    *state.totp_setup.lock().await = None;
+    if totp::load(&key).is_some() {
+        host::close_message_windows(&app);
+        close_store(&state).await;
+        state.session.fetch_add(1, Ordering::SeqCst);
+        *state.creds.lock().await = None;
+        if let Some(c) = state.conn.lock().await.take() {
+            c.logout().await;
+        }
+        settings::save(&app, &s)?;
+        *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: None });
+        return Ok(LoginResult { account: Account { locked: true, ..account_of(&s) }, warning: None });
+    }
+    start_session(&app, &state, creds, s.clone()).await?;
+    let warning = settings::save(&app, &s).err().map(|e| format!("Не удалось сохранить настройки: {e}"));
+    Ok(LoginResult { account: account_of(&s), warning })
+}
+
+/// Отключить неактивную учётную запись: забыть пароль и письма на компьютере.
+#[tauri::command]
+pub async fn account_remove(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<()> {
+    if active_key(&state).await.as_deref() == Some(key.as_str()) {
+        return Err(AppError::Other("Это текущая учётная запись — для неё «Выйти»".into()));
+    }
+    let list = settings::load_accounts(&app);
+    let Some(s) = list.iter().find(|a| settings::account_key(a) == key).cloned() else { return Ok(()) };
+    settings::forget_password(&s);
+    if !s.nextcloud_login.is_empty() {
+        if let Ok(base) = nextcloud::normalize_base(&s.nextcloud_url) {
+            settings::nc_forget_password(base.as_str(), &s.nextcloud_login);
+        }
+    }
+    state.session_passwords.lock().await.remove(&key);
+    state.others_last.lock().await.remove(&key);
+    if let Some(c) = state.others.lock().await.remove(&key) {
+        c.logout().await;
+    }
+    if let Ok(root) = host::data_dir(&app) {
+        let k = key.clone();
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || store::wipe(&root, &k)).await {
+            log::warn!("local store of removed account not wiped: {e}");
+        }
+    }
+    settings::remove_account(&app, &key)
+}
+
+async fn drop_others(state: &AppState) {
+    let conns: Vec<Connection> = state.others.lock().await.drain().map(|(_, c)| c).collect();
+    for c in conns {
+        c.logout().await;
+    }
+}
+
+/// Операция на соединении с неактивной учётной записью (с одним переподключением).
+async fn on_other<T, F>(state: &AppState, s: &Settings, op: F) -> Result<T>
+where
+    F: for<'c> Fn(&'c mut Connection) -> futures::future::BoxFuture<'c, Result<T>>,
+{
+    let key = settings::account_key(s);
+    let password = password_of(state, s).await.ok_or_else(|| AppError::Other("пароль не сохранён".into()))?;
+    let creds = creds_of(s, password);
+    let mut pool = state.others.lock().await;
+    for attempt in 0..2 {
+        if !pool.contains_key(&key) {
+            let c = tokio::time::timeout(Duration::from_secs(20), imap::connect(&creds)).await.map_err(|_| AppError::Timeout)??;
+            pool.insert(key.clone(), c);
+        }
+        let conn = pool.get_mut(&key).expect("соединение есть");
+        let result = match tokio::time::timeout(OP_TIMEOUT, op(conn)).await {
+            Ok(r) => r,
+            Err(_) => Err(AppError::Timeout),
+        };
+        match result {
+            Err(e) if e.is_connection() && attempt == 0 => {
+                pool.remove(&key);
+            }
+            other => return other,
+        }
+    }
+    Err(AppError::ConnectionLost)
+}
+
+async fn other_accounts(app: &AppHandle, state: &AppState) -> Vec<Settings> {
+    let active = active_key(state).await;
+    settings::load_accounts(app).into_iter().filter(|a| Some(settings::account_key(a)) != active).collect()
+}
+
+fn account_label(s: &Settings) -> String {
+    if s.display_name.trim().is_empty() { s.email() } else { format!("{} ({})", s.display_name.trim(), s.email()) }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountUnread {
+    key: String,
+    unread: Option<u32>,
+    error: Option<String>,
+}
+
+/// Непрочитанные во «Входящих» других учётных записей.
+#[tauri::command]
+pub async fn accounts_unread(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<AccountUnread>> {
+    if state.creds.lock().await.is_none() {
+        return Err(AppError::NotLoggedIn);
+    }
+    let mut out = Vec::new();
+    for s in other_accounts(&app, &state).await {
+        let key = settings::account_key(&s);
+        match on_other(&state, &s, |c| Box::pin(imap::inbox_unseen(c))).await {
+            Ok(n) => out.push(AccountUnread { key, unread: Some(n), error: None }),
+            Err(e) => out.push(AccountUnread { key, unread: None, error: Some(e.to_string()) }),
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherNewMail {
+    key: String,
+    label: String,
+    items: Vec<imap::MessageSummary>,
+}
+
+/// Новые непрочитанные письма других учётных записей (для уведомлений).
+/// Первая проверка только запоминает последний UID.
+#[tauri::command]
+pub async fn accounts_poll(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<OtherNewMail>> {
+    if state.creds.lock().await.is_none() {
+        return Err(AppError::NotLoggedIn);
+    }
+    let mut out = Vec::new();
+    for s in other_accounts(&app, &state).await {
+        let key = settings::account_key(&s);
+        let known = state.others_last.lock().await.get(&key).copied();
+        let after = known.unwrap_or(0);
+        let limit = if known.is_some() { 5 } else { 0 };
+        match on_other(&state, &s, move |c| Box::pin(imap::new_unseen(c, "INBOX", after, limit))).await {
+            Ok((items, last)) => {
+                state.others_last.lock().await.insert(key.clone(), last.max(after));
+                if !items.is_empty() {
+                    out.push(OtherNewMail { key, label: account_label(&s), items });
+                }
+            }
+            Err(e) => log::warn!("new mail check for {key}: {e}"),
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedItem {
+    account: String,
+    label: String,
+    active: bool,
+    #[serde(flatten)]
+    message: imap::MessageSummary,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedInbox {
+    items: Vec<UnifiedItem>,
+    /// Учётные записи, которые сейчас не ответили.
+    errors: Vec<String>,
+}
+
+/// Общие «Входящие»: последние письма всех учётных записей, новые сверху.
+#[tauri::command]
+pub async fn unified_inbox(app: AppHandle, state: State<'_, AppState>, limit: u32) -> Result<UnifiedInbox> {
+    let limit = limit.clamp(1, 100);
+    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let active = settings::account_key(&profile);
+    let mut items = Vec::new();
+    let mut errors = Vec::new();
+    let page = with_conn!(state, c => imap::list_messages(c, "INBOX", None, limit))?;
+    items.extend(page.items.into_iter().map(|m| UnifiedItem { account: active.clone(), label: account_label(&profile), active: true, message: m }));
+    for s in other_accounts(&app, &state).await {
+        let key = settings::account_key(&s);
+        match on_other(&state, &s, move |c| Box::pin(imap::list_messages(c, "INBOX", None, limit))).await {
+            Ok(page) => items.extend(page.items.into_iter().map(|m| UnifiedItem { account: key.clone(), label: account_label(&s), active: false, message: m })),
+            Err(e) => errors.push(format!("{}: {e}", s.email())),
+        }
+    }
+    let ts = |i: &UnifiedItem| i.message.date.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map(|d| d.timestamp()).unwrap_or(0);
+    items.sort_by_key(|i| std::cmp::Reverse(ts(i)));
+    items.truncate(limit as usize * 2);
+    Ok(UnifiedInbox { items, errors })
+}
+
 /// Список команд для `invoke_handler` — один на обе сборки.
 macro_rules! app_commands {
     () => {
@@ -3430,6 +3777,13 @@ macro_rules! app_commands {
             crate::commands::categories_get,
             crate::commands::discover_servers,
             crate::commands::attach_data,
+            crate::commands::accounts_list,
+            crate::commands::account_add,
+            crate::commands::account_switch,
+            crate::commands::account_remove,
+            crate::commands::accounts_unread,
+            crate::commands::accounts_poll,
+            crate::commands::unified_inbox,
             crate::commands::import_thunderbird,
             crate::commands::import_pick_files,
             crate::commands::import_pick_folder,

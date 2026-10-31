@@ -1079,6 +1079,12 @@ pub async fn raw_bodies(conn: &mut Connection, uids: &[u32]) -> Result<Vec<(u32,
     Ok(fetches.iter().filter_map(|f| Some((f.uid?, f.body()?.to_vec()))).collect())
 }
 
+/// Непрочитанные во «Входящих» (для других учётных записей — без SELECT).
+pub async fn inbox_unseen(conn: &mut Connection) -> Result<u32> {
+    let mb = conn.session.status("INBOX", "(MESSAGES UNSEEN)").await?;
+    Ok(mb.unseen.unwrap_or(0).min(mb.exists))
+}
+
 // ---------------------------------------------------------------- импорт и резервная копия
 
 /// Разделитель уровней папок на сервере («/» или «.»).

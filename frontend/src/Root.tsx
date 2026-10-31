@@ -7,13 +7,13 @@ import Login from './Login'
 import LockScreen from './LockScreen'
 import UpdateNotice from './UpdateNotice'
 import kurchatovLogo from './assets/kurchatov-logo.png'
-import type { Account, Settings } from './types'
+import type { Account, MessageSummary, Settings } from './types'
 
 type State =
   | { kind: 'starting' }
   | { kind: 'login'; settings: Settings | null; error: string }
   | { kind: 'locked'; account: Account }
-  | { kind: 'ready'; account: Account; warning: string }
+  | { kind: 'ready'; account: Account; warning: string; open?: MessageSummary | null }
 
 export default function Root() {
   // Окно отдельного письма: вход уже выполнен в главном окне (общее состояние бэкенда).
@@ -52,10 +52,32 @@ function MainRoot() {
   }
 
   async function logout(resetTotp = false) {
-    const settings = await api.getSettings().catch(() => null)
     await api.logout(resetTotp).catch(() => undefined)
     resetSession()
+    // Остались другие учётные записи — переходим в первую из них.
+    const next = (await api.accountsList().catch(() => [])).find((a) => a.canSwitch)
+    if (next) {
+      try {
+        const r = await api.accountSwitch(next.key)
+        setState(r.account.locked ? { kind: 'locked', account: r.account } : { kind: 'ready', account: r.account, warning: r.warning ?? '' })
+        return
+      } catch { /* экран входа */ }
+    }
+    const settings = await api.getSettings().catch(() => null)
     setState({ kind: 'login', settings, error: '' })
+  }
+
+  async function switchTo(key: string, open?: MessageSummary): Promise<string | null> {
+    try {
+      const r = await api.accountSwitch(key)
+      resetSession()
+      setState(r.account.locked
+        ? { kind: 'locked', account: r.account }
+        : { kind: 'ready', account: r.account, warning: r.warning ?? '', open: open ?? null })
+      return null
+    } catch (error) {
+      return `Не удалось переключиться: ${errorText(error)}`
+    }
   }
 
   if (state.kind === 'locked') {
@@ -90,8 +112,11 @@ function MainRoot() {
     <>
     <UpdateNotice />
     <App
+      key={`${state.account.username}@${state.account.host}`}
       account={state.account}
       initialNotice={state.warning}
+      initialOpen={state.open}
+      onSwitch={switchTo}
       onLogout={() => void logout()}
       onLock={() => {
         const account = state.account

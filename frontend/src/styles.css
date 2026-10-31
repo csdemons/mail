@@ -883,3 +883,23 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .job-summary { font-size: 13px; color: #1f9d74; }
 .job-notes { font-size: 12px; color: var(--muted); }
 .job-notes ul { margin: 4px 0 0; padding-left: 18px; max-height: 160px; overflow: auto; }
+
+/* Несколько учётных записей */
+.account-switch { position: relative; }
+.account-badge { position: static; margin-left: 4px; }
+.account-menu { min-width: 300px; display: flex; flex-direction: column; gap: 4px; }
+.account-menu .account-menu-item { display: flex; align-items: center; gap: 4px; }
+.account-pick { flex: 1; display: flex; align-items: center; gap: 8px; border: 0; background: transparent; color: inherit; padding: 6px 8px; border-radius: 8px; text-align: left; cursor: pointer; }
+.account-pick:hover:not(:disabled) { background: var(--hover); }
+.account-pick:disabled { cursor: default; }
+.account-menu-item.active .account-pick { background: var(--panel); }
+.account-pick-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.account-pick-text b, .account-pick-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-pick-text small, .account-current { color: var(--muted); font-size: 11px; }
+.status-dot.idle { background: var(--muted); }
+.add-account .login-card { max-height: 92vh; overflow: auto; }
+.unified-title { display: flex; align-items: center; gap: 6px; margin-right: auto; }
+.unified-row { position: relative; padding-left: 18px; }
+.unified-account { position: absolute; left: 6px; top: 12px; bottom: 12px; width: 4px; border-radius: 2px; }
+.unified-label { display: flex; align-items: center; gap: 4px; }
+.unified-errors { padding: 6px 12px; font-size: 12px; color: #b45309; }

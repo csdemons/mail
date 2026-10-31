@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-accounts-unread"
+description = "Enables the accounts_unread command without any pre-configured scope."
+commands.allow = ["accounts_unread"]
+
+[[permission]]
+identifier = "deny-accounts-unread"
+description = "Denies the accounts_unread command without any pre-configured scope."
+commands.deny = ["accounts_unread"]

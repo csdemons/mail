@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, Lock, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
+  Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
 } from 'lucide-react'
 
 import {
@@ -37,6 +37,7 @@ import ScheduledMail from './ScheduledMail'
 import { useOutbox } from './sending'
 import { CategoriesSettings, DesktopSettings, OfflineSettings, SendingSettings, SignatureSettings } from './MailSettings'
 import { TransferSettings } from './Transfer'
+import { AccountMenu, UnifiedColumn, useAccounts } from './Accounts'
 import TotpSettings, { AUTOLOCK_KEY, loadAutolock } from './TotpSettings'
 import { buildDraft, ensureArchive, withSignature } from './mailActions'
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
@@ -102,9 +103,13 @@ interface Props {
   initialNotice: string
   onLogout: () => void
   onLock: () => void
+  /** Переключиться на другую учётную запись (и открыть в ней письмо). */
+  onSwitch: (key: string, open?: MessageSummary) => Promise<string | null>
+  /** Письмо, которое открыть сразу (выбрано в «Все входящие» другой учётной записи). */
+  initialOpen?: MessageSummary | null
 }
 
-export default function App({ account, initialNotice, onLogout, onLock }: Props) {
+export default function App({ account, initialNotice, onLogout, onLock, onSwitch, initialOpen }: Props) {
   // Защита кодом: блокировка по Ctrl+L, из меню и при бездействии.
   const [totpOn, setTotpOn] = useState(false)
   const [autolock, setAutolock] = useState(loadAutolock)
@@ -269,7 +274,6 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   }, [])
   // Непрочитанные во «Входящих» — на значке в трее и на панели задач.
   const inboxUnseen = folders.find((f) => f.role === 'inbox')?.unseen ?? 0
-  useEffect(() => { void api.setUnread(inboxUnseen).catch(() => undefined) }, [inboxUnseen])
   useEffect(() => () => { void api.setUnread(0).catch(() => undefined) }, [])
   const outbox = useOutbox((d) => startDraft(d), (t) => setNotice(t))
   const [scheduled, setScheduled] = useState<Scheduled[]>([])
@@ -309,6 +313,12 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   const moduleRef = useRef(module)
   moduleRef.current = module
   useEffect(() => { api.notifyPollSecs().then((s) => { pollSecs.current = Math.max(5, s) }).catch(() => undefined) }, [])
+  const acc = useAccounts(() => pollSecs.current, () => prefsRef.current, setNotice)
+  const switchAccount = (key: string, open?: MessageSummary) => { setNotice('Переключение учётной записи…'); void onSwitch(key, open).then((err) => { if (err) setNotice(err) }) }
+  const [unified, setUnified] = useState(false)
+  // Значок в трее: непрочитанные во «Входящих» всех учётных записей.
+  const othersUnseen = Object.values(acc.unread).reduce<number>((a, n) => a + (n ?? 0), 0)
+  useEffect(() => { void api.setUnread(inboxUnseen + othersUnseen).catch(() => undefined) }, [inboxUnseen, othersUnseen])
 
   function updatePrefs(patch: Partial<NotifyPrefs>) {
     setPrefs((p) => {
@@ -564,6 +574,16 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
   function adjustUnseen(folder: string, delta: number) {
     setFolders((list) => list.map((f) => (f.id === folder ? { ...f, unseen: Math.max(0, f.unseen + delta) } : f)))
   }
+
+  // Переключились из «Все входящие» на другую учётную запись — сразу открыть выбранное письмо.
+  const openedInitial = useRef(false)
+  useEffect(() => {
+    if (!initialOpen || openedInitial.current) return
+    openedInitial.current = true
+    setFolderId(initialOpen.folder)
+    void openMessage(initialOpen)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialOpen])
 
   async function openMessage(message: MessageSummary) {
     const key = messageKey(message)
@@ -1172,9 +1192,10 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
           <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
           <span>Atom Mail</span>
         </div>
-        <button className="account-switch" onClick={() => setShowAccountMenu(!showAccountMenu)}>
+        <button className="account-switch" aria-label="Учётные записи" onClick={() => { if (!showAccountMenu) void acc.reload(); setShowAccountMenu(!showAccountMenu) }}>
           <div className="account-avatar"><Users size={20} /></div>
-          <span><strong>{account.username}</strong><small>IMAP · {account.host}</small></span>
+          <span><strong>{account.username}</strong><small>IMAP · {account.host}{acc.multi ? ` · ещё ${acc.accounts.length - 1}` : ''}</small></span>
+          {Object.values(acc.unread).some((n) => (n ?? 0) > 0) && <b className="rail-badge account-badge" title="Непрочитанные в других учётных записях">{Object.values(acc.unread).reduce<number>((a, n) => a + (n ?? 0), 0)}</b>}
           <ChevronDown size={17} />
         </button>
         <button className="primary-button compose-top" onClick={() => openComposer('new')}>
@@ -1184,12 +1205,16 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
           <button className="icon-button" aria-label="Тема" onClick={() => setDark(!dark)}>{dark ? <Sun /> : <Moon />}</button>
           <button className="icon-button" aria-label="Настройки" onClick={() => setShowSettings(true)}><Settings /></button>
         </div>
-        {showAccountMenu && <div className="account-menu popover">
-          <strong>Учётная запись</strong>
-          <div className="account-menu-item"><span className="status-dot" /> {account.username} <small>{account.host}:{account.port}</small></div>
-          {totpOn && <button className="text-button" onClick={() => { setShowAccountMenu(false); onLock() }}><Lock size={15} /> Заблокировать <kbd>Ctrl+L</kbd></button>}
-          <button className="text-button" onClick={() => { setShowAccountMenu(false); onLogout() }}><LogOut size={15} /> Выйти</button>
-        </div>}
+        {showAccountMenu && <AccountMenu
+          accounts={acc.accounts}
+          unread={acc.unread}
+          onSwitch={(key) => switchAccount(key)}
+          onReload={() => void acc.reload()}
+          onLock={totpOn ? onLock : null}
+          onLogout={onLogout}
+          onClose={() => setShowAccountMenu(false)}
+          onNotice={setNotice}
+        />}
       </header>
 
       <div className="workspace">
@@ -1221,6 +1246,9 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
         {foldersOpen && <aside className="folder-sidebar">
           <div className="sidebar-heading"><span>Папки</span><ChevronDown size={15} /></div>
           <div className="folder-list">
+            {acc.multi && <button className={`folder-item unified-item ${unified ? 'selected' : ''}`} onClick={() => { clearSearch(); setUnified(true) }}>
+              <span className="folder-toggle" /><Inbox size={17} /><span>Все входящие</span>
+            </button>}
             {folders.length === 0 && <div className="folder-placeholder">Загрузка папок…</div>}
             {visibleFolders.map((f) => {
               const Icon = f.role === 'other' && !f.selectable ? FolderOpen : ROLE_ICONS[f.role]
@@ -1239,11 +1267,11 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
               return f.selectable ? (
                 <button
                   key={f.id}
-                  className={`folder-item ${folderId === f.id ? 'selected' : ''} ${f.total === 0 ? 'folder-empty' : ''} ${dragInfo?.over === f.id && f.id !== folderId ? 'drop-target' : ''}`}
+                  className={`folder-item ${!unified && folderId === f.id ? 'selected' : ''} ${f.total === 0 ? 'folder-empty' : ''} ${dragInfo?.over === f.id && f.id !== folderId ? 'drop-target' : ''}`}
                   data-folder-id={f.id}
                   style={indent}
                   title={`${f.path} — ${f.total} ${pluralLetters(f.total)}${f.unseen ? `, непрочитанных ${f.unseen}` : ''}`}
-                  onClick={() => { clearSearch(); setFolderId(f.id) }}
+                  onClick={() => { clearSearch(); setUnified(false); setFolderId(f.id) }}
                 >
                   {toggle}
                   <Icon size={17} />
@@ -1267,7 +1295,13 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
           </div>
         </aside>}
 
-        <main className="message-column">
+        {unified ? <UnifiedColumn
+          accounts={acc.accounts}
+          onNotice={setNotice}
+          onOpen={(m) => {
+            if (m.active) { void openMessage(m) } else { switchAccount(m.account, m) }
+          }}
+        /> : <main className="message-column">
           <div className="list-toolbar">
             <button className="icon-button soft" aria-label="Показать папки" onClick={() => setFoldersOpen(!foldersOpen)}><PanelLeftClose size={18} /></button>
             <label className="search-box">
@@ -1406,7 +1440,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
               {listError ? 'Ошибка' : loading ? 'Синхронизация' : 'Онлайн'}
             </span>
           </div>
-        </main>
+        </main>}
 
         {readerOpen && <section className="reader-pane">
           <div className="reader-toolbar">

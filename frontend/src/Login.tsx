@@ -14,9 +14,11 @@ interface Props {
   initial: Settings | null
   initialError: string
   onLoggedIn: (result: LoginResult) => void
+  /** Добавление ещё одной учётной записи (окно поверх программы, без переключения). */
+  add?: { onAdded: (key: string) => void; onCancel: () => void }
 }
 
-export default function Login({ initial, initialError, onLoggedIn }: Props) {
+export default function Login({ initial, initialError, onLoggedIn, add }: Props) {
   const [version, setVersion] = useState('')
   useEffect(() => { api.appInfo().then((i) => setVersion(i.version)).catch(() => undefined) }, [])
   const [host, setHost] = useState(initial?.host ?? DEFAULT_HOST)
@@ -71,10 +73,17 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
         setNote(d.note ?? '')
         server = { host: d.imapHost, port: d.imapPort, smtpHost: d.smtpHost, smtpPort: d.smtpPort, login: d.username.includes('@') ? d.username : username.trim() }
       }
-      const result = await api.login({
+      const params = {
         host: server.host, port: server.port, username: server.login, password, remember,
         smtpHost: server.smtpHost, smtpPort: server.smtpPort, davUrl,
-      })
+      }
+      if (add) {
+        const entry = await api.accountAdd(params)
+        setPassword('')
+        add.onAdded(entry.key)
+        return
+      }
+      const result = await api.login(params)
       setPassword('')
       onLoggedIn(result)
     } catch (err) {
@@ -85,14 +94,16 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
   }
 
   return (
-    <div className="login-screen">
-      <form className="login-card" onSubmit={submit}>
+    <div className={add ? 'modal-backdrop add-account' : 'login-screen'} onMouseDown={(e) => { if (add && e.target === e.currentTarget) add.onCancel() }}>
+      <form className="login-card" onSubmit={submit} aria-label={add ? 'Добавить учётную запись' : undefined}>
         <div className="login-brand">
           <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
           <span>Atom Mail</span>
         </div>
-        <h1>Вход в почту</h1>
-        <p className="login-hint">Адрес почты и пароль — серверы программа определит сама (Яндекс, Mail.ru, Gmail, корпоративная почта).</p>
+        <h1>{add ? 'Добавить учётную запись' : 'Вход в почту'}</h1>
+        <p className="login-hint">{add
+          ? 'Ещё один почтовый ящик: рабочий, личный или общий. Переключение — в меню учётной записи, письма всех ящиков — в «Все входящие».'
+          : 'Адрес почты и пароль — серверы программа определит сама (Яндекс, Mail.ru, Gmail, корпоративная почта).'}</p>
 
         <label className="login-field">
           <span>Адрес почты</span>
@@ -145,8 +156,9 @@ export default function Login({ initial, initialError, onLoggedIn }: Props) {
         {error && <div className="login-error" role="alert">{error}</div>}
 
         <button className="primary-button login-submit" type="submit" disabled={busy}>
-          <LockKeyhole size={16} /> {busy ? 'Подключение…' : 'Войти'}
+          <LockKeyhole size={16} /> {busy ? 'Подключение…' : add ? 'Добавить' : 'Войти'}
         </button>
+        {add && <button type="button" className="text-button" onClick={add.onCancel}>Отмена</button>}
         <p className="login-note">Соединение защищено TLS. Пароль не передаётся никуда, кроме почтового сервера.</p>
         <p className="login-version">Atom Mail{version ? ` ${version}` : ''} · НИЦ «Курчатовский институт»</p>
       </form>

@@ -1744,6 +1744,88 @@ except Exception:
 finally:
     d.quit()
 
+# 14h. несколько учётных записей: добавление, непрочитанные, «Все входящие», переключение, отключение
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    d.execute_script('document.hasFocus = () => true')
+    def acc_menu():
+        if not d.find_elements(By.CSS_SELECTOR, '.account-menu'):
+            d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
+        return wait(d, '.account-menu')
+    def imap2():
+        ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+        M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('second@rrcki.ru', 'Secret-456'); return M
+    [b for b in acc_menu().find_elements(By.TAG_NAME, 'button') if 'Добавить учётную запись' in b.get_attribute('textContent')][0].click()
+    form = wait(d, '.add-account .login-card')
+    form.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').send_keys('second@rrcki.ru')
+    form.find_element(By.CSS_SELECTOR, 'input[type=password]').send_keys('Secret-456')
+    form.find_element(By.CSS_SELECTOR, '.login-server-toggle').click()
+    host, port, smtp_host, smtp_port = form.find_elements(By.CSS_SELECTOR, '.login-server input')
+    clear(host); host.send_keys('localhost'); clear(port); port.send_keys('10993')
+    clear(smtp_host); smtp_host.send_keys('localhost'); clear(smtp_port); smtp_port.send_keys('465')
+    d.save_screenshot(f'{OUT}/53-add-account.png')
+    form.find_element(By.CSS_SELECTOR, '.login-submit').click()
+    W(d, 20).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.add-account'))
+    items = W(d, 10).until(lambda d: len(acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item')) == 2 and acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item'))
+    assert 'second@rrcki.ru' in items[1].get_attribute('textContent') and 'текущая' in items[0].get_attribute('textContent')
+    accounts_file = os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/accounts.json'
+    saved = json.load(open(accounts_file))
+    assert [a['username'] for a in saved] == ['test@rrcki.ru', 'second@rrcki.ru'], saved
+    assert 'Secret-456' not in open(accounts_file).read() and os.stat(accounts_file).st_mode & 0o077 == 0
+    ok('second account added (password checked, kept in keyring, not in accounts.json)')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
+    # Новое письмо во втором ящике: число непрочитанных на кнопке учётной записи.
+    M = imap2()
+    for subj in ('E2E второй ящик', 'E2E второй ящик 2'):
+        m = EmailMessage(); m['From'] = 'Коллега <colleague@nrcki.ru>'; m['To'] = 'second@rrcki.ru'; m['Subject'] = subj; m.set_content('письмо второго ящика')
+        M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), m.as_bytes())
+    M.logout()
+    W(d, 60).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.account-badge') and d.find_element(By.CSS_SELECTOR, '.account-badge').get_attribute('textContent') == '2')
+    ok('unread mail of the other account counted on the account button')
+    # «Все входящие».
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Все входящие' in f.get_attribute('textContent')][0].click()
+    rows = W(d, 30).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')] and d.find_elements(By.CSS_SELECTOR, '.unified-row'))
+    owners = {r.get_attribute('data-account') for r in rows}
+    assert owners == {'test@rrcki.ru@localhost', 'second@rrcki.ru@localhost'}, owners
+    assert 'E2E второй ящик' in rows[0].get_attribute('textContent'), rows[0].get_attribute('textContent')
+    d.save_screenshot(f'{OUT}/54-unified-inbox.png')
+    ok('unified inbox: newest mail of both accounts together')
+    # Письмо своей учётной записи открывается на месте, чужой — с переключением.
+    mine = [r for r in rows if r.get_attribute('data-account') == 'test@rrcki.ru@localhost'][0]
+    subj_mine = mine.find_element(By.CSS_SELECTOR, '.message-subject').get_attribute('textContent')
+    mine.click()
+    W(d, 15).until(lambda d: subj_mine in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')][0].click()
+    W(d, 30).until(lambda d: 'second@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    W(d, 20).until(lambda d: 'E2E второй ящик 2' in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
+    W(d, 20).until(lambda d: any('E2E второй ящик' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
+    assert json.load(open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/settings.json'))['username'] == 'second@rrcki.ru'
+    ok('opening a message of the other account switches to it and opens the message')
+    # Обратно — из меню, без ввода пароля.
+    [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'test@rrcki.ru' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.account-pick').click()
+    W(d, 30).until(lambda d: 'test@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    wait(d, '.message-row', 30)
+    assert not any('E2E второй ящик' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row'))
+    ok('switch back from the account menu without a password prompt')
+    # Отключение второй учётной записи.
+    item = [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'second@rrcki.ru' in i.get_attribute('textContent')][0]
+    item.find_element(By.CSS_SELECTOR, 'button[aria-label="Отключить second@rrcki.ru"]').click()
+    [b for b in wait(d, '.confirm-modal').find_elements(By.TAG_NAME, 'button') if b.text == 'Отключить'][0].click()
+    W(d, 15).until(lambda d: len(acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item')) == 1)
+    assert [a['username'] for a in json.load(open(accounts_file))] == ['test@rrcki.ru']
+    import shutil
+    if shutil.which('secret-tool'):
+        r = subprocess.run(['secret-tool', 'search', '--all', 'service', 'ru.rrcki.mail'], capture_output=True, text=True)
+        assert 'second@rrcki.ru' not in r.stdout + r.stderr, r.stdout
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
+    W(d, 10).until(lambda d: not [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Все входящие' in f.get_attribute('textContent')])
+    ok('second account removed: list, keyring password and unified inbox gone')
+except Exception:
+    d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
+finally:
+    d.quit()
+
 # 15. перезапуск → автовход из keyring
 d = session()
 try:

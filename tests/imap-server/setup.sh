@@ -21,7 +21,7 @@ cp ca.crt /usr/local/share/ca-certificates/rrcki-mail-test-ca.crt && update-ca-c
 
 id vmail >/dev/null 2>&1 || useradd -r -M -d "$T/mail" vmail
 chown -R vmail "$T/mail"; chmod 755 "$T"
-echo "test@rrcki.ru:{PLAIN}Secret-123:::::" > users; chmod 644 users
+printf '%s\n' "test@rrcki.ru:{PLAIN}Secret-123:::::" "second@rrcki.ru:{PLAIN}Secret-456:::::" > users; chmod 644 users
 
 cat > dovecot.conf <<CONF
 protocols = imap
@@ -75,4 +75,4 @@ CONF
 dovecot -c "$T/dovecot.conf" </dev/null >/dev/null 2>&1
 sleep 1
 IMAP_TEST_CA="$T/ca.crt" python3 "$HERE/seed.py" >/dev/null
-echo "IMAPS: localhost:10993  user: test@rrcki.ru  password: Secret-123"
+echo "IMAPS: localhost:10993  user: test@rrcki.ru  password: Secret-123 (второй ящик: second@rrcki.ru / Secret-456)"
