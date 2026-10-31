@@ -81,7 +81,7 @@ fn main() {
             // что в сборке на Tauri 2, проверяется здесь: главное окно — все команды,
             // окна писем (msg-*) — только список из message-window.json, остальные
             // окна (редактор документов doc-*) — ни одной.
-            let handler = commands::app_commands!();
+            let handler = typed_handler(commands::app_commands!());
             move |invoke: tauri::Invoke<tauri::Wry>| {
                 let label = invoke.message.window().label().to_string();
                 let command = invoke.message.command().to_string();
@@ -100,6 +100,12 @@ fn main() {
                 commands::on_exit_requested(app, || api.prevent_exit());
             }
         });
+}
+
+/// Задаёт тип замыкания из `generate_handler!` (сам макрос рассчитан на передачу
+/// прямо в `invoke_handler`, где тип выводится из сигнатуры).
+fn typed_handler<F: Fn(tauri::Invoke<tauri::Wry>) + Send + Sync + 'static>(f: F) -> F {
+    f
 }
 
 #[cfg(test)]
