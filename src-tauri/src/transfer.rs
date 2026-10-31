@@ -610,6 +610,11 @@ async fn backup_inner(creds: &Credentials, folders: Vec<BackupFolder>, dir: &Pat
         // Порции не больше 10 писем и 16 МБ: в памяти — одна порция.
         for chunk in crate::store::body_batches(&fitting) {
             let chunk = &chunk[..];
+            // Автотесты: замедление, чтобы проверить остановку задачи посреди работы. В релизе этого нет.
+            #[cfg(debug_assertions)]
+            if let Some(ms) = std::env::var("RRCKI_E2E_JOB_DELAY_MS").ok().and_then(|v| v.parse().ok()) {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            }
             if job.cancelled() {
                 break;
             }

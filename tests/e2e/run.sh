@@ -37,6 +37,7 @@ export RRCKI_E2E_PICK_IMPORT="$E2E_HOME/import/Архив Outlook.pst;$E2E_HOME/
 export RRCKI_E2E_PICK_IMPORT_DIR="$E2E_HOME/restore"
 export RRCKI_E2E_PICK_DIR="$E2E_HOME/backup"
 export RRCKI_E2E_PICK_CONTACTS="$E2E_HOME/import/contacts.csv"
+export RRCKI_E2E_JOB_DELAY_MS=400  # резервная копия идёт заметно долго — проверяется её остановка
 tauri-driver >/tmp/tauri-driver.log 2>&1 &
 TD=$!
 sleep 2

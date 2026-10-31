@@ -1801,7 +1801,8 @@ try:
     [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')][0].click()
     W(d, 30).until(lambda d: 'second@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
     st = W(d, 60).until(lambda d: (inv('job_status', {'id': job}).get('ok') or {}).get('finished') and inv('job_status', {'id': job})['ok'])
-    assert st['cancelled'] or 'Сохранено' in (st['summary'] or ''), st
+    assert st['cancelled'] and 'остановлено' in (st['summary'] or ''), st
+    assert st['imported'] < st['total'], st
     # Данные новой учётной записи — только её: ни папок, ни писем прежней.
     paths = [f['path'] for f in inv('list_folders')['ok']]
     assert not any(p.startswith('Импорт') or p.startswith('Восстановлено') for p in paths), paths
@@ -1809,7 +1810,7 @@ try:
     subj_b = [m['subject'] for m in inv('cached_messages', {'folder': 'INBOX', 'beforeUid': None, 'limit': 50})['ok']['items']]
     assert subj_b and all(x.startswith('E2E второй ящик') for x in subj_b), subj_b
     assert all(r['account'] != 'test@rrcki.ru@localhost' or not r['active'] for r in (inv('unified_inbox', {'limit': 5})['ok']['items']))
-    ok(f"switching cancels the previous account's background job ({'cancelled' if st['cancelled'] else 'already done'}); new account sees only its own folders and mail")
+    ok(f"switching cancels the previous account's background job mid-way ({st['imported']} of {st['total']}); new account sees only its own folders and mail")
     W(d, 20).until(lambda d: 'E2E второй ящик 2' in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
     W(d, 20).until(lambda d: any('E2E второй ящик' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
     assert json.load(open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/settings.json'))['username'] == 'second@rrcki.ru'
