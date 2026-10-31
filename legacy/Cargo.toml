@@ -51,6 +51,9 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+# Чтение файлов Outlook (.pst/.ost) для импорта почты (Microsoft, MIT).
+outlook-pst = "1.2"
+encoding_rs = "0.8"
 
 [features]
 # Сборка с встроенным интерфейсом (без dev-сервера).
@@ -70,3 +73,7 @@ webkit2gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+# Копия outlook-pst с исправлением чтения (vendor/outlook-pst/VENDORED.md).
+[patch.crates-io]
+outlook-pst = { path = "../vendor/outlook-pst" }

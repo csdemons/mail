@@ -28,6 +28,15 @@ export RRCKI_E2E_POLL_SECS=8  # фоновая проверка почты/ча�
 export RRCKI_E2E_NOTIFY_LOG="$E2E_HOME/notify.log"
 export RRCKI_E2E_VARIANT=test
 export RRCKI_E2E_AUTOCONFIG_URL=https://localhost:8443/autoconfig/mail/config-v1.1.xml  # автоопределение серверов
+# Импорт и резервная копия: файлы, которые «выберет» отладочная сборка (их создаёт и e2e.py).
+export E2E_HOME
+mkdir -p "$E2E_HOME/import" "$E2E_HOME/backup" "$E2E_HOME/restore" "$E2E_HOME/tb"
+gunzip -c "$(dirname "$0")/../fixtures/outlook-e2e.pst.gz" > "$E2E_HOME/import/Архив Outlook.pst"
+export RRCKI_E2E_TB_PROFILES="$E2E_HOME/tb"
+export RRCKI_E2E_PICK_IMPORT="$E2E_HOME/import/Архив Outlook.pst;$E2E_HOME/import/one.eml;$E2E_HOME/import/two.eml"
+export RRCKI_E2E_PICK_IMPORT_DIR="$E2E_HOME/restore"
+export RRCKI_E2E_PICK_DIR="$E2E_HOME/backup"
+export RRCKI_E2E_PICK_CONTACTS="$E2E_HOME/import/contacts.csv"
 tauri-driver >/tmp/tauri-driver.log 2>&1 &
 TD=$!
 sleep 2

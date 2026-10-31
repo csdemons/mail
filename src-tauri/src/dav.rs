@@ -107,7 +107,7 @@ fn parse_multistatus(xml: &str) -> Result<Vec<DavResponse>> {
                 .children()
                 .find(|n| n.has_tag_name((NS_DAV, "status")))
                 .and_then(|n| n.text())
-                .map_or(true, |s| s.contains(" 200"));
+                .is_none_or(|s| s.contains(" 200"));
             if !ok {
                 continue;
             }

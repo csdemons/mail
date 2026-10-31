@@ -1,11 +1,11 @@
 [package]
 name = "rrcki-mail"
-version = "0.17.0"
+version = "0.18.0"
 description = "RRCKI Mail — корпоративный почтовый клиент"
 authors = ["RRCKI"]
 license = ""
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.82"
 
 [lib]
 name = "rrcki_mail_lib"
@@ -55,6 +55,9 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+# Чтение файлов Outlook (.pst/.ost) для импорта почты (Microsoft, MIT).
+outlook-pst = "1.2"
+encoding_rs = "0.8"
 
 [profile.release]
 codegen-units = 1
@@ -73,3 +76,7 @@ webkit2gtk = "2.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+# Копия outlook-pst с исправлением чтения (vendor/outlook-pst/VENDORED.md).
+[patch.crates-io]
+outlook-pst = { path = "../vendor/outlook-pst" }

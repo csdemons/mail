@@ -1610,6 +1610,140 @@ except Exception:
 finally:
     d.quit()
 
+# 14g. импорт из Thunderbird и Outlook, контакты из CSV, резервная копия и восстановление
+H = os.environ['E2E_HOME']
+acc = f'{H}/tb/abcd1234.default-release/Mail/Local Folders'
+os.makedirs(f'{acc}/Archives.sbd', exist_ok=True)
+open(f'{acc}/Inbox.msf', 'w').close()
+with open(f'{acc}/Inbox', 'wb') as f:
+    f.write('From - Mon Jan 15 10:00:00 2024\nX-Mozilla-Status: 0005\nX-Mozilla-Status2: 00000000\nFrom: Иванов <ivanov@example.ru>\nTo: test@rrcki.ru\nSubject: =?UTF-8?B?VEIg0L/RgNC+0YfQuNGC0LDQvdC90L7QtQ==?=\nMessage-ID: <tb-1@example.ru>\nDate: Mon, 15 Jan 2024 10:00:00 +0000\n\nПрочитанное и важное.\n>From the escaped line\n\n'.encode())
+    f.write('From - Tue Jan 16 11:00:00 2024\nX-Mozilla-Status: 0000\nFrom: Сидоров <sidorov@example.ru>\nTo: test@rrcki.ru\nSubject: TB unread\nMessage-ID: <tb-2@example.ru>\nDate: Tue, 16 Jan 2024 11:00:00 +0000\n\nНе прочитано.\n\n'.encode())
+    f.write(b'From - Tue Jan 16 12:00:00 2024\nX-Mozilla-Status: 0009\nSubject: TB deleted\n\ngone\n')
+with open(f'{acc}/Archives.sbd/2023', 'wb') as f:
+    f.write(b'From - Fri Dec 01 09:00:00 2023\nX-Mozilla-Status: 0001\nFrom: a@example.ru\nSubject: TB archive 2023\nMessage-ID: <tb-3@example.ru>\nDate: Fri, 01 Dec 2023 09:00:00 +0000\n\narchive\n')
+open(f'{H}/import/one.eml', 'wb').write('From: Почта <eml@example.ru>\nSubject: EML one\nMessage-ID: <eml-1@example.ru>\nDate: Wed, 10 Jan 2024 08:00:00 +0000\n\nПервое письмо eml.\n'.encode())
+open(f'{H}/import/two.eml', 'wb').write(b'From: eml@example.ru\r\nSubject: EML two\r\nMessage-ID: <eml-2@example.ru>\r\n\r\nsecond\r\n')
+open(f'{H}/import/contacts.csv', 'wb').write('"Имя";"Фамилия";"Адрес эл. почты";"Телефон раб."\r\n"Анна";"Импортова";"anna.import@nrcki.ru";"+7 111"\r\n"Борис";"Импортов";"boris.import@nrcki.ru";""\r\n'.encode('cp1251'))
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    def folder_id(path):
+        return W(d, 20).until(lambda d: [f['id'] for f in inv('list_folders')['ok'] if f['path'] == path] or None)[0]
+    def idate(folder, subj):
+        M = imap(); M.select(f'"{folder}"'); _, ids = M.search(None, 'ALL'); out = ''
+        for i in ids[0].split():
+            _, data = M.fetch(i, '(INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT)])')
+            if subj == str(make_header(decode_header(email.message_from_bytes(data[0][1])['Subject'] or ''))): out = data[0][0].decode()
+        M.logout(); return out
+    def tr_button(text):
+        return [b for b in d.find_elements(By.CSS_SELECTOR, '.transfer-settings button') if text in b.get_attribute('textContent')][0]
+    def job_done(label):
+        return W(d, 120).until(lambda d: [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, f'[aria-label="{label}"] .job-summary, [aria-label="{label}"] .login-error')] or None)[0]
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    sect = wait(d, '.transfer-settings')
+    d.execute_script("arguments[0].scrollIntoView({block: 'start'})", sect)
+
+    # Thunderbird: профиль находится сам, письма с флагами и датами, удалённое пропущено.
+    tr_button('Найти Thunderbird').click()
+    opt = wait(d, '.transfer-source-option')
+    assert 'Локальные папки' in opt.get_attribute('textContent'), opt.get_attribute('textContent')
+    opt.click()
+    src = wait(d, '.transfer-source').get_attribute('textContent')
+    assert 'Локальные папки / Входящие' in src and 'Локальные папки / Архив / 2023' in src, src
+    d.save_screenshot(f'{OUT}/51-import-source.png')
+    tr_button('Начать импорт').click()
+    summary = job_done('Ход импорта')
+    assert 'Загружено писем: 3' in summary and 'пропущено: 1' in summary, summary
+    inbox_tb = folder_id('Импорт/Локальные папки/Входящие')
+    assert sorted(subjects(inbox_tb)) == ['TB unread', 'TB прочитанное'], subjects(inbox_tb)
+    fl = flags_u(inbox_tb, 'TB прочитанное'); assert '\\Seen' in fl and '\\Flagged' in fl, fl
+    assert '\\Seen' not in flags_u(inbox_tb, 'TB unread')
+    assert '15-Jan-2024' in idate(inbox_tb, 'TB прочитанное'), idate(inbox_tb, 'TB прочитанное')
+    assert subjects(folder_id('Импорт/Локальные папки/Архив/2023')) == ['TB archive 2023']
+    M = imap(); M.select(f'"{inbox_tb}"'); _, ids = M.search(None, 'ALL'); _, data = M.fetch(ids[0].split()[0], '(BODY.PEEK[])'); M.logout()
+    raw = data[0][1]
+    assert b'X-Mozilla' not in raw and b'\r\nFrom the escaped line' in raw, raw[-200:]
+    W(d, 20).until(lambda d: any('Импорт' in f.get_attribute('textContent') for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item')))
+    ok('import from Thunderbird: profile found, folders kept, read/flagged/date preserved, deleted skipped')
+    # Повтор — без копий.
+    tr_button('Начать импорт').click()
+    W(d, 60).until(lambda d: any('уже были на сервере: 3' in e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход импорта"] .job-summary')))
+    assert len(subjects(inbox_tb)) == 2
+    ok('repeated import does not create duplicates')
+
+    # Outlook .pst и .eml.
+    tr_button('Файлы').click()
+    src = W(d, 20).until(lambda d: 'Архив Outlook' in wait(d, '.transfer-source').get_attribute('textContent') and wait(d, '.transfer-source').get_attribute('textContent'))
+    assert 'файл Outlook' in src and 'Письма' in src, src
+    tr_button('Начать импорт').click()
+    summary = W(d, 120).until(lambda d: [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход импорта"] .job-summary') if 'Загружено писем: 4' in e.get_attribute('textContent')] or None)[0]
+    pst_inbox = folder_id('Импорт/Архив Outlook/Входящие')
+    assert subjects(pst_inbox) == ['Отчёт из Outlook'], subjects(pst_inbox)
+    assert subjects(folder_id('Импорт/Архив Outlook/Проекты/2025')) == ['Письмо в папке проекта']
+    M = imap(); M.select(f'"{pst_inbox}"'); _, data = M.fetch(b'1', '(BODY.PEEK[])'); M.logout()
+    msg = email.message_from_bytes(data[0][1])
+    assert 'petrov@nrcki.ru' in msg['From'] and str(make_header(decode_header(msg['From']))).startswith('Петров'), msg['From']
+    names = [str(make_header(decode_header(p.get_filename() or ''))) for p in msg.walk() if p.get_filename()]
+    assert names == ['Смета 2025.txt'], names
+    assert sorted(subjects(folder_id('Импорт/Письма'))) == ['EML one', 'EML two']
+    ok('import from Outlook .pst (folders, sender, Cyrillic attachment) and .eml files')
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+
+    # Контакты из CSV Outlook (Windows-1251, «;»).
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    sect = wait(d, '.transfer-settings'); d.execute_script("arguments[0].scrollIntoView({block: 'start'})", sect)
+    tr_button('Выбрать адресную книгу').click()
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, 'select[aria-label="Адресная книга для импорта"]'))
+    tr_button('Загрузить контакты').click()
+    summary = W(d, 60).until(lambda d: [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход загрузки контактов"] .job-summary')] or None)[0]
+    assert 'Добавлено контактов: 2' in summary, summary
+    cs = inv('list_contacts')['ok']['contacts']
+    anna = [c for c in cs if 'anna.import@nrcki.ru' in c['emails']]
+    assert anna and anna[0]['fullName'] == 'Импортова Анна', anna
+    tr_button('Загрузить контакты').click()
+    W(d, 60).until(lambda d: any('уже были в книге: 2' in e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход загрузки контактов"] .job-summary')))
+    ok('contacts from Outlook CSV (cp1251) imported once, repeat skips existing')
+
+    # Резервная копия выбранных папок в mbox и восстановление из неё.
+    d.execute_script("arguments[0].click()", [l for l in d.find_elements(By.CSS_SELECTOR, '.transfer-settings label') if 'Выбранные папки' in l.get_attribute('textContent')][0].find_element(By.TAG_NAME, 'input'))
+    boxes = wait(d, '.transfer-backup-folders')
+    for fid in (inbox_tb, 'INBOX'):
+        d.execute_script("arguments[0].click()", boxes.find_element(By.CSS_SELECTOR, f'label[data-folder="{fid}"] input'))
+    W(d, 5).until(lambda d: len([i for i in boxes.find_elements(By.CSS_SELECTOR, 'input') if i.is_selected()]) == 2)
+    tr_button('Сохранить копию').click()
+    summary = W(d, 120).until(lambda d: [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход резервного копирования"] .job-summary')] or None)[0]
+    copies = glob.glob(f'{H}/backup/Atom Mail — копия */')
+    assert len(copies) == 1 and 'Сохранено писем' in summary, (copies, summary)
+    copy = copies[0]
+    inbox_box = open(f'{copy}/Входящие.mbox', 'rb').read()
+    n_inbox = len(subjects('INBOX'))
+    assert inbox_box.count(b'\nFrom - ') + inbox_box.startswith(b'From - ') == n_inbox, (inbox_box.count(b'\nFrom - '), n_inbox)
+    tb_box = open(f'{copy}/Импорт.sbd/Локальные папки.sbd/Входящие.mbox', 'rb').read()
+    assert b'X-Mozilla-Status: 0005' in tb_box and b'X-Mozilla-Status: 0000' in tb_box, tb_box[:300]
+    if os.name == 'posix':
+        assert os.stat(copy).st_mode & 0o077 == 0
+    d.save_screenshot(f'{OUT}/52-backup.png')
+    ok(f'backup: {n_inbox} Inbox messages and nested import folder saved to mbox with flags')
+    os.rmdir(f'{H}/restore'); os.rename(copy.rstrip('/'), f'{H}/restore')
+    tr_button('Папка').click()
+    src = W(d, 20).until(lambda d: 'Импорт / Локальные папки / Входящие' in wait(d, '.transfer-source').get_attribute('textContent') and wait(d, '.transfer-source').get_attribute('textContent'))
+    root = d.find_element(By.CSS_SELECTOR, 'input[aria-label="Папка для импорта"]')
+    set_value(d, root, 'Восстановлено')
+    tr_button('Начать импорт').click()
+    summary = W(d, 120).until(lambda d: [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход импорта"] .job-summary') if 'Восстановлено' in e.get_attribute('textContent')] or None)[0]
+    restored = folder_id('Восстановлено/Импорт/Локальные папки/Входящие')
+    fl = flags_u(restored, 'TB прочитанное'); assert '\\Seen' in fl and '\\Flagged' in fl, fl
+    assert '\\Seen' not in flags_u(restored, 'TB unread')
+    import re as _re
+    dups = int((_re.search(r'уже были на сервере: (\d+)', summary) or [0, 0])[1])
+    assert len(subjects(folder_id('Восстановлено/Входящие'))) + dups == n_inbox, (summary, n_inbox)
+    ok('restore: the backup imports back with folders and flags')
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+except Exception:
+    d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
+finally:
+    d.quit()
+
 # 15. перезапуск → автовход из keyring
 d = session()
 try:

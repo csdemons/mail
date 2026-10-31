@@ -450,3 +450,29 @@ export interface SieveFilter {
   actions: SieveAction[]
   [extra: string]: unknown
 }
+
+/** Источник импорта почты (файлы остаются в программе, сюда — только описание). */
+export interface ImportSource {
+  id: string
+  title: string
+  folders: string[]
+  folderCount: number
+  bytes: number
+  outlook: boolean
+}
+
+/** Ход фоновой задачи: импорт, резервная копия, загрузка контактов. */
+export interface JobStatus {
+  kind: 'import' | 'backup' | 'contacts'
+  phase: string
+  done: number
+  total: number
+  imported: number
+  duplicates: number
+  skipped: number
+  finished: boolean
+  cancelled: boolean
+  error: string | null
+  summary: string | null
+  notes: string[]
+}

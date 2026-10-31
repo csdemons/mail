@@ -865,3 +865,21 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .unsub-bar .text-button { padding: 0; font-size: 12px; }
 .snooze-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: #4338ca; background: #e0e7ff; border-radius: 999px; padding: 0 6px; line-height: 16px; }
 .theme-dark .snooze-tag { background: #1e1b4b; color: #c7d2fe; }
+
+/* Перенос почты и резервная копия */
+.transfer-settings .transfer-sub { margin-top: 10px; display: flex; align-items: center; gap: 6px; }
+.transfer-pick { flex-wrap: wrap; justify-content: flex-start; }
+.transfer-found { display: flex; flex-direction: column; gap: 6px; }
+.transfer-source-option { display: flex; justify-content: space-between; gap: 12px; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: inherit; cursor: pointer; }
+.transfer-source-option:hover { background: var(--hover); }
+.transfer-source-option span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.transfer-source { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.transfer-folders { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); max-height: 140px; overflow: auto; }
+.transfer-backup-folders { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 8px; }
+.job-view { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; }
+.job-view .deck-progress span { display: none; }
+.job-phase { font-size: 13px; }
+.job-counters { font-size: 12px; color: var(--muted); }
+.job-summary { font-size: 13px; color: #1f9d74; }
+.job-notes { font-size: 12px; color: var(--muted); }
+.job-notes ul { margin: 4px 0 0; padding-left: 18px; max-height: 160px; overflow: auto; }

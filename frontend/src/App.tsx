@@ -36,6 +36,7 @@ import { categoriesOf, dueLabel, dueOf, duePresets, threadKeys, userCategories, 
 import ScheduledMail from './ScheduledMail'
 import { useOutbox } from './sending'
 import { CategoriesSettings, DesktopSettings, OfflineSettings, SendingSettings, SignatureSettings } from './MailSettings'
+import { TransferSettings } from './Transfer'
 import TotpSettings, { AUTOLOCK_KEY, loadAutolock } from './TotpSettings'
 import { buildDraft, ensureArchive, withSignature } from './mailActions'
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
@@ -1570,6 +1571,7 @@ export default function App({ account, initialNotice, onLogout, onLock }: Props)
           <CategoriesSettings categories={categories} onSaved={(list, msg) => { setCategories(list); setNotice(msg) }} />
           <DesktopSettings onNotice={setNotice} />
           <OfflineSettings onNotice={setNotice} />
+          <TransferSettings folders={folders} label={folderLabel} onNotice={setNotice} onImported={() => void loadFolders()} />
           <TotpSettings onChange={setTotpOn} onLock={() => { setShowSettings(false); onLock() }} autolock={autolock} onAutolock={updateAutolock} />
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager / GNOME Keyring) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">

@@ -161,7 +161,7 @@ pub fn verify(secret_b32: &str, code: &str, step: u64, last_used: Option<u64>) -
     let secret = base32_decode(secret_b32)?;
     [step.saturating_sub(1), step, step + 1]
         .into_iter()
-        .filter(|s| last_used.map_or(true, |u| *s > u))
+        .filter(|s| last_used.is_none_or(|u| *s > u))
         .find(|s| code_at(&secret, *s) == want)
 }
 

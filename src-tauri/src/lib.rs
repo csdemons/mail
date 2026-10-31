@@ -12,6 +12,9 @@ mod discover;
 mod desktop;
 mod store;
 mod totp;
+mod mbox;
+mod pst;
+mod transfer;
 #[doc(hidden)]
 pub mod smtp;
 pub mod sogo;

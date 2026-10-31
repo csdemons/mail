@@ -67,6 +67,14 @@ pub async fn pick_files(_app: &AppHandle) -> Option<Vec<PathBuf>> {
     rx.await.ok().flatten()
 }
 
+pub async fn pick_folder(_app: &AppHandle) -> Option<PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    FileDialogBuilder::new().pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+    rx.await.ok().flatten()
+}
+
 pub async fn save_file(_app: &AppHandle, name: &str) -> Option<PathBuf> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     FileDialogBuilder::new().set_file_name(name).save_file(move |path| {

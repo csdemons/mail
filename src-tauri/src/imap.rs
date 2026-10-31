@@ -269,7 +269,7 @@ pub fn build_folder_tree(raw: Vec<RawFolder>) -> Vec<Folder> {
             None => path.clone(),
         };
         let delim = f.delimiter.as_deref().unwrap_or("/");
-        let in_own_root = parent.as_deref().map_or(true, |p| p.eq_ignore_ascii_case("INBOX"));
+        let in_own_root = parent.as_deref().is_none_or(|p| p.eq_ignore_ascii_case("INBOX"));
         // Папка верхнего уровня подключённого ящика: shared/<ящик>/<папка>.
         let in_shared_mailbox = parent
             .as_deref()
@@ -1077,6 +1077,110 @@ pub async fn raw_bodies(conn: &mut Connection, uids: &[u32]) -> Result<Vec<(u32,
     }
     let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), "(UID BODY.PEEK[])").await?.try_collect().await?;
     Ok(fetches.iter().filter_map(|f| Some((f.uid?, f.body()?.to_vec()))).collect())
+}
+
+// ---------------------------------------------------------------- импорт и резервная копия
+
+/// Разделитель уровней папок на сервере («/» или «.»).
+pub async fn hierarchy_delimiter(conn: &mut Connection) -> Result<String> {
+    let names: Vec<_> = conn.session.list(Some(""), Some("")).await?.try_collect().await?;
+    Ok(names.first().and_then(|n| n.delimiter()).unwrap_or("/").to_string())
+}
+
+/// Имя уровня папки: без разделителя и символов, недопустимых в IMAP.
+pub fn folder_part(name: &str, delimiter: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_control() || c == '*' || c == '%' || delimiter.contains(c) { '_' } else { c })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim();
+    if cleaned.is_empty() { "Без имени".to_string() } else { cleaned.chars().take(120).collect() }
+}
+
+/// Создаёт папку и все уровни над ней; возвращает имя на сервере (modified UTF-7).
+pub async fn ensure_folder_path(conn: &mut Connection, parts: &[String], delimiter: &str) -> Result<String> {
+    let mut name = String::new();
+    for part in parts {
+        if !name.is_empty() {
+            name.push_str(delimiter);
+        }
+        name.push_str(&utf7_imap::encode_utf7_imap(folder_part(part, delimiter)));
+        create_folder(conn, &name).await?;
+    }
+    Ok(name)
+}
+
+/// Message-ID писем папки — чтобы повторный импорт не создавал копий.
+pub async fn message_ids(conn: &mut Connection, folder: &str) -> Result<std::collections::HashSet<String>> {
+    conn.selected = None;
+    let mailbox = conn.session.examine(folder).await?;
+    let mut out = std::collections::HashSet::new();
+    if mailbox.exists == 0 {
+        return Ok(out);
+    }
+    let fetches: Vec<Fetch> = conn.session.fetch("1:*", "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?.try_collect().await?;
+    let parser = MessageParser::default();
+    for f in &fetches {
+        if let Some(id) = f.header().and_then(|h| parser.parse_headers(h)).and_then(|m| m.message_id().map(str::to_string)) {
+            out.insert(id);
+        }
+    }
+    Ok(out)
+}
+
+/// Кладёт письмо в папку с флагами и датой получения.
+pub async fn append_imported(conn: &mut Connection, folder: &str, seen: bool, flagged: bool, answered: bool, date: Option<i64>, raw: &[u8]) -> Result<()> {
+    let flags: Vec<&str> = [(seen, "\\Seen"), (flagged, "\\Flagged"), (answered, "\\Answered")].iter().filter(|(on, _)| *on).map(|(_, f)| *f).collect();
+    let flags = format!("({})", flags.join(" "));
+    let date = date.and_then(|d| chrono::DateTime::from_timestamp(d, 0)).map(|d| format!("\"{}\"", d.format("%d-%b-%Y %H:%M:%S +0000")));
+    conn.selected = None;
+    conn.session.append(folder, Some(&flags), date.as_deref(), raw).await?;
+    Ok(())
+}
+
+/// Переподключение после сбоя посреди долгой операции.
+pub async fn reconnect_now(conn: &mut Connection) -> Result<()> {
+    conn.reconnect().await
+}
+
+/// UID всех писем папки (папка открывается только для чтения).
+pub async fn all_uids(conn: &mut Connection, folder: &str) -> Result<Vec<u32>> {
+    conn.selected = None;
+    let mailbox = conn.session.examine(folder).await.map_err(|e| match e {
+        async_imap::error::Error::No(_) => AppError::NotFound,
+        other => other.into(),
+    })?;
+    if mailbox.exists == 0 {
+        return Ok(Vec::new());
+    }
+    let mut uids: Vec<u32> = conn.session.uid_search("ALL").await?.into_iter().collect();
+    uids.sort_unstable();
+    Ok(uids)
+}
+
+/// Письмо для резервной копии.
+pub struct Exported {
+    pub raw: Vec<u8>,
+    pub seen: bool,
+    pub answered: bool,
+    pub flagged: bool,
+    pub date: Option<i64>,
+}
+
+/// Письма целиком с флагами и датой (папка открыта `all_uids`).
+pub async fn export_batch(conn: &mut Connection, uids: &[u32]) -> Result<Vec<Exported>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), "(UID FLAGS INTERNALDATE BODY.PEEK[])").await?.try_collect().await?;
+    fetches.sort_by_key(|f| f.uid);
+    Ok(fetches
+        .iter()
+        .filter_map(|f| {
+            let flags = flag_state(f);
+            Some(Exported { raw: f.body()?.to_vec(), seen: !flags.unread, answered: flags.answered, flagged: flags.flagged, date: f.internal_date().map(|d| d.timestamp()) })
+        })
+        .collect())
 }
 
 /// Поиск по тексту писем на сервере (IMAP SEARCH TEXT, UTF-8).

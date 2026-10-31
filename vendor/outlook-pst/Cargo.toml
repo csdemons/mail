@@ -1,0 +1,21 @@
+# Копия outlook-pst 1.2.0 (Microsoft, MIT, https://github.com/microsoft/outlook-pst-rs)
+# с одной правкой: см. VENDORED.md.
+[package]
+edition = "2021"
+rust-version = "1.82"
+name = "outlook-pst"
+version = "1.2.0"
+authors = ["Microsoft"]
+description = "Outlook PST Store Provider in Rust"
+license = "MIT"
+repository = "https://github.com/microsoft/outlook-pst-rs"
+publish = false
+
+[lib]
+name = "outlook_pst"
+path = "src/lib.rs"
+
+[dependencies]
+byteorder = "1"
+thiserror = "2"
+tracing = "0.1"

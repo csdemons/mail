@@ -3227,6 +3227,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "outlook-pst"
+version = "1.2.0"
+dependencies = [
+ "byteorder",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "pango"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3918,7 +3927,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rrcki-mail"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -3928,6 +3937,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "ed25519-dalek",
+ "encoding_rs",
  "futures",
  "getrandom 0.2.17",
  "hmac",
@@ -3939,6 +3949,7 @@ dependencies = [
  "mail-parser",
  "mime_guess",
  "native-tls",
+ "outlook-pst",
  "percent-encoding",
  "qrcode",
  "reqwest 0.12.28",

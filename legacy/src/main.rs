@@ -29,6 +29,12 @@ mod discover;
 mod desktop;
 #[path = "../../src-tauri/src/store.rs"]
 mod store;
+#[path = "../../src-tauri/src/mbox.rs"]
+mod mbox;
+#[path = "../../src-tauri/src/pst.rs"]
+mod pst;
+#[path = "../../src-tauri/src/transfer.rs"]
+mod transfer;
 #[path = "../../src-tauri/src/totp.rs"]
 mod totp;
 #[path = "../../src-tauri/src/smtp.rs"]

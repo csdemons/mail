@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type {
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo,
+  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus,
 } from './types'
 
 export interface LoginParams {
@@ -63,6 +63,14 @@ export const api = {
   templateSave: (name: string, text: string, html: string | null) => invoke<void>('template_save', { name, text, html }),
   templateDelete: (folder: string, uid: number) => invoke<void>('template_delete', { folder, uid }),
   listContacts: () => invoke<ContactsResult>('list_contacts'),
+  importThunderbird: () => invoke<ImportSource[]>('import_thunderbird'),
+  importPickFiles: () => invoke<ImportSource | null>('import_pick_files'),
+  importPickFolder: () => invoke<ImportSource | null>('import_pick_folder'),
+  importStart: (source: string, root: string) => invoke<number>('import_start', { source, root }),
+  jobStatus: (id: number) => invoke<JobStatus>('job_status', { id }),
+  jobCancel: (id: number) => invoke<void>('job_cancel', { id }),
+  backupStart: (folders: string[]) => invoke<number | null>('backup_start', { folders }),
+  contactsImport: (bookUrl: string) => invoke<number | null>('contacts_import', { bookUrl }),
   appInfo: () => invoke<AppInfo>('app_info'),
   checkUpdate: () => invoke<UpdateInfo | null>('check_update'),
   updateProgress: () => invoke<{ done: number; total: number }>('update_progress'),

@@ -167,6 +167,15 @@ pub async fn pick_files(app: &AppHandle) -> Option<Vec<PathBuf>> {
     Some(paths.into_iter().filter_map(|p| p.into_path().ok()).collect())
 }
 
+/// Выбор папки. `None` — пользователь отменил.
+pub async fn pick_folder(app: &AppHandle) -> Option<PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+    rx.await.ok().flatten()?.into_path().ok()
+}
+
 /// Куда сохранить файл. `None` — пользователь отменил.
 pub async fn save_file(app: &AppHandle, name: &str) -> Option<PathBuf> {
     let (tx, rx) = tokio::sync::oneshot::channel();
