@@ -610,6 +610,7 @@ try:
     [b for b in modal.find_elements(By.TAG_NAME, 'button') if 'Создать карточку' in b.text][0].click()
     W(d, 15).until(lambda d: any(c['title'].startswith('Коллеги') and 'call/abc123#message_1' in c['description'] for c in nc_mock('GET', '/test/state')['cards']))
     ok('Deck card created from message (text, author, link)')
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-card-modal'))
 
     # Новая личная беседа.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Новая беседа"]').click()
