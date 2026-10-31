@@ -11,6 +11,7 @@ RULES = [
     ('deb', lambda n: n.endswith('_amd64-astra1.8.deb') or n.endswith('_amd64.deb')),
     ('rpm', lambda n: n.endswith('.x86_64.rpm')),
     ('appimage', lambda n: n.endswith('_amd64.AppImage')),
+    ('mac', lambda n: n.endswith('_universal.app.tar.gz')),
 ]
 assets = {}
 for root, _, files in os.walk(folder):

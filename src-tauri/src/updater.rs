@@ -8,7 +8,8 @@
 //! - Windows — установщик NSIS в тихом режиме, программа закрывается;
 //! - Linux .deb/.rpm — через `pkexec` (пароль администратора); не вышло —
 //!   пользователь получает путь к пакету и команду;
-//! - AppImage — файл заменяется на месте, без прав администратора.
+//! - AppImage — файл заменяется на месте, без прав администратора;
+//! - macOS — программа (`.app`) заменяется на месте из архива `.app.tar.gz`.
 //!
 //! Подлинность: `latest.json` подписан ключом Ed25519 (файл `latest.json.sig`
 //! рядом). Закрытый ключ есть только у сборки релизов (секрет CI), открытый
@@ -240,6 +241,10 @@ pub fn detect_variant(forced: Option<&str>) -> String {
         // Сборка под Windows 8 — цель x86_64-win7-windows-*: target_vendor = "win7".
         return if cfg!(target_vendor = "win7") { "win8".into() } else { "win".into() };
     }
+    if cfg!(target_os = "macos") {
+        // Только установленная программа (внутри .app) обновляется сама.
+        return if mac_bundle().is_some() { "mac".into() } else { "unknown".into() };
+    }
     if std::env::var_os("APPIMAGE").is_some() {
         return "appimage".into();
     }
@@ -291,7 +296,7 @@ fn check_asset(asset: &ManifestAsset) -> Result<()> {
     if url.scheme() != "https" {
         return Err(AppError::Other("Обновление должно скачиваться по https".into()));
     }
-    let ok_ext = [".exe", ".deb", ".rpm", ".AppImage"].iter().any(|e| asset.name.ends_with(e));
+    let ok_ext = [".exe", ".deb", ".rpm", ".AppImage", ".app.tar.gz"].iter().any(|e| asset.name.ends_with(e));
     if !ok_ext || asset.name.contains(['/', '\\']) || asset.name.starts_with('.') {
         return Err(AppError::Other("Неожиданный файл обновления".into()));
     }
@@ -484,8 +489,56 @@ pub fn install(variant: &str, file: &Path) -> Result<InstallResult> {
                 _ => manual(hint),
             }
         }
+        "mac" => install_mac(file),
         _ => manual(format!("Скачанный файл: {}", file.display())),
     }
+}
+
+/// Папка программы `….app`, если запущена установленная программа.
+fn mac_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bundle = exe.parent()?.parent()?.parent()?.to_path_buf();
+    (bundle.extension().is_some_and(|e| e == "app") && exe.parent()?.ends_with("Contents/MacOS")).then_some(bundle)
+}
+
+/// macOS: архив с новой `.app` распаковывается рядом со скачанным файлом, затем
+/// старая программа заменяется новой (переименованием в той же папке) и запускается.
+fn install_mac(file: &Path) -> Result<InstallResult> {
+    let bundle = mac_bundle().ok_or_else(|| AppError::Other("Программа запущена не из папки «Программы»".into()))?;
+    let reveal = |why: String| {
+        let _ = std::process::Command::new("/usr/bin/open").arg("-R").arg(file).spawn();
+        Ok(InstallResult { restarting: false, manual: Some(format!("{why}. Архив с новой версией открыт в Finder: распакуйте его и перетащите программу в «Программы». Файл: {}", file.display())) })
+    };
+    let dir = file.parent().ok_or_else(|| AppError::Other("Каталог загрузки неизвестен".into()))?.join("unpacked");
+    std::fs::create_dir(&dir)?;
+    let ok = std::process::Command::new("/usr/bin/tar").arg("-xzf").arg(file).arg("-C").arg(&dir).status().map(|s| s.success()).unwrap_or(false);
+    let new_app = std::fs::read_dir(&dir).ok().and_then(|mut it| it.find_map(|e| e.ok().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "app"))));
+    let Some(new_app) = new_app.filter(|_| ok) else {
+        return reveal("Архив обновления не распаковался".into());
+    };
+    let parent = bundle.parent().ok_or_else(|| AppError::Other("Папка программы неизвестна".into()))?;
+    let staged = parent.join(format!(".{}.new", bundle.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+    let old = parent.join(format!(".{}.old", bundle.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+    let _ = std::fs::remove_dir_all(&staged);
+    let _ = std::fs::remove_dir_all(&old);
+    // ditto сохраняет подпись, права и расширенные атрибуты внутри .app.
+    let copied = std::process::Command::new("/usr/bin/ditto").arg(&new_app).arg(&staged).status().map(|s| s.success()).unwrap_or(false);
+    if !copied {
+        let _ = std::fs::remove_dir_all(&staged);
+        return reveal(format!("Нет прав на запись в {}", parent.display()));
+    }
+    if let Err(e) = std::fs::rename(&bundle, &old) {
+        let _ = std::fs::remove_dir_all(&staged);
+        return reveal(format!("Не удалось заменить программу: {e}"));
+    }
+    if let Err(e) = std::fs::rename(&staged, &bundle) {
+        let _ = std::fs::rename(&old, &bundle);
+        return reveal(format!("Не удалось заменить программу: {e}"));
+    }
+    let _ = std::fs::remove_dir_all(&old);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::process::Command::new("/usr/bin/open").arg("-n").arg(&bundle).spawn().map_err(|e| AppError::Other(format!("Перезапуск: {e}")))?;
+    Ok(InstallResult { restarting: true, manual: None })
 }
 
 /// Запуск установщика с повышением прав (ShellExecute «runas» — запрос UAC),

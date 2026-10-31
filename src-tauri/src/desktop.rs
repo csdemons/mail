@@ -42,7 +42,18 @@ fn launch_path() -> Result<PathBuf> {
     std::env::current_exe().map_err(|e| AppError::Other(format!("Путь к программе: {e}")))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn autostart_file() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    Some(home.join("Library/LaunchAgents/ru.rrcki.mail.plist"))
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn autostart_file() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -84,12 +95,27 @@ pub fn set_autostart(on: bool) -> Result<()> {
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let quoted = format!("\"{}\"", exe.display().to_string().replace('\\', "\\\\").replace('"', "\\\""));
-        std::fs::write(
-            &file,
-            format!("[Desktop Entry]\nType=Application\nName=Atom Mail\nExec={quoted} {MINIMIZED_ARG}\nIcon=rrcki-mail\nX-GNOME-Autostart-enabled=true\nTerminal=false\n"),
-        )?;
-        Ok(())
+        // macOS: агент запуска (LaunchAgent) — его видно в «Объектах входа».
+        #[cfg(target_os = "macos")]
+        {
+            std::fs::write(
+                &file,
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key><string>ru.rrcki.mail</string>\n  <key>ProgramArguments</key><array><string>{}</string><string>{MINIMIZED_ARG}</string></array>\n  <key>RunAtLoad</key><true/>\n  <key>ProcessType</key><string>Interactive</string>\n</dict>\n</plist>\n",
+                    xml_escape(&exe.display().to_string())
+                ),
+            )?;
+            Ok(())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let quoted = format!("\"{}\"", exe.display().to_string().replace('\\', "\\\\").replace('"', "\\\""));
+            std::fs::write(
+                &file,
+                format!("[Desktop Entry]\nType=Application\nName=Atom Mail\nExec={quoted} {MINIMIZED_ARG}\nIcon=rrcki-mail\nX-GNOME-Autostart-enabled=true\nTerminal=false\n"),
+            )?;
+            Ok(())
+        }
     }
 }
 

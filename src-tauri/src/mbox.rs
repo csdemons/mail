@@ -263,6 +263,7 @@ fn profile_roots() -> Vec<PathBuf> {
     #[cfg(not(windows))]
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
+        roots.push(home.join("Library/Thunderbird/Profiles"));
         roots.push(home.join(".thunderbird"));
         roots.push(home.join("snap/thunderbird/common/.thunderbird"));
         roots.push(home.join(".var/app/org.mozilla.Thunderbird/.thunderbird"));

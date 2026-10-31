@@ -117,6 +117,54 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
 
+  # macOS 10.15+: одна «универсальная» программа для Apple Silicon и Intel.
+  # Подпись — ad-hoc (без сертификата Apple Developer): при первом запуске macOS
+  # спросит разрешение («Системные настройки → Конфиденциальность и безопасность»).
+  bundle-macos:
+    name: Bundle (macos)
+    needs: check
+    runs-on: macos-14
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: '**/package-lock.json' }
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with: { toolchain: stable, targets: 'aarch64-apple-darwin,x86_64-apple-darwin' }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with: { workspaces: src-tauri }
+      - name: npm ci (с повтором при зависании)
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            timeout 420 npm ci --no-audit --no-fund && exit 0
+            echo "npm ci — попытка $i не удалась"; sleep 15
+          done
+          exit 1
+      - name: Unit tests (macOS)
+        timeout-minutes: 20
+        working-directory: src-tauri
+        run: cargo test --lib
+      - run: npx tauri build --target universal-apple-darwin --bundles app,dmg
+      - name: Archive .app (встроенное обновление) и проверка подписи
+        shell: bash
+        run: |
+          v=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          b=src-tauri/target/universal-apple-darwin/release/bundle
+          app=$(ls -d "$b"/macos/*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          lipo -archs "$app/Contents/MacOS/rrcki-mail"
+          mkdir -p out
+          tar -czf "out/rrcki-mail_${v}_universal.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")"
+          cp "$b"/dmg/*.dmg out/
+          ls -la out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rrcki-mail-macos
+          path: out/*
+          if-no-files-found: error
+
   # Windows 8/8.1: стандартные цели Rust требуют Windows 10, поэтому отдельная
   # сборка под x86_64-win7-windows-msvc (std собирается из исходников).
   # WebView2 на этих системах — последняя поддерживаемая версия 109.
@@ -231,7 +279,7 @@ jobs:
   release:
     name: GitHub Release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [bundle, bundle-win8, bundle-astra17]
+    needs: [bundle, bundle-win8, bundle-astra17, bundle-macos]
     runs-on: ubuntu-22.04
     # Секрет подписи обновлений хранится в среде «release»: настройте в ней обязательное
     # подтверждение (Settings → Environments → release → Required reviewers) и перенесите
@@ -278,6 +326,7 @@ jobs:
           - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+:** `rrcki-mail_*_amd64-astra1.8.deb` → `sudo apt install ./rrcki-mail_*_amd64-astra1.8.deb`
           - Узнать версию Astra: `cat /etc/astra_version`. Пакет для 1.8 на 1.7 не встанет (нет WebKitGTK 4.1) — и наоборот ставить не нужно.
           - **RED OS / ALT / Fedora:** `.rpm`; любой дистрибутив — `.AppImage` (`chmod +x` и запустить).
+          - **macOS 10.15+ (Apple Silicon и Intel):** `rrcki-mail_*_universal.dmg` → открыть и перетащить «RRCKI Mail» в «Программы». Программа без сертификата Apple: при первом запуске macOS сообщит, что не может проверить разработчика, — «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть» (или в Терминале `xattr -dr com.apple.quarantine "/Applications/RRCKI Mail.app"`). Дальше обновляется сама.
           TXT
       - name: latest.json (встроенное обновление)
         if: steps.ver.outputs.exists == 'false'

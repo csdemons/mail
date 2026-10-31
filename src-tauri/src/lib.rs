@@ -59,8 +59,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running RRCKI Mail")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                commands::on_exit_requested(app, || api.prevent_exit());
+            match event {
+                tauri::RunEvent::ExitRequested { api, .. } => commands::on_exit_requested(app, || api.prevent_exit()),
+                // macOS: щелчок по значку в Dock, когда окно свёрнуто в трей (строку меню).
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => host::show_main(app),
+                _ => {}
             }
         });
 }
