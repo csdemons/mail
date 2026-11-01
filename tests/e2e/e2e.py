@@ -1251,7 +1251,10 @@ try:
     assert 'Робот 119' in d.find_element(By.CSS_SELECTOR, '.search-saved').get_attribute('textContent')
     d.find_element(By.CSS_SELECTOR, '.view-item[data-view="q-important"]').click()
     W(d, 10).until(lambda d: q.get_attribute('value') == 'важные' and d.find_elements(By.CSS_SELECTOR, '.search-header'))
-    assert all(r.find_elements(By.CSS_SELECTOR, '.important-mark') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')), 'only important mail'
+    try:
+        W(d, 10).until(lambda d: 'Письмо №119' not in subj(d) and all(r.find_elements(By.CSS_SELECTOR, '.important-mark') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
+    except Exception:
+        print('ROWS:', subj(d)); raise
     d.save_screenshot(f'{OUT}/42a-saved-searches.png')
     d.execute_script("arguments[0].click()", d.find_element(By.CSS_SELECTOR, 'button[aria-label="Удалить поиск Робот 119"]'))
     W(d, 10).until(lambda d: not [v for v in d.find_elements(By.CSS_SELECTOR, '.view-item') if 'Робот 119' in v.get_attribute('textContent')])
