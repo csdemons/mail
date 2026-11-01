@@ -508,10 +508,12 @@ try:
     st1 = inv('deck_stacks', {'boardId': 1})['ok']
     inv('deck_create_card', {'boardId': 1, 'stackId': st1[0]['id'], 'title': 'E2E полная карточка', 'description': '## Цель\nОбновить **сеть** до 1 ноября\n- [ ] коммутаторы', 'duedate': None})
     d.find_element(By.CSS_SELECTOR, '.deck-main button[aria-label="Обновить"]').click()
-    full_card = W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'E2E полная карточка' in c.get_attribute('textContent')])[0]
-    from selenium.webdriver.common.action_chains import ActionChains
-    ActionChains(d).double_click(full_card).perform()
+    W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'E2E полная карточка' in c.get_attribute('textContent')] and not d.find_elements(By.CSS_SELECTOR, '.deck-main .spin'))
+    time.sleep(1)
+    full_card = [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'E2E полная карточка' in c.get_attribute('textContent')][0]
+    d.execute_script("arguments[0].dispatchEvent(new MouseEvent('dblclick', {bubbles: true}))", full_card)
     dlg = wait(d, '.deck-full', 10)
+    assert d.find_element(By.CSS_SELECTOR, '.deck-full .deck-title-input').get_attribute('value') == 'E2E полная карточка'
     heads = [h.get_attribute('textContent') for h in dlg.find_elements(By.CSS_SELECTOR, '.deck-section-head b')]
     assert any('Описание' in h for h in heads) and any('Подзадачи' in h for h in heads) and any('Вложения' in h for h in heads) and any('Комментарии' in h for h in heads), heads
     W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.deck-full .deck-markdown h3').get_attribute('textContent') == 'Цель')
