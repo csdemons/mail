@@ -186,8 +186,7 @@ class H(BaseHTTPRequestHandler):
             return self.wfile.write(body)
         # --- Уменьшенные копии файлов (core/preview по fileId)
         if method == 'GET' and p == '/index.php/core/preview':
-            from urllib.parse import parse_qs
-            fid = (parse_qs(urlparse(self.path).query).get('fileId') or [''])[0]
+            fid = q.get('fileId', '')
             f = next((v for v in state['files'].values() if str(v['id']) == fid), None)
             if f is None or not f['data'].startswith(b'\x89PNG'):
                 return self.send(404)
