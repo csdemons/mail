@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -21,26 +22,12 @@ const OP_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Default)]
 pub struct AppState {
-    /// Учётные данные текущей сессии (пароль только в памяти процесса).
-    creds: Mutex<Option<Credentials>>,
-    /// Открытое IMAP-соединение; переиспользуется между командами.
-    conn: Mutex<Option<Connection>>,
-    /// Настройки текущей сессии (SMTP, DAV, имя отправителя).
-    profile: Mutex<Option<Settings>>,
-    /// Файлы, выбранные пользователем для вложения: id → путь. Пути не
-    /// передаются во frontend и не принимаются от него.
-    picked: Mutex<HashMap<String, PathBuf>>,
+    /// Активная учётная запись: всё, что принадлежит её сеансу (соединения,
+    /// хранилище, Nextcloud, SOGo…). Команда берёт ссылку на контекст в момент
+    /// запуска и работает только с ним: переключение на другую учётную запись
+    /// посреди операции не переносит её в чужой ящик.
+    active: Mutex<Option<Arc<AccountCtx>>>,
     next_pick: AtomicU64,
-    /// Найденные календари и адресные книги (автообнаружение один раз за сессию).
-    calendars: Mutex<Option<Vec<dav::Collection>>>,
-    books: Mutex<Option<Vec<dav::Collection>>>,
-    /// Подключение к Nextcloud: учётные данные и ID пользователя.
-    nc: Mutex<Option<(nextcloud::NcCreds, String)>>,
-    /// Незавершённый вход через браузер (Login Flow v2).
-    nc_flow: Mutex<Option<(url::Url, nextcloud::LoginFlow)>>,
-    /// Сессия веб-API SOGo для поиска адресатов (или текст ошибки входа,
-    /// чтобы не повторять неудачный вход на каждое нажатие клавиши).
-    sogo: Mutex<Option<std::result::Result<sogo::SogoSession, String>>>,
     /// Найденное обновление и ход его скачивания.
     update: Mutex<Option<(updater::UpdateInfo, updater::ManifestAsset)>>,
     update_progress: updater::Progress,
@@ -52,11 +39,7 @@ pub struct AppState {
     totp_throttle: Mutex<totp::Throttle>,
     /// Проверки кода выполняются по одной.
     totp_gate: Mutex<()>,
-    /// Локальное хранилище писем и индекс поиска текущей сессии.
-    store: Mutex<Option<std::sync::Arc<store::Store>>>,
-    /// Почему хранилище не открылось (показывается в настройках).
-    store_error: Mutex<Option<String>>,
-    /// Письма в «окне отмены».
+    /// Письма в «окне отмены» (каждое — со своим контекстом учётной записи).
     pub outbox: Outbox,
     /// Номер сессии: фоновые задачи прошлой сессии (до выхода/блокировки) завершаются.
     session: AtomicU64,
@@ -78,7 +61,97 @@ pub struct AppState {
     switching: Mutex<()>,
 }
 
+/// Всё, что принадлежит сеансу одной учётной записи. Создаётся при входе
+/// (переключении), закрывается при выходе, блокировке и переключении; операции,
+/// начатые в этом сеансе, держат на него ссылку и не видят другую учётную запись.
+pub struct AccountCtx {
+    /// `логин@сервер` в нижнем регистре.
+    pub key: String,
+    creds: Credentials,
+    /// Настройки (SMTP, DAV, имя отправителя…) — меняются из окна настроек.
+    profile: Mutex<Settings>,
+    /// Открытое IMAP-соединение; переиспользуется между командами.
+    conn: Mutex<Option<Connection>>,
+    /// Файлы, выбранные пользователем для вложения: id → путь. Пути не
+    /// передаются во frontend и не принимаются от него.
+    picked: Mutex<HashMap<String, PathBuf>>,
+    /// Найденные календари и адресные книги (автообнаружение один раз за сессию).
+    calendars: Mutex<Option<Vec<dav::Collection>>>,
+    books: Mutex<Option<Vec<dav::Collection>>>,
+    /// Подключение к Nextcloud: учётные данные и ID пользователя.
+    nc: Mutex<Option<(nextcloud::NcCreds, String)>>,
+    /// Незавершённый вход через браузер (Login Flow v2).
+    nc_flow: Mutex<Option<(url::Url, nextcloud::LoginFlow)>>,
+    /// Сессия веб-API SOGo для поиска адресатов (или текст ошибки входа,
+    /// чтобы не повторять неудачный вход на каждое нажатие клавиши).
+    sogo: Mutex<Option<std::result::Result<sogo::SogoSession, String>>>,
+    /// Локальное хранилище писем и индекс поиска.
+    store: Mutex<Option<Arc<store::Store>>>,
+    /// Почему хранилище не открылось (показывается в настройках).
+    store_error: Mutex<Option<String>>,
+    closed: std::sync::atomic::AtomicBool,
+}
+
+impl AccountCtx {
+    fn new(creds: Credentials, profile: Settings) -> Self {
+        AccountCtx {
+            key: account_key(&creds.username, &creds.host),
+            nc: Mutex::new(load_nc(&profile)),
+            creds,
+            profile: Mutex::new(profile),
+            conn: Mutex::new(None),
+            picked: Mutex::default(),
+            calendars: Mutex::new(None),
+            books: Mutex::new(None),
+            nc_flow: Mutex::new(None),
+            sogo: Mutex::new(None),
+            store: Mutex::new(None),
+            store_error: Mutex::new(None),
+            closed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    async fn profile(&self) -> Settings {
+        self.profile.lock().await.clone()
+    }
+
+    /// Сеанс закрыт (выход, блокировка, переключение).
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    /// Закрыть сеанс: хранилище, соединения IMAP и SOGo, Nextcloud, календари,
+    /// выбранные файлы. Операции, ещё держащие контекст, могут завершиться
+    /// (например, копия отправленного письма) — только в ящике этой учётной записи.
+    async fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        if let Some(st) = self.store.lock().await.take() {
+            let _ = tokio::task::spawn_blocking(move || st.close()).await;
+        }
+        *self.nc.lock().await = None;
+        *self.nc_flow.lock().await = None;
+        *self.calendars.lock().await = None;
+        *self.books.lock().await = None;
+        self.picked.lock().await.clear();
+        if let Some(Ok(session)) = self.sogo.lock().await.take() {
+            session.logout().await;
+        }
+        if let Some(conn) = self.conn.lock().await.take() {
+            conn.logout().await;
+        }
+    }
+}
+
 impl AppState {
+    /// Контекст активной учётной записи.
+    async fn ctx(&self) -> Result<Arc<AccountCtx>> {
+        self.active.lock().await.clone().ok_or(AppError::NotLoggedIn)
+    }
+
+    async fn ctx_opt(&self) -> Option<Arc<AccountCtx>> {
+        self.active.lock().await.clone()
+    }
+
     /// Закрытие главного окна не завершает программу (она в трее).
     pub fn keeps_running(&self) -> bool {
         self.tray.load(Ordering::SeqCst) && self.close_to_tray.load(Ordering::SeqCst)
@@ -160,25 +233,36 @@ fn account_key(username: &str, host: &str) -> String {
     format!("{}@{}", username.to_lowercase(), host.to_lowercase())
 }
 
-/// Выполняет операцию на открытом соединении. Если соединение оборвалось
-/// (сервер закрыл его по таймауту простоя и т.п.) — переподключается и
-/// повторяет операцию один раз.
+/// Выполняет операцию на соединении активной учётной записи (контекст берётся в
+/// момент вызова). Если соединение оборвалось (сервер закрыл его по таймауту
+/// простоя и т.п.) — переподключается и повторяет операцию один раз.
 macro_rules! with_conn {
-    ($state:expr, $c:ident => $body:expr) => {
-        with_conn!(@run $state, $c, $body, false)
-    };
+    ($state:expr, $c:ident => $body:expr) => {{
+        let __ctx = $state.ctx().await?;
+        with_ctx!(__ctx, $c => $body)
+    }};
     // Неидемпотентная операция (APPEND в «Отправленные»): после таймаута не повторять —
     // сервер мог уже сохранить письмо, повтор дал бы копию.
-    (once $state:expr, $c:ident => $body:expr) => {
-        with_conn!(@run $state, $c, $body, true)
+    (once $state:expr, $c:ident => $body:expr) => {{
+        let __ctx = $state.ctx().await?;
+        with_ctx!(once __ctx, $c => $body)
+    }};
+}
+
+/// То же на соединении заданного контекста учётной записи.
+macro_rules! with_ctx {
+    ($ctx:expr, $c:ident => $body:expr) => {
+        with_ctx!(@run $ctx, $c, $body, false)
     };
-    (@run $state:expr, $c:ident, $body:expr, $no_timeout_retry:expr) => {{
-        let creds = $state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-        let mut guard = $state.conn.lock().await;
+    (once $ctx:expr, $c:ident => $body:expr) => {
+        with_ctx!(@run $ctx, $c, $body, true)
+    };
+    (@run $ctx:expr, $c:ident, $body:expr, $no_timeout_retry:expr) => {{
+        let mut guard = $ctx.conn.lock().await;
         let mut attempt = 0;
         loop {
             if guard.is_none() {
-                *guard = Some(imap::connect(&creds).await?);
+                *guard = Some(imap::connect(&$ctx.creds).await?);
             }
             let $c = guard.as_mut().expect("connection present");
             let result = match tokio::time::timeout(OP_TIMEOUT, $body).await {
@@ -219,25 +303,29 @@ pub struct LoginResult {
     warning: Option<String>,
 }
 
+/// Начать сеанс учётной записи: прежний контекст закрывается, создаётся новый.
 async fn start_session(app: &AppHandle, state: &AppState, creds: Credentials, profile: Settings) -> Result<()> {
     let conn = imap::connect(&creds).await?;
-    open_store(app, state, &creds, &profile).await;
-    let generation = state.session.fetch_add(1, Ordering::SeqCst) + 1;
-    tauri::async_runtime::spawn(run_scheduler(app.clone(), generation));
-    if let Some(old) = state.conn.lock().await.replace(conn) {
-        old.logout().await;
+    state.session.fetch_add(1, Ordering::SeqCst);
+    let ctx = Arc::new(AccountCtx::new(creds, profile));
+    *ctx.conn.lock().await = Some(conn);
+    open_store(app, &ctx).await;
+    if let Some(old) = state.active.lock().await.replace(ctx.clone()) {
+        old.close().await;
     }
-    *state.creds.lock().await = Some(creds);
-    *state.nc.lock().await = load_nc(&profile);
-    *state.profile.lock().await = Some(profile);
-    *state.calendars.lock().await = None;
-    *state.books.lock().await = None;
-    // Сессия веб-API SOGo и выбранные файлы принадлежали прежнему входу.
-    if let Some(Ok(session)) = state.sogo.lock().await.take() {
-        session.logout().await;
-    }
-    state.picked.lock().await.clear();
+    tauri::async_runtime::spawn(run_scheduler(app.clone(), ctx));
     Ok(())
+}
+
+/// Закрыть сеанс активной учётной записи (контекст убирается из состояния).
+async fn end_session(state: &AppState) {
+    state.session.fetch_add(1, Ordering::SeqCst);
+    state.jobs.cancel_all();
+    state.import_sources.lock().await.clear();
+    let old = state.active.lock().await.take();
+    if let Some(old) = old {
+        old.close().await;
+    }
 }
 
 // ---------------------------------------------------------------- локальное хранилище
@@ -247,10 +335,10 @@ fn offline_days(profile: &Settings) -> u32 {
     profile.offline_days.unwrap_or(store::DEFAULT_DAYS).min(crate::policy::load().max_offline_days())
 }
 
-async fn open_store(app: &AppHandle, state: &AppState, creds: &Credentials, profile: &Settings) {
-    close_store(state).await;
+async fn open_store(app: &AppHandle, ctx: &AccountCtx) {
+    close_store(ctx).await;
     let Ok(root) = host::data_dir(app) else { return };
-    let account = account_key(&creds.username, &creds.host);
+    let account = ctx.key.clone();
     if !crate::policy::load().local_store() {
         // Администратор запретил хранить почту на компьютере — убрать то, что было.
         if let Ok(Err(e)) = tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await {
@@ -258,42 +346,42 @@ async fn open_store(app: &AppHandle, state: &AppState, creds: &Credentials, prof
         }
         return;
     }
-    let days = offline_days(profile);
-    *state.store_error.lock().await = None;
+    let days = offline_days(&ctx.profile().await);
+    *ctx.store_error.lock().await = None;
     match tokio::task::spawn_blocking(move || store::Store::open(&root, &account, days)).await {
         Ok(Ok(st)) => {
-            let st = std::sync::Arc::new(st);
-            *state.store.lock().await = Some(st.clone());
-            tauri::async_runtime::spawn(store::run_sync(st, creds.clone()));
+            let st = Arc::new(st);
+            *ctx.store.lock().await = Some(st.clone());
+            tauri::async_runtime::spawn(store::run_sync(st, ctx.creds.clone()));
         }
         Ok(Err(e)) => {
             log::warn!("local store unavailable: {e}");
-            *state.store_error.lock().await = Some(e.to_string());
+            *ctx.store_error.lock().await = Some(e.to_string());
         }
         Err(e) => log::warn!("local store: {e}"),
     }
 }
 
-async fn close_store(state: &AppState) {
-    if let Some(st) = state.store.lock().await.take() {
+async fn close_store(ctx: &AccountCtx) {
+    if let Some(st) = ctx.store.lock().await.take() {
         let _ = tokio::task::spawn_blocking(move || st.close()).await;
     }
 }
 
-async fn local(state: &AppState) -> Option<std::sync::Arc<store::Store>> {
-    state.store.lock().await.clone()
+async fn local(ctx: &AccountCtx) -> Option<Arc<store::Store>> {
+    ctx.store.lock().await.clone()
 }
 
-async fn local_raw(state: &AppState, folder: &str, uid: u32) -> Option<Vec<u8>> {
-    local(state).await?.raw(folder, uid)
+async fn local_raw(ctx: &AccountCtx, folder: &str, uid: u32) -> Option<Vec<u8>> {
+    local(ctx).await?.raw(folder, uid)
 }
 
 /// Вложение: из локального хранилища, иначе с сервера.
-async fn attachment(state: &AppState, folder: &str, uid: u32, index: usize) -> Result<(String, Vec<u8>)> {
-    if let Some(raw) = local_raw(state, folder, uid).await {
+async fn attachment(ctx: &AccountCtx, folder: &str, uid: u32, index: usize) -> Result<(String, Vec<u8>)> {
+    if let Some(raw) = local_raw(ctx, folder, uid).await {
         return imap::attachment_in(&raw, index);
     }
-    with_conn!(state, c => imap::get_attachment(c, folder, uid, index))
+    with_ctx!(ctx, c => imap::get_attachment(c, folder, uid, index))
 }
 
 /// Серверы почты по адресу (вход «адрес + пароль»).
@@ -305,20 +393,23 @@ pub async fn discover_servers(email: String) -> Result<crate::discover::Discover
 /// Папки из локального хранилища — показываются сразу, до ответа сервера.
 #[tauri::command]
 pub async fn cached_folders(state: State<'_, AppState>) -> Result<Option<Vec<Folder>>> {
-    Ok(local(&state).await.and_then(|st| st.folders()))
+    let ctx = state.ctx().await?;
+    Ok(local(&ctx).await.and_then(|st| st.folders()))
 }
 
 /// Письма папки из локального хранилища (затем интерфейс запрашивает сервер).
 #[tauri::command]
 pub async fn cached_messages(state: State<'_, AppState>, folder: String, before_uid: Option<u32>, limit: u32) -> Result<Option<MessagePage>> {
-    Ok(local(&state).await.and_then(|st| st.page(&folder, before_uid, limit.clamp(1, 200) as usize)))
+    let ctx = state.ctx().await?;
+    Ok(local(&ctx).await.and_then(|st| st.page(&folder, before_uid, limit.clamp(1, 200) as usize)))
 }
 
 /// Мгновенный поиск по индексу: все свои папки, отправитель/получатели/тема и
 /// текст писем, хранимых на компьютере.
 #[tauri::command]
 pub async fn search_mail(state: State<'_, AppState>, query: String) -> Result<Vec<imap::MessageSummary>> {
-    let Some(st) = local(&state).await else { return Ok(Vec::new()) };
+    let ctx = state.ctx().await?;
+    let Some(st) = local(&ctx).await else { return Ok(Vec::new()) };
     let q = query.trim().to_string();
     if q.chars().count() < 2 {
         return Ok(Vec::new());
@@ -330,11 +421,12 @@ pub async fn search_mail(state: State<'_, AppState>, query: String) -> Result<Ve
 /// чтобы не задерживать остальную работу.
 #[tauri::command]
 pub async fn search_server(state: State<'_, AppState>, query: String) -> Result<Vec<imap::MessageSummary>> {
+    let ctx = state.ctx().await?;
     let q = query.trim().to_string();
     if q.chars().count() < 2 {
         return Ok(Vec::new());
     }
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let creds = ctx.creds.clone();
     let mut conn = imap::connect(&creds).await?;
     let folders = imap::list_folders(&mut conn).await?;
     let mut out = Vec::new();
@@ -382,9 +474,11 @@ pub struct OfflineStatus {
 
 #[tauri::command]
 pub async fn offline_status(state: State<'_, AppState>) -> Result<OfflineStatus> {
+    let ctx = state.ctx().await?;
     let policy = crate::policy::load();
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    let st = match local(&state).await {
+    let profile = ctx.profile().await;
+    let error = ctx.store_error.lock().await.clone();
+    let st = match local(&ctx).await {
         Some(st) => Some(tokio::task::spawn_blocking(move || st.status()).await.map_err(|e| AppError::Other(e.to_string()))?),
         None => None,
     };
@@ -397,35 +491,33 @@ pub async fn offline_status(state: State<'_, AppState>) -> Result<OfflineStatus>
         cached: st.map_or(0, |s| s.cached),
         syncing: st.is_some_and(|s| s.syncing),
         bytes: st.map_or(0, |s| s.bytes),
-        error: state.store_error.lock().await.clone(),
+        error,
     })
 }
 
 /// Срок хранения писем на компьютере; хранилище открывается заново с новым сроком.
 #[tauri::command]
 pub async fn set_offline_days(app: AppHandle, state: State<'_, AppState>, days: u32) -> Result<()> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let ctx = state.ctx().await?;
     let profile = {
-        let mut guard = state.profile.lock().await;
-        let p = guard.as_mut().ok_or(AppError::NotLoggedIn)?;
+        let mut p = ctx.profile.lock().await;
         p.offline_days = Some(days.min(3650));
         p.clone()
     };
     settings::save(&app, &profile)?;
-    open_store(&app, &state, &creds, &profile).await;
+    open_store(&app, &ctx).await;
     Ok(())
 }
 
 /// Удалить письма, хранимые на компьютере (индекс соберётся заново).
 #[tauri::command]
 pub async fn clear_offline(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    close_store(&state).await;
+    let ctx = state.ctx().await?;
+    close_store(&ctx).await;
     let root = host::data_dir(&app)?;
-    let account = account_key(&creds.username, &creds.host);
+    let account = ctx.key.clone();
     tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await.map_err(|e| AppError::Other(e.to_string()))??;
-    open_store(&app, &state, &creds, &profile).await;
+    open_store(&app, &ctx).await;
     Ok(())
 }
 
@@ -434,12 +526,13 @@ pub async fn clear_offline(app: AppHandle, state: State<'_, AppState>) -> Result
 /// Личная подпись. Пока своя не задана — берётся подпись из веб-почты (SOGo).
 #[tauri::command]
 pub async fn signature_get(state: State<'_, AppState>) -> Result<String> {
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let ctx = state.ctx().await?;
+    let profile = ctx.profile().await;
     if let Some(sig) = profile.signature {
         return Ok(sig);
     }
-    let Ok((_, base)) = dav_client(&state).await else { return Ok(String::new()) };
-    match sogo_defaults(&state, &base).await {
+    let Ok((_, base)) = dav_client(&ctx).await else { return Ok(String::new()) };
+    match sogo_defaults(&ctx, &base).await {
         Ok((_, d)) => Ok(d.get("SOGoMailSignature").and_then(|v| v.as_str()).map(html_to_text).unwrap_or_default()),
         Err(_) => Ok(String::new()),
     }
@@ -449,17 +542,17 @@ pub async fn signature_get(state: State<'_, AppState>) -> Result<String> {
 /// Возвращает предупреждение, если в веб-почту записать не удалось.
 #[tauri::command]
 pub async fn signature_save(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<Option<String>> {
+    let ctx = state.ctx().await?;
     let text: String = text.replace("\r\n", "\n").chars().take(4000).collect();
     let profile = {
-        let mut guard = state.profile.lock().await;
-        let p = guard.as_mut().ok_or(AppError::NotLoggedIn)?;
+        let mut p = ctx.profile.lock().await;
         p.signature = Some(text.clone());
         p.clone()
     };
     settings::save(&app, &profile)?;
     let synced = async {
-        let (_, base) = dav_client(&state).await?;
-        let (session, mut defaults) = sogo_defaults(&state, &base).await?;
+        let (_, base) = dav_client(&ctx).await?;
+        let (session, mut defaults) = sogo_defaults(&ctx, &base).await?;
         defaults["SOGoMailSignature"] = serde_json::Value::String(text_to_html(&text));
         session.save_defaults(&defaults).await
     }
@@ -666,27 +759,27 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
     }
     // Письма из «окна отмены» уходят, фоновые задачи сессии останавливаются.
     state.outbox.flush().await;
-    state.session.fetch_add(1, Ordering::SeqCst);
-    state.jobs.cancel_all();
-    state.import_sources.lock().await.clear();
-    // Письма на компьютере удаляются вместе с паролем.
-    close_store(&state).await;
-    let account = match (state.creds.lock().await.as_ref(), state.pending.lock().await.as_ref()) {
-        (Some(c), _) => Some(account_key(&c.username, &c.host)),
+    let active = state.ctx_opt().await;
+    let account = match (active.as_ref(), state.pending.lock().await.as_ref()) {
+        (Some(c), _) => Some(c.key.clone()),
         (None, Some(p)) => Some(account_key(&p.creds.username, &p.creds.host)),
         _ => settings::load(&app).map(|s| account_key(&s.username, &s.host)),
     };
+    // Nextcloud сеанса — только если он этой же учётной записи (контекст её).
+    let current_nc = match &active {
+        Some(c) => c.nc.lock().await.clone(),
+        None => None,
+    };
+    end_session(&state).await;
+    // Письма на компьютере удаляются вместе с паролем.
     if let (Some(account), Ok(root)) = (account.clone(), host::data_dir(&app)) {
         if let Ok(Err(e)) = tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await {
             log::warn!("local store not removed on logout: {e}");
         }
     }
     // «Выйти и забыть пароль» забывает и подключение к Nextcloud: пароль приложения
-    // отзывается на сервере и удаляется из системного хранилища.
-    // Отзывается Nextcloud именно этой учётной записи (из её настроек), а не то,
-    // что лежит в общем состоянии: оно могло остаться от другой учётной записи.
-    *state.nc_flow.lock().await = None;
-    let current_nc = state.nc.lock().await.take();
+    // отзывается на сервере и удаляется из системного хранилища — именно этой
+    // учётной записи (из её настроек и её контекста).
     let leaving = account
         .as_deref()
         .and_then(|k| settings::load_accounts(&app).into_iter().find(|a| settings::account_key(a) == k))
@@ -713,17 +806,6 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
     }
     *state.pending.lock().await = None;
     *state.totp_setup.lock().await = None;
-    *state.creds.lock().await = None;
-    *state.profile.lock().await = None;
-    *state.calendars.lock().await = None;
-    *state.books.lock().await = None;
-    if let Some(Ok(session)) = state.sogo.lock().await.take() {
-        session.logout().await;
-    }
-    state.picked.lock().await.clear();
-    if let Some(conn) = state.conn.lock().await.take() {
-        conn.logout().await;
-    }
     // Учётная запись уходит из списка; остальные остаются подключёнными.
     if let Some(key) = account {
         state.session_passwords.lock().await.remove(&key);
@@ -745,8 +827,9 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
 
 #[tauri::command]
 pub async fn list_folders(state: State<'_, AppState>) -> Result<Vec<Folder>> {
+    let ctx = state.ctx().await?;
     let folders = with_conn!(state, c => imap::list_folders(c))?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.set_folders(&folders);
     }
     Ok(folders)
@@ -759,8 +842,9 @@ pub async fn list_messages(
     before_uid: Option<u32>,
     limit: u32,
 ) -> Result<MessagePage> {
+    let ctx = state.ctx().await?;
     let page = with_conn!(state, c => imap::list_messages(c, &folder, before_uid, limit))?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.merge_page(&folder, before_uid, &page);
     }
     Ok(page)
@@ -769,15 +853,10 @@ pub async fn list_messages(
 /// Текстовый отчёт о том, что отвечает сервер (без пароля) — для разбора проблем.
 #[tauri::command]
 pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> Result<String> {
-    let header = state
-        .creds
-        .lock()
-        .await
-        .clone()
-        .map(|c| format!("Сервер: {}:{}, пользователь: {}\n", c.host, c.port, c.username))
-        .unwrap_or_default();
+    let ctx = state.ctx().await?;
+    let header = format!("Сервер: {}:{}, пользователь: {}\n", ctx.creds.host, ctx.creds.port, ctx.creds.username);
     // Отдельное соединение: диагностика не должна повлиять на рабочую сессию.
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let creds = ctx.creds.clone();
     let mut conn = imap::connect(&creds).await?;
     let report = tokio::time::timeout(OP_TIMEOUT * 2, imap::diagnostics(&mut conn, folder.as_deref()))
         .await
@@ -785,7 +864,7 @@ pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> 
     conn.logout().await;
 
     let mut extra = String::new();
-    if let Some(p) = state.profile.lock().await.clone() {
+    if let Some(p) = Some(ctx.profile().await) {
         extra.push_str(&format!("\n## SMTP {}:{}\n", p.smtp_host, p.smtp_port));
         match smtp::check(&p.smtp_host, p.smtp_port, &creds.username, &creds.password).await {
             Ok(true) => extra.push_str("подключение и EHLO: ok (вход проверяется при отправке)\n"),
@@ -840,7 +919,7 @@ pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> 
             }
         }
     }
-    if let Some(p) = state.profile.lock().await.clone() {
+    if let Some(p) = Some(ctx.profile().await) {
         let probe: String = creds.username.split('@').next().unwrap_or_default().split(['_', '.']).next().unwrap_or_default().chars().take(6).collect();
         extra.push_str("\n## Веб-API SOGo (поиск адресатов)\n");
         match url::Url::parse(&p.dav_base()) {
@@ -914,7 +993,10 @@ pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> 
 
 #[tauri::command]
 pub async fn get_profile(state: State<'_, AppState>) -> Result<Option<Settings>> {
-    Ok(state.profile.lock().await.clone())
+    Ok(match state.ctx_opt().await {
+        Some(ctx) => Some(ctx.profile().await),
+        None => None,
+    })
 }
 
 #[tauri::command]
@@ -927,14 +1009,15 @@ pub async fn update_profile(
     dav_url: String,
     password: Option<String>,
 ) -> Result<Settings> {
+    let ctx = state.ctx().await?;
     settings::validate_dav_url(&dav_url)?;
-    let mut guard = state.profile.lock().await;
-    let mut p = guard.clone().ok_or(AppError::NotLoggedIn)?;
+    let mut guard = ctx.profile.lock().await;
+    let mut p = guard.clone();
     // Смена серверов (куда уходит пароль почты) — только с подтверждением паролем:
     // даже если в интерфейс попадёт чужой код, увести пароль на свой сервер он не сможет.
     let servers_changed = p.smtp_host != smtp_host.trim() || p.smtp_port != smtp_port || p.dav_url != dav_url.trim();
     if servers_changed {
-        let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+        let creds = ctx.creds.clone();
         if password.as_deref() != Some(creds.password.as_str()) {
             return Err(AppError::Other("Чтобы изменить адреса серверов, введите пароль почты".into()));
         }
@@ -944,12 +1027,12 @@ pub async fn update_profile(
     p.smtp_port = smtp_port;
     if p.dav_url != dav_url.trim() {
         p.dav_url = dav_url.trim().to_string();
-        *state.calendars.lock().await = None;
-        *state.books.lock().await = None;
-        *state.sogo.lock().await = None;
+        *ctx.calendars.lock().await = None;
+        *ctx.books.lock().await = None;
+        *ctx.sogo.lock().await = None;
     }
     settings::save(&app, &p)?;
-    *guard = Some(p.clone());
+    *guard = p.clone();
     Ok(p)
 }
 
@@ -967,6 +1050,7 @@ const MAX_OUTGOING_MB: u64 = 25;
 
 #[tauri::command]
 pub async fn pick_attachments(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<PickedFile>> {
+    let ctx = state.ctx().await?;
     // E2E: системный диалог WebDriver не нажать, поэтому в отладочной сборке
     // файлы можно подставить переменной окружения. В релизе этого кода нет.
     #[cfg(debug_assertions)]
@@ -981,7 +1065,7 @@ pub async fn pick_attachments(app: AppHandle, state: State<'_, AppState>) -> Res
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    let mut picked = state.picked.lock().await;
+    let mut picked = ctx.picked.lock().await;
     for path in paths {
         let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
         let id = state.next_pick.fetch_add(1, Ordering::Relaxed).to_string();
@@ -1065,37 +1149,28 @@ pub struct SendTicket {
 }
 
 /// Отправка и копия в «Отправленные» (письмо уже ушло — ошибка копии лишь предупреждение).
-async fn deliver(state: &AppState, profile: &Settings, creds: &Credentials, raw: &[u8], built: Option<&lettre::Message>) -> Result<SendResult> {
+/// Всё — от имени и в ящик учётной записи `ctx`, даже если пользователь за это
+/// время переключился на другую или вышел.
+async fn deliver(ctx: &AccountCtx, raw: &[u8], built: Option<&lettre::Message>) -> Result<SendResult> {
+    let profile = ctx.profile().await;
+    let creds = &ctx.creds;
     match built {
         Some(m) => smtp::send(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, m).await?,
         None => smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, raw).await?,
     }
-    match append_sent_as(state, creds, raw).await {
+    match append_sent_as(ctx, raw).await {
         Ok(folder) => Ok(SendResult { saved_to: Some(folder), warning: None }),
         Err(e) => Ok(SendResult { saved_to: None, warning: Some(format!("Письмо отправлено, но копия не сохранена в «Отправленные»: {e}")) }),
     }
 }
 
-/// Копия в «Отправленные» — строго в ящик той учётной записи, от которой ушло
-/// письмо. Общее соединение используется, только если оно открыто для неё же;
-/// если за время отправки пользователь переключился на другую учётную запись
-/// (или вышел), копия сохраняется через отдельное соединение отправителя.
-async fn append_sent_as(state: &AppState, creds: &Credentials, raw: &[u8]) -> Result<String> {
-    {
-        let mut guard = state.conn.lock().await;
-        if let Some(c) = guard.as_mut().filter(|c| c.is_account(creds)) {
-            match tokio::time::timeout(OP_TIMEOUT, imap::append_sent(c, raw)).await {
-                Ok(Err(e)) if e.is_connection() => *guard = None,
-                Ok(r) => return r,
-                // APPEND мог дойти до сервера — повтор дал бы вторую копию.
-                Err(_) => {
-                    *guard = None;
-                    return Err(AppError::Timeout);
-                }
-            }
-        }
+/// Копия в «Отправленные» — в ящик учётной записи `ctx`: через её соединение,
+/// а если её сеанс уже закрыт (переключение, выход) — отдельным соединением.
+async fn append_sent_as(ctx: &AccountCtx, raw: &[u8]) -> Result<String> {
+    if !ctx.is_closed() {
+        return with_ctx!(once ctx, c => imap::append_sent(c, raw));
     }
-    let mut c = tokio::time::timeout(Duration::from_secs(20), imap::connect(creds)).await.map_err(|_| AppError::Timeout)??;
+    let mut c = tokio::time::timeout(Duration::from_secs(20), imap::connect(&ctx.creds)).await.map_err(|_| AppError::Timeout)??;
     let result = tokio::time::timeout(OP_TIMEOUT, imap::append_sent(&mut c, raw)).await.unwrap_or(Err(AppError::Timeout));
     c.logout().await;
     result
@@ -1118,8 +1193,8 @@ pub async fn send_message(
     delay_secs: Option<u32>,
     send_at: Option<String>,
 ) -> Result<SendTicket> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let ctx = state.ctx().await?;
+    let profile = ctx.profile().await;
 
     let send_at = match send_at.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(t) => {
@@ -1135,7 +1210,7 @@ pub async fn send_message(
     let mut files = Vec::new();
     let mut total = 0u64;
     {
-        let picked = state.picked.lock().await;
+        let picked = ctx.picked.lock().await;
         for id in &attachments {
             let path = picked
                 .get(id)
@@ -1176,15 +1251,15 @@ pub async fn send_message(
     // Отложенная отправка: письмо ждёт в «Черновиках» (видно и в веб-почте) и
     // уходит в срок, пока программа запущена, — или при следующем запуске.
     if let Some(at) = send_at {
-        with_conn!(once state, c => imap::append_draft(c, &raw))?;
-        forget_picked(&state, &attachments).await;
+        with_ctx!(once ctx, c => imap::append_draft(c, &raw))?;
+        forget_picked(&ctx, &attachments).await;
         return Ok(SendTicket { id: None, result: None, scheduled_at: Some(at) });
     }
 
     let delay = delay_secs.unwrap_or(0).min(60);
     if delay == 0 {
-        let result = deliver(&state, &profile, &creds, &raw, Some(&message)).await?;
-        forget_picked(&state, &attachments).await;
+        let result = deliver(&ctx, &raw, Some(&message)).await?;
+        forget_picked(&ctx, &attachments).await;
         return Ok(SendTicket { id: None, result: Some(result), scheduled_at: None });
     }
 
@@ -1225,17 +1300,17 @@ pub async fn send_message(
                 None => return,
             }
         }
-        let result = deliver(&state, &profile, &creds, &raw, Some(&message)).await;
+        let result = deliver(&ctx, &raw, Some(&message)).await;
         if result.is_ok() {
-            forget_picked(&state, &attachments).await;
+            forget_picked(&ctx, &attachments).await;
         }
         let _ = done_tx.send(Some(result.map_err(|e| e.to_string())));
     });
     Ok(SendTicket { id: Some(id), result: None, scheduled_at: None })
 }
 
-async fn forget_picked(state: &AppState, ids: &[String]) {
-    let mut picked = state.picked.lock().await;
+async fn forget_picked(ctx: &AccountCtx, ids: &[String]) {
+    let mut picked = ctx.picked.lock().await;
     for id in ids {
         // Перетащенный файл лежит в своём временном каталоге — убираем и его.
         if let Some(path) = picked.remove(id) {
@@ -1285,12 +1360,12 @@ pub async fn scheduled_list(state: State<'_, AppState>) -> Result<Vec<imap::Sche
 /// Отправить запланированное письмо сейчас.
 #[tauri::command]
 pub async fn scheduled_send_now(state: State<'_, AppState>, folder: String, uid: u32, resend: Option<bool>) -> Result<SendResult> {
-    let generation = state.session.load(Ordering::SeqCst);
+    let ctx = state.ctx().await?;
     if resend == Some(true) {
         // Пользователь проверил, что письмо не дошло, и отправляет его ещё раз.
-        with_conn!(state, c => imap::clear_send_marks(c, &folder, uid))?;
+        with_ctx!(ctx, c => imap::clear_send_marks(c, &folder, uid))?;
     }
-    send_scheduled(&state, generation, &folder, uid, "manual")
+    send_scheduled(&ctx, &folder, uid, "manual")
         .await?
         .ok_or_else(|| AppError::Other("Письмо уже отправлено, отправляется с другого компьютера или его результат неизвестен — обновите список".into()))
 }
@@ -1309,17 +1384,16 @@ pub async fn scheduled_cancel(state: State<'_, AppState>, folder: String, uid: u
 /// Отправка одного запланированного письма (с захватом, чтобы не отправить дважды).
 /// `None` — письмо отправляет другая копия программы, оно уже отправлено или его
 /// результат неизвестен. Письмо отправляется от той учётной записи, сеанс которой
-/// был активен при запуске (`generation`): после переключения — не отправляется.
+/// был открыт при запуске (`ctx`): после переключения или выхода — не отправляется.
 ///
 /// Состояния (метки IMAP): захват `atomclaim…` → SMTP принял → `atomsent` → удаление
 /// из «Черновиков». Обрыв связи во время передачи → `atomunknown`: такое письмо
 /// автоматически не повторяется — получатель мог его уже получить.
-async fn send_scheduled(state: &AppState, generation: u64, folder: &str, uid: u32, tag: &str) -> Result<Option<SendResult>> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    if state.session.load(Ordering::SeqCst) != generation {
+async fn send_scheduled(ctx: &AccountCtx, folder: &str, uid: u32, tag: &str) -> Result<Option<SendResult>> {
+    if ctx.is_closed() {
         return Ok(None);
     }
+    let creds = ctx.creds.clone();
     let token = format!("{}{}{}", chrono::Utc::now().timestamp(), tag.chars().take(4).collect::<String>(), &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let mut conn = imap::connect(&creds).await?;
     let result = async {
@@ -1328,7 +1402,7 @@ async fn send_scheduled(state: &AppState, generation: u64, folder: &str, uid: u3
         }
         let raw = imap::raw_of(&mut conn, folder, uid).await?;
         let final_raw = smtp::finalize_scheduled(&raw, imap::SEND_AT_HEADER);
-        match deliver(state, &profile, &creds, &final_raw, None).await {
+        match deliver(ctx, &final_raw, None).await {
             Ok(mut r) => {
                 // Сначала отметка «отправлено»: даже если удалить черновик не выйдет,
                 // письмо больше не уйдёт повторно.
@@ -1361,32 +1435,31 @@ async fn send_scheduled(state: &AppState, generation: u64, folder: &str, uid: u3
 }
 
 /// Убрать из «Черновиков» уже отправленное письмо (если в прошлый раз не вышло).
-async fn cleanup_sent(state: &AppState, folder: &str, uid: u32) -> Result<()> {
-    with_conn!(state, c => imap::remove_message(c, folder, uid))
+async fn cleanup_sent(ctx: &AccountCtx, folder: &str, uid: u32) -> Result<()> {
+    with_ctx!(ctx, c => imap::remove_message(c, folder, uid))
 }
 
-async fn scheduled_now(state: &AppState) -> Result<Vec<imap::Scheduled>> {
-    with_conn!(state, c => imap::scheduled(c))
+async fn scheduled_now(ctx: &AccountCtx) -> Result<Vec<imap::Scheduled>> {
+    with_ctx!(ctx, c => imap::scheduled(c))
 }
 
-/// Фоновая отправка запланированных писем, пока сессия та же.
-async fn run_scheduler(app: AppHandle, generation: u64) {
-    use tauri::Manager;
+/// Фоновая отправка запланированных писем и возврат отложенных — пока сеанс
+/// учётной записи `ctx` открыт (только её «Черновики» и её ящик).
+async fn run_scheduler(app: AppHandle, ctx: Arc<AccountCtx>) {
     let every = if cfg!(debug_assertions) && std::env::var_os("RRCKI_E2E_POLL_SECS").is_some() { 5 } else { 60 };
     loop {
         tokio::time::sleep(Duration::from_secs(every)).await;
-        let state = app.state::<AppState>();
-        if state.session.load(Ordering::SeqCst) != generation {
+        if ctx.is_closed() {
             return;
         }
-        match return_snoozed(&state).await {
+        match return_snoozed(&ctx).await {
             Ok(n) if n > 0 => {
                 let _ = host::notify(&app, "Отложенные письма вернулись", &format!("Во «Входящих»: {n}"));
             }
             Err(e) => log::warn!("snoozed mail check failed: {e}"),
             _ => {}
         }
-        let list = match scheduled_now(&state).await {
+        let list = match scheduled_now(&ctx).await {
             Ok(l) => l,
             Err(e) => {
                 log::warn!("scheduled mail check failed: {e}");
@@ -1395,11 +1468,11 @@ async fn run_scheduler(app: AppHandle, generation: u64) {
         };
         let now = chrono::Utc::now();
         for s in list {
-            if state.session.load(Ordering::SeqCst) != generation {
+            if ctx.is_closed() {
                 break;
             }
             if s.status == "sent" {
-                if let Err(e) = cleanup_sent(&state, &s.folder, s.uid).await {
+                if let Err(e) = cleanup_sent(&ctx, &s.folder, s.uid).await {
                     log::warn!("sent scheduled mail not removed from drafts: {e}");
                 }
                 continue;
@@ -1409,7 +1482,7 @@ async fn run_scheduler(app: AppHandle, generation: u64) {
             if !due || s.status != "pending" {
                 continue;
             }
-            match send_scheduled(&state, generation, &s.folder, s.uid, "auto").await {
+            match send_scheduled(&ctx, &s.folder, s.uid, "auto").await {
                 Ok(Some(_)) => {
                     let _ = host::notify(&app, "Отложенное письмо отправлено", if s.subject.is_empty() { "(без темы)" } else { &s.subject });
                 }
@@ -1467,8 +1540,9 @@ fn valid_color(c: &str) -> bool {
 /// Категории писем — общие с веб-почтой (SOGo: SOGoMailLabelsColors).
 #[tauri::command]
 pub async fn categories_get(state: State<'_, AppState>) -> Result<Vec<Category>> {
-    if let Ok((_, base)) = dav_client(&state).await {
-        if let Ok((_, d)) = sogo_defaults(&state, &base).await {
+    let ctx = state.ctx().await?;
+    if let Ok((_, base)) = dav_client(&ctx).await {
+        if let Ok((_, d)) = sogo_defaults(&ctx, &base).await {
             if let Some(map) = d.get("SOGoMailLabelsColors").and_then(|v| v.as_object()) {
                 let mut list: Vec<Category> = map
                     .iter()
@@ -1486,7 +1560,7 @@ pub async fn categories_get(state: State<'_, AppState>) -> Result<Vec<Category>>
             return Ok(default_categories());
         }
     }
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let profile = ctx.profile().await;
     Ok(profile
         .categories
         .map(|l| l.into_iter().map(|(keyword, name, color)| Category { keyword, name, color }).collect())
@@ -1496,21 +1570,21 @@ pub async fn categories_get(state: State<'_, AppState>) -> Result<Vec<Category>>
 /// Сохранить категории (в веб-почте SOGo; если она недоступна — в программе).
 #[tauri::command]
 pub async fn categories_save(app: AppHandle, state: State<'_, AppState>, categories: Vec<Category>) -> Result<Option<String>> {
+    let ctx = state.ctx().await?;
     for c in &categories {
         if !imap::valid_keyword(&c.keyword) || c.name.trim().is_empty() || c.name.len() > 60 || !valid_color(&c.color) {
             return Err(AppError::Other(format!("Некорректная категория «{}»", c.name)));
         }
     }
     let profile = {
-        let mut guard = state.profile.lock().await;
-        let p = guard.as_mut().ok_or(AppError::NotLoggedIn)?;
+        let mut p = ctx.profile.lock().await;
         p.categories = Some(categories.iter().map(|c| (c.keyword.clone(), c.name.trim().to_string(), c.color.clone())).collect());
         p.clone()
     };
     settings::save(&app, &profile)?;
     let synced = async {
-        let (_, base) = dav_client(&state).await?;
-        let (session, mut defaults) = sogo_defaults(&state, &base).await?;
+        let (_, base) = dav_client(&ctx).await?;
+        let (session, mut defaults) = sogo_defaults(&ctx, &base).await?;
         let map: serde_json::Map<String, serde_json::Value> =
             categories.iter().map(|c| (c.keyword.clone(), serde_json::json!([c.name.trim(), c.color]))).collect();
         defaults["SOGoMailLabelsColors"] = serde_json::Value::Object(map);
@@ -1523,8 +1597,9 @@ pub async fn categories_save(app: AppHandle, state: State<'_, AppState>, categor
 /// Поставить или снять категорию (ключевое слово) у писем.
 #[tauri::command]
 pub async fn set_keywords(state: State<'_, AppState>, folder: String, uids: Vec<u32>, keyword: String, value: bool) -> Result<()> {
+    let ctx = state.ctx().await?;
     with_conn!(state, c => imap::set_keyword(c, &folder, &uids, &keyword, value))?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         for uid in &uids {
             st.patch(&folder, *uid, |m| {
                 m.keywords.retain(|k| !k.eq_ignore_ascii_case(&keyword));
@@ -1541,12 +1616,13 @@ pub async fn set_keywords(state: State<'_, AppState>, folder: String, uids: Vec<
 /// ключевым словом — виден на всех компьютерах пользователя.
 #[tauri::command]
 pub async fn set_due(state: State<'_, AppState>, folder: String, uid: u32, due: Option<String>) -> Result<()> {
+    let ctx = state.ctx().await?;
     let due = match due {
         Some(d) => Some(chrono::DateTime::parse_from_rfc3339(&d).map_err(|_| AppError::Other("Некорректная дата".into()))?.with_timezone(&chrono::Utc)),
         None => None,
     };
     with_conn!(state, c => imap::set_due(c, &folder, uid, due))?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.patch(&folder, uid, |m| {
             m.flagged = true;
             m.keywords.retain(|k| !k.starts_with(imap::DUE_PREFIX));
@@ -1561,7 +1637,8 @@ pub async fn set_due(state: State<'_, AppState>, folder: String, uid: u32, due: 
 /// Письма с флажком и сроком во всех своих папках (для напоминаний).
 #[tauri::command]
 pub async fn due_list(state: State<'_, AppState>) -> Result<Vec<imap::MessageSummary>> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let ctx = state.ctx().await?;
+    let creds = ctx.creds.clone();
     let mut conn = imap::connect(&creds).await?;
     let folders = imap::list_folders(&mut conn).await?;
     let mut out = Vec::new();
@@ -1585,7 +1662,8 @@ pub async fn templates_list(state: State<'_, AppState>) -> Result<Vec<imap::Temp
 /// Сохранить шаблон письма (папка «Templates» на сервере — как в Thunderbird).
 #[tauri::command]
 pub async fn template_save(state: State<'_, AppState>, name: String, text: String, html: Option<String>) -> Result<()> {
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let ctx = state.ctx().await?;
+    let profile = ctx.profile().await;
     let name = name.trim().to_string();
     if name.is_empty() || name.chars().count() > 120 {
         return Err(AppError::Other("Укажите название шаблона".into()));
@@ -1619,6 +1697,7 @@ pub async fn template_delete(state: State<'_, AppState>, folder: String, uid: u3
 /// в личный временный каталог и дальше вкладывается как выбранный в диалоге.
 #[tauri::command]
 pub async fn attach_data(state: State<'_, AppState>, name: String, data: String) -> Result<PickedFile> {
+    let ctx = state.ctx().await?;
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|_| AppError::Other("Файл не прочитан".into()))?;
     if bytes.len() as u64 > MAX_OUTGOING_MB * 1024 * 1024 {
@@ -1633,7 +1712,7 @@ pub async fn attach_data(state: State<'_, AppState>, name: String, data: String)
         f.write_all(&bytes)?;
     }
     let id = state.next_pick.fetch_add(1, Ordering::Relaxed).to_string();
-    state.picked.lock().await.insert(id.clone(), path);
+    ctx.picked.lock().await.insert(id.clone(), path);
     Ok(PickedFile { id, name: safe, size: bytes.len() as u64 })
 }
 
@@ -1641,6 +1720,7 @@ pub async fn attach_data(state: State<'_, AppState>, name: String, data: String)
 /// (метки понимают фильтры спама сервера и Thunderbird).
 #[tauri::command]
 pub async fn mark_spam(state: State<'_, AppState>, folder: String, uids: Vec<u32>, spam: bool) -> Result<String> {
+    let ctx = state.ctx().await?;
     let target = with_conn!(once state, c => async {
         let (add, remove) = if spam { ("$Junk", "$NotJunk") } else { ("$NotJunk", "$Junk") };
         imap::set_keyword(c, &folder, &uids, remove, false).await?;
@@ -1651,7 +1731,7 @@ pub async fn mark_spam(state: State<'_, AppState>, folder: String, uids: Vec<u32
         }
         Ok(target)
     })?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.remove(&folder, &uids);
     }
     Ok(target)
@@ -1671,7 +1751,8 @@ pub struct UnsubscribeResult {
 /// на адрес отписки, иначе — ссылка для браузера.
 #[tauri::command]
 pub async fn unsubscribe(state: State<'_, AppState>, folder: String, uid: u32) -> Result<UnsubscribeResult> {
-    let raw = match local_raw(&state, &folder, uid).await {
+    let ctx = state.ctx().await?;
+    let raw = match local_raw(&ctx, &folder, uid).await {
         Some(r) => r,
         None => with_conn!(state, c => imap::raw_of(c, &folder, uid))?,
     };
@@ -1702,8 +1783,8 @@ pub async fn unsubscribe(state: State<'_, AppState>, folder: String, uid: u32) -
         }
     }
     if let Some(mailto) = u.mailto.as_deref() {
-        let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-        let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+        let creds = ctx.creds.clone();
+        let profile = ctx.profile().await;
         let rest = &mailto["mailto:".len()..];
         let (addr, query) = rest.split_once('?').unwrap_or((rest, ""));
         let addr = percent_encoding::percent_decode_str(addr).decode_utf8_lossy().to_string();
@@ -1732,6 +1813,7 @@ pub async fn unsubscribe(state: State<'_, AppState>, folder: String, uid: u32) -
 /// непрочитанными (срок — ключевое слово на сервере, видно на всех компьютерах).
 #[tauri::command]
 pub async fn snooze(state: State<'_, AppState>, folder: String, uids: Vec<u32>, until: String) -> Result<String> {
+    let ctx = state.ctx().await?;
     let at = chrono::DateTime::parse_from_rfc3339(&until).map_err(|_| AppError::Other("Некорректное время".into()))?.with_timezone(&chrono::Utc);
     if at <= chrono::Utc::now() {
         return Err(AppError::Other("Выберите время в будущем".into()));
@@ -1748,7 +1830,7 @@ pub async fn snooze(state: State<'_, AppState>, folder: String, uids: Vec<u32>, 
         }
         Ok(target)
     })?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.remove(&folder, &uids);
     }
     Ok(target)
@@ -1757,19 +1839,20 @@ pub async fn snooze(state: State<'_, AppState>, folder: String, uids: Vec<u32>, 
 /// Вернуть отложенные письма во «Входящие» сейчас.
 #[tauri::command]
 pub async fn unsnooze(state: State<'_, AppState>, folder: String, uids: Vec<u32>) -> Result<()> {
+    let ctx = state.ctx().await?;
     with_conn!(once state, c => async {
         imap::clear_snooze(c, &folder, &uids).await?;
         imap::move_messages(c, &folder, &uids, "INBOX").await
     })?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.remove(&folder, &uids);
     }
     Ok(())
 }
 
 /// Срок наступил — письма возвращаются во «Входящие» непрочитанными.
-async fn return_snoozed(state: &AppState) -> Result<usize> {
-    with_conn!(once state, c => async {
+async fn return_snoozed(ctx: &AccountCtx) -> Result<usize> {
+    with_ctx!(once ctx, c => async {
         let Some(folder) = imap::snoozed_folder(c, false).await? else { return Ok(0) };
         let due = imap::snoozed_due(c, &folder, chrono::Utc::now()).await?;
         if due.is_empty() {
@@ -1788,10 +1871,11 @@ async fn return_snoozed(state: &AppState) -> Result<usize> {
 /// отметить, что вопрос решён (больше не спрашивать). Метка $MDNSent — как у Thunderbird.
 #[tauri::command]
 pub async fn mdn_respond(state: State<'_, AppState>, folder: String, uid: u32, send: bool) -> Result<()> {
+    let ctx = state.ctx().await?;
     if send {
-        let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-        let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-        let raw = match local_raw(&state, &folder, uid).await {
+        let creds = ctx.creds.clone();
+        let profile = ctx.profile().await;
+        let raw = match local_raw(&ctx, &folder, uid).await {
             Some(r) => r,
             None => with_conn!(state, c => imap::raw_of(c, &folder, uid))?,
         };
@@ -1807,7 +1891,7 @@ pub async fn mdn_respond(state: State<'_, AppState>, folder: String, uid: u32, s
         smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, &mdn).await?;
     }
     with_conn!(state, c => imap::set_keyword(c, &folder, &[uid], "$MDNSent", true))?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.patch(&folder, uid, |m| m.keywords.push("$MDNSent".into()));
     }
     Ok(())
@@ -1815,9 +1899,9 @@ pub async fn mdn_respond(state: State<'_, AppState>, folder: String, uid: u32, s
 
 // ---------------------------------------------------------------- календарь и контакты
 
-async fn dav_client(state: &AppState) -> Result<(dav::DavClient, url::Url)> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+async fn dav_client(ctx: &AccountCtx) -> Result<(dav::DavClient, url::Url)> {
+    let creds = ctx.creds.clone();
+    let profile = ctx.profile().await;
     let base = url::Url::parse(&profile.dav_base())
         .map_err(|e| AppError::Other(format!("Некорректный адрес сервера календаря: {e}")))?;
     Ok((dav::DavClient::new(&creds.username, &creds.password, &base)?, base))
@@ -1833,15 +1917,16 @@ pub struct ContactsResult {
 
 #[tauri::command]
 pub async fn list_contacts(state: State<'_, AppState>) -> Result<ContactsResult> {
-    let (mut client, base) = dav_client(&state).await?;
+    let ctx = state.ctx().await?;
+    let (mut client, base) = dav_client(&ctx).await?;
     // Кэш читаем отдельным оператором: guard в выражении `match` жил бы до
     // конца match, и повторный lock ниже заблокировал бы команду навсегда.
-    let cached = state.books.lock().await.clone();
+    let cached = ctx.books.lock().await.clone();
     let books = match cached {
         Some(b) => b,
         None => {
             let found = client.discover(&base, dav::Kind::Contacts).await?;
-            *state.books.lock().await = Some(found.clone());
+            *ctx.books.lock().await = Some(found.clone());
             found
         }
     };
@@ -1862,17 +1947,18 @@ pub async fn list_contacts(state: State<'_, AppState>) -> Result<ContactsResult>
 /// вернула, а сервер — SOGo, дополнительно ищем через веб-API SOGo.
 #[tauri::command]
 pub async fn search_contacts(state: State<'_, AppState>, query: String) -> Result<Vec<dav::Contact>> {
+    let ctx = state.ctx().await?;
     let query = query.trim().to_string();
     if query.chars().count() < 2 {
         return Ok(Vec::new());
     }
-    let (mut client, base) = dav_client(&state).await?;
-    let cached = state.books.lock().await.clone();
+    let (mut client, base) = dav_client(&ctx).await?;
+    let cached = ctx.books.lock().await.clone();
     let books = match cached {
         Some(b) => b,
         None => {
             let found = client.discover(&base, dav::Kind::Contacts).await?;
-            *state.books.lock().await = Some(found.clone());
+            *ctx.books.lock().await = Some(found.clone());
             found
         }
     };
@@ -1900,7 +1986,7 @@ pub async fn search_contacts(state: State<'_, AppState>, query: String) -> Resul
     }
     let is_sogo = books.iter().any(|b| b.url.contains("/SOGo/"));
     if gal_empty && is_sogo {
-        match sogo_search(&state, &base, &query).await {
+        match sogo_search(&ctx, &base, &query).await {
             Ok(list) => {
                 for mut c in list {
                     let dup = out.iter().any(|o| o.emails.iter().any(|e| c.emails.iter().any(|x| x.eq_ignore_ascii_case(e))));
@@ -1943,14 +2029,15 @@ fn urlencoding_segment(name: &str) -> String {
 /// SOGo, как в веб-интерфейсе: CardDAV для LDAP-книг отдаёт пустой список.
 #[tauri::command]
 pub async fn browse_contacts(state: State<'_, AppState>, book_url: String) -> Result<Vec<dav::Contact>> {
-    let (_, base) = dav_client(&state).await?;
-    let books = state.books.lock().await.clone().unwrap_or_default();
+    let ctx = state.ctx().await?;
+    let (_, base) = dav_client(&ctx).await?;
+    let books = ctx.books.lock().await.clone().unwrap_or_default();
     let book = books.iter().find(|b| b.url == book_url).cloned().ok_or_else(|| AppError::Other("Адресная книга не найдена".into()))?;
     let source = book.url.trim_end_matches('/').rsplit('/').next().unwrap_or("gal").to_string();
     let mut log = Vec::new();
-    let mut list = match sogo_session(&state, &base, false).await?.browse(&source, &mut log).await {
+    let mut list = match sogo_session(&ctx, &base, false).await?.browse(&source, &mut log).await {
         Ok(l) => l,
-        Err(_) => sogo_session(&state, &base, true).await?.browse(&source, &mut log).await?,
+        Err(_) => sogo_session(&ctx, &base, true).await?.browse(&source, &mut log).await?,
     };
     for l in &log {
         log::debug!("browse {source}: {l}");
@@ -1967,8 +2054,9 @@ pub async fn browse_contacts(state: State<'_, AppState>, book_url: String) -> Re
 /// веб-API SOGo.
 #[tauri::command]
 pub async fn contact_details(state: State<'_, AppState>, href: String, id: String) -> Result<dav::Contact> {
-    let (mut client, _) = dav_client(&state).await?;
-    let books = state.books.lock().await.clone().unwrap_or_default();
+    let ctx = state.ctx().await?;
+    let (mut client, _) = dav_client(&ctx).await?;
+    let books = ctx.books.lock().await.clone().unwrap_or_default();
     let mut found: Option<dav::Contact> = None;
     if let Ok(book) = owning_collection(&books, &href) {
         if let Ok((data, etag)) = client.get(&href).await {
@@ -1983,8 +2071,8 @@ pub async fn contact_details(state: State<'_, AppState>, href: String, id: Strin
         return Ok(c);
     }
     if let Some((source, sid)) = id.strip_prefix("sogo:").and_then(|r| r.split_once(':')) {
-        let (_, base) = dav_client(&state).await?;
-        if let Ok(session) = sogo_session(&state, &base, false).await {
+        let (_, base) = dav_client(&ctx).await?;
+        if let Ok(session) = sogo_session(&ctx, &base, false).await {
             if let Ok((st, text)) = session.view_raw(source, sid).await {
                 if st.is_success() {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -2004,9 +2092,9 @@ pub async fn contact_details(state: State<'_, AppState>, href: String, id: Strin
 }
 
 /// Сессия веб-API SOGo из кэша или новым входом (`fresh` — войти заново).
-async fn sogo_session(state: &AppState, base: &url::Url, fresh: bool) -> Result<sogo::SogoSession> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    let cached = state.sogo.lock().await.clone();
+async fn sogo_session(ctx: &AccountCtx, base: &url::Url, fresh: bool) -> Result<sogo::SogoSession> {
+    let creds = ctx.creds.clone();
+    let cached = ctx.sogo.lock().await.clone();
     match cached {
         Some(Ok(s)) if !fresh => Ok(s),
         Some(Err(e)) if !fresh => Err(AppError::Other(e)),
@@ -2014,11 +2102,11 @@ async fn sogo_session(state: &AppState, base: &url::Url, fresh: bool) -> Result<
             let mut log = Vec::new();
             match sogo::login(base, &creds.username, &creds.password, &mut log).await {
                 Ok(s) => {
-                    *state.sogo.lock().await = Some(Ok(s.clone()));
+                    *ctx.sogo.lock().await = Some(Ok(s.clone()));
                     Ok(s)
                 }
                 Err(e) => {
-                    *state.sogo.lock().await = Some(Err(e.to_string()));
+                    *ctx.sogo.lock().await = Some(Err(e.to_string()));
                     Err(e)
                 }
             }
@@ -2026,11 +2114,11 @@ async fn sogo_session(state: &AppState, base: &url::Url, fresh: bool) -> Result<
     }
 }
 
-async fn sogo_search(state: &AppState, base: &url::Url, query: &str) -> Result<Vec<dav::Contact>> {
-    match sogo_session(state, base, false).await?.search(query).await {
+async fn sogo_search(ctx: &AccountCtx, base: &url::Url, query: &str) -> Result<Vec<dav::Contact>> {
+    match sogo_session(ctx, base, false).await?.search(query).await {
         Ok(list) => Ok(list),
         // Сессия истекла — войти заново один раз.
-        Err(_) => sogo_session(state, base, true).await?.search(query).await,
+        Err(_) => sogo_session(ctx, base, true).await?.search(query).await,
     }
 }
 
@@ -2056,10 +2144,10 @@ fn require_writable(c: &dav::Collection) -> Result<()> {
     }
 }
 
-async fn known(state: &AppState, kind: dav::Kind) -> Result<Vec<dav::Collection>> {
+async fn known(ctx: &AccountCtx, kind: dav::Kind) -> Result<Vec<dav::Collection>> {
     let cached = match kind {
-        dav::Kind::Calendar => state.calendars.lock().await.clone(),
-        dav::Kind::Contacts => state.books.lock().await.clone(),
+        dav::Kind::Calendar => ctx.calendars.lock().await.clone(),
+        dav::Kind::Contacts => ctx.books.lock().await.clone(),
     };
     cached.ok_or_else(|| AppError::Other("Сначала откройте раздел, чтобы загрузить список".into()))
 }
@@ -2074,7 +2162,8 @@ fn collection_child(collection_url: &str, uid: &str, ext: &str) -> Result<String
 
 #[tauri::command]
 pub async fn create_event(state: State<'_, AppState>, calendar_url: String, input: dav::EventInput) -> Result<()> {
-    let cols = known(&state, dav::Kind::Calendar).await?;
+    let ctx = state.ctx().await?;
+    let cols = known(&ctx, dav::Kind::Calendar).await?;
     let cal = cols
         .iter()
         .find(|c| c.url == calendar_url)
@@ -2082,7 +2171,7 @@ pub async fn create_event(state: State<'_, AppState>, calendar_url: String, inpu
     require_writable(cal)?;
     let uid = dav::new_uid();
     let ics = dav::build_event_ics(&uid, &input)?;
-    let (mut client, _) = dav_client(&state).await?;
+    let (mut client, _) = dav_client(&ctx).await?;
     client.put(&collection_child(&cal.url, &uid, "ics")?, "text/calendar; charset=utf-8", &ics, None).await
 }
 
@@ -2093,9 +2182,10 @@ pub async fn update_event(
     input: dav::EventInput,
     change_time: bool,
 ) -> Result<()> {
-    let cal = owning_collection(&known(&state, dav::Kind::Calendar).await?, &href)?;
+    let ctx = state.ctx().await?;
+    let cal = owning_collection(&known(&ctx, dav::Kind::Calendar).await?, &href)?;
     require_writable(&cal)?;
-    let (mut client, _) = dav_client(&state).await?;
+    let (mut client, _) = dav_client(&ctx).await?;
     // Берём свежую версию с сервера: правим её, а не устаревшую копию из списка.
     let (current, etag) = client.get(&href).await?;
     let ics = dav::update_event_ics(&current, &input, change_time)?;
@@ -2104,15 +2194,17 @@ pub async fn update_event(
 
 #[tauri::command]
 pub async fn delete_event(state: State<'_, AppState>, href: String, etag: Option<String>) -> Result<()> {
-    let cal = owning_collection(&known(&state, dav::Kind::Calendar).await?, &href)?;
+    let ctx = state.ctx().await?;
+    let cal = owning_collection(&known(&ctx, dav::Kind::Calendar).await?, &href)?;
     require_writable(&cal)?;
-    let (mut client, _) = dav_client(&state).await?;
+    let (mut client, _) = dav_client(&ctx).await?;
     client.delete(&href, etag.as_deref()).await
 }
 
 #[tauri::command]
 pub async fn create_contact(state: State<'_, AppState>, book_url: String, input: dav::ContactInput) -> Result<()> {
-    let cols = known(&state, dav::Kind::Contacts).await?;
+    let ctx = state.ctx().await?;
+    let cols = known(&ctx, dav::Kind::Contacts).await?;
     let book = cols
         .iter()
         .find(|c| c.url == book_url)
@@ -2120,15 +2212,16 @@ pub async fn create_contact(state: State<'_, AppState>, book_url: String, input:
     require_writable(book)?;
     let uid = dav::new_uid();
     let card = dav::build_vcard(&uid, &input)?;
-    let (mut client, _) = dav_client(&state).await?;
+    let (mut client, _) = dav_client(&ctx).await?;
     client.put(&collection_child(&book.url, &uid, "vcf")?, "text/vcard; charset=utf-8", &card, None).await
 }
 
 #[tauri::command]
 pub async fn update_contact(state: State<'_, AppState>, href: String, input: dav::ContactInput) -> Result<()> {
-    let book = owning_collection(&known(&state, dav::Kind::Contacts).await?, &href)?;
+    let ctx = state.ctx().await?;
+    let book = owning_collection(&known(&ctx, dav::Kind::Contacts).await?, &href)?;
     require_writable(&book)?;
-    let (mut client, _) = dav_client(&state).await?;
+    let (mut client, _) = dav_client(&ctx).await?;
     let (current, etag) = client.get(&href).await?;
     let card = dav::update_vcard(&current, &input)?;
     client.put(&href, "text/vcard; charset=utf-8", &card, etag.as_deref().or(Some("*"))).await
@@ -2136,9 +2229,10 @@ pub async fn update_contact(state: State<'_, AppState>, href: String, input: dav
 
 #[tauri::command]
 pub async fn delete_contact(state: State<'_, AppState>, href: String, etag: Option<String>) -> Result<()> {
-    let book = owning_collection(&known(&state, dav::Kind::Contacts).await?, &href)?;
+    let ctx = state.ctx().await?;
+    let book = owning_collection(&known(&ctx, dav::Kind::Contacts).await?, &href)?;
     require_writable(&book)?;
-    let (mut client, _) = dav_client(&state).await?;
+    let (mut client, _) = dav_client(&ctx).await?;
     client.delete(&href, etag.as_deref()).await
 }
 
@@ -2152,19 +2246,20 @@ pub struct EventsResult {
 
 #[tauri::command]
 pub async fn list_events(state: State<'_, AppState>, start: String, end: String) -> Result<EventsResult> {
+    let ctx = state.ctx().await?;
     let parse = |s: &str| {
         chrono::DateTime::parse_from_rfc3339(s)
             .map(|d| d.with_timezone(&chrono::Utc))
             .map_err(|e| AppError::Other(format!("Некорректная дата {s}: {e}")))
     };
     let (start, end) = (parse(&start)?, parse(&end)?);
-    let (mut client, base) = dav_client(&state).await?;
-    let cached = state.calendars.lock().await.clone();
+    let (mut client, base) = dav_client(&ctx).await?;
+    let cached = ctx.calendars.lock().await.clone();
     let calendars = match cached {
         Some(c) => c,
         None => {
             let found = client.discover(&base, dav::Kind::Calendar).await?;
-            *state.calendars.lock().await = Some(found.clone());
+            *ctx.calendars.lock().await = Some(found.clone());
             found
         }
     };
@@ -2182,12 +2277,13 @@ pub async fn list_events(state: State<'_, AppState>, start: String, end: String)
 
 #[tauri::command]
 pub async fn get_message(state: State<'_, AppState>, folder: String, uid: u32) -> Result<MessageDetail> {
-    let st = local(&state).await;
+    let ctx = state.ctx().await?;
+    let st = local(&ctx).await;
     // Письмо есть на компьютере — открывается сразу, без сервера.
     if let Some(st) = &st {
         if let (Some(raw), Some(summary)) = (st.raw(&folder, uid), st.summary(&folder, uid)) {
             let detail = imap::detail_from_raw(summary, &raw);
-            if let Ok(mut guard) = state.conn.try_lock() {
+            if let Ok(mut guard) = ctx.conn.try_lock() {
                 if let Some(c) = guard.as_mut() {
                     c.prime_raw(&folder, uid, raw);
                 }
@@ -2212,8 +2308,9 @@ pub async fn set_flag(
     flag: FlagKind,
     value: bool,
 ) -> Result<()> {
+    let ctx = state.ctx().await?;
     with_conn!(state, c => imap::set_flag(c, &folder, uid, flag, value))?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.patch(&folder, uid, |m| match flag {
             FlagKind::Seen => m.unread = !value,
             FlagKind::Flagged => m.flagged = value,
@@ -2233,7 +2330,8 @@ pub async fn save_attachment(
     uid: u32,
     index: usize,
 ) -> Result<Option<String>> {
-    let (name, data) = attachment(&state, &folder, uid, index).await?;
+    let ctx = state.ctx().await?;
+    let (name, data) = attachment(&ctx, &folder, uid, index).await?;
 
     let Some(path) = host::save_file(&app, &name).await else {
         return Ok(None);
@@ -2310,18 +2408,21 @@ async fn edit_in_nextcloud(app: &AppHandle, nc: &nextcloud::Nc, path: &str, mime
 /// Редакторы документов на сервере Nextcloud (для меню «Создать» и диагностики).
 #[tauri::command]
 pub async fn nc_editors(state: State<'_, AppState>) -> Result<nextcloud::NcEditors> {
-    Ok(nc(&state).await?.editors().await)
+    let ctx = state.ctx().await?;
+    Ok(nc(&ctx).await?.editors().await)
 }
 
 #[tauri::command]
 pub async fn nc_edit(app: AppHandle, state: State<'_, AppState>, path: String, mime: String) -> Result<EditResult> {
-    let nc = nc(&state).await?;
+    let ctx = state.ctx().await?;
+    let nc = nc(&ctx).await?;
     edit_in_nextcloud(&app, &nc, &path, &mime).await
 }
 
 /// Новый документ/таблица/презентация в папке `dir` и сразу на редактирование.
 #[tauri::command]
 pub async fn nc_create_document(app: AppHandle, state: State<'_, AppState>, dir: String, name: String, kind: String) -> Result<EditResult> {
+    let ctx = state.ctx().await?;
     let (ext, blank): (&str, &[u8]) = match kind.as_str() {
         "docx" => ("docx", include_bytes!("../templates/blank.docx")),
         "xlsx" => ("xlsx", include_bytes!("../templates/blank.xlsx")),
@@ -2333,7 +2434,7 @@ pub async fn nc_create_document(app: AppHandle, state: State<'_, AppState>, dir:
         return Err(AppError::Other("Укажите название".into()));
     }
     let file = format!("{base}.{ext}");
-    let nc = nc(&state).await?;
+    let nc = nc(&ctx).await?;
     let editors = nc.editors().await;
     if let Some(c) = editors.creators.iter().find(|c| c.extension == ext) {
         let path = format!("{}/{file}", dir.trim_end_matches('/'));
@@ -2344,16 +2445,17 @@ pub async fn nc_create_document(app: AppHandle, state: State<'_, AppState>, dir:
         return Ok(EditResult { in_app: true, path });
     }
     // Нет Direct Editing — пустой файл из шаблона программы, затем открыть.
-    let path = nc_upload(&state).await?.upload_unique(&dir, &file, blank.to_vec()).await?;
+    let path = nc_upload(&ctx).await?.upload_unique(&dir, &file, blank.to_vec()).await?;
     edit_in_nextcloud(&app, &nc, &path, nextcloud::office_mime(&file).unwrap_or("")).await
 }
 
 /// Вложение письма → Nextcloud («Почта») → на редактирование.
 #[tauri::command]
 pub async fn nc_edit_attachment(app: AppHandle, state: State<'_, AppState>, folder: String, uid: u32, index: usize, dir: String) -> Result<EditResult> {
-    let (name, data) = attachment(&state, &folder, uid, index).await?;
-    let path = nc_upload(&state).await?.upload_unique(&dir, &name, data).await?;
-    let nc = nc(&state).await?;
+    let ctx = state.ctx().await?;
+    let (name, data) = attachment(&ctx, &folder, uid, index).await?;
+    let path = nc_upload(&ctx).await?.upload_unique(&dir, &name, data).await?;
+    let nc = nc(&ctx).await?;
     edit_in_nextcloud(&app, &nc, &path, nextcloud::office_mime(&name).unwrap_or("")).await
 }
 
@@ -2372,8 +2474,8 @@ pub struct TotpStatus {
 }
 
 async fn current_account(state: &AppState) -> Result<String> {
-    if let Some(c) = state.creds.lock().await.as_ref() {
-        return Ok(account_key(&c.username, &c.host));
+    if let Some(c) = state.ctx_opt().await {
+        return Ok(c.key.clone());
     }
     if let Some(p) = state.pending.lock().await.as_ref() {
         return Ok(account_key(&p.creds.username, &p.creds.host));
@@ -2412,7 +2514,8 @@ pub struct TotpSetup {
 /// Начать настройку: новый секрет и QR-код для приложения-аутентификатора.
 #[tauri::command]
 pub async fn totp_setup_begin(state: State<'_, AppState>) -> Result<TotpSetup> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let ctx = state.ctx().await?;
+    let creds = ctx.creds.clone();
     let account = account_key(&creds.username, &creds.host);
     let secret = totp::new_secret()?;
     let uri = totp::otpauth_uri(&secret, &creds.username);
@@ -2449,39 +2552,17 @@ pub async fn totp_disable(state: State<'_, AppState>, code: String) -> Result<()
 /// Заблокировать программу: почта отключается, для продолжения нужен код.
 #[tauri::command]
 pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    if totp::load(&account_key(&creds.username, &creds.host)).is_none() {
+    let ctx = state.ctx().await?;
+    if totp::load(&ctx.key).is_none() {
         return Err(AppError::Other("Сначала включите защиту кодом в настройках".into()));
     }
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let creds = ctx.creds.clone();
+    let profile = ctx.profile().await;
     host::close_message_windows(&app);
-    deactivate_session(&state).await;
+    end_session(&state).await;
     drop_others(&state).await;
     *state.pending.lock().await = Some(Pending { creds, profile, remember: None });
     Ok(())
-}
-
-/// Отключить всё, что принадлежит текущему сеансу почты: хранилище, фоновые
-/// задачи, соединения IMAP и SOGo, Nextcloud, календари, выбранные файлы.
-/// Сохранённые пароли и список учётных записей не меняются. Используется при
-/// блокировке и переходе на учётную запись с защитой кодом — ничего от прежней
-/// учётной записи не остаётся в памяти до разблокировки следующей.
-async fn deactivate_session(state: &AppState) {
-    close_store(state).await;
-    state.session.fetch_add(1, Ordering::SeqCst);
-    state.jobs.cancel_all();
-    *state.creds.lock().await = None;
-    *state.nc.lock().await = None;
-    *state.nc_flow.lock().await = None;
-    *state.calendars.lock().await = None;
-    *state.books.lock().await = None;
-    state.picked.lock().await.clear();
-    if let Some(Ok(session)) = state.sogo.lock().await.take() {
-        session.logout().await;
-    }
-    if let Some(conn) = state.conn.lock().await.take() {
-        conn.logout().await;
-    }
 }
 
 /// Разблокировать кодом TOTP (или резервным) и подключить почту.
@@ -2516,7 +2597,8 @@ pub async fn totp_unlock(app: AppHandle, state: State<'_, AppState>, code: Strin
 /// Аватар Nextcloud: `kind` = "user" (ID пользователя) или "room" (токен беседы Talk).
 #[tauri::command]
 pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> Result<Option<String>> {
-    let nc = nc(&state).await?;
+    let ctx = state.ctx().await?;
+    let nc = nc(&ctx).await?;
     match kind.as_str() {
         "user" => nc.user_avatar(&id, 64).await,
         "room" => nc.room_avatar(&id).await,
@@ -2527,14 +2609,16 @@ pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> 
 /// Уменьшенная копия файла из чата (data: URL) или None, если сервер её не дал.
 #[tauri::command]
 pub async fn talk_file_preview(state: State<'_, AppState>, file_id: String) -> Result<Option<String>> {
-    nc(&state).await?.file_preview(&file_id, 480).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.file_preview(&file_id, 480).await
 }
 
 /// Содержимое файла из чата (base64) для встроенного просмотра: фото, PDF, текст.
 #[tauri::command]
 pub async fn talk_file_data(state: State<'_, AppState>, path: String) -> Result<String> {
+    let ctx = state.ctx().await?;
     use base64::Engine as _;
-    let bytes = nc(&state).await?.files_read(&path, 50 * 1024 * 1024).await?;
+    let bytes = nc(&ctx).await?.files_read(&path, 50 * 1024 * 1024).await?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
@@ -2567,8 +2651,9 @@ const MAX_PREVIEW_BYTES: usize = 30 * 1024 * 1024;
 
 #[tauri::command]
 pub async fn attachment_data(state: State<'_, AppState>, folder: String, uid: u32, index: usize) -> Result<AttachmentData> {
+    let ctx = state.ctx().await?;
     use base64::Engine as _;
-    let (name, data) = attachment(&state, &folder, uid, index).await?;
+    let (name, data) = attachment(&ctx, &folder, uid, index).await?;
     if data.len() > MAX_PREVIEW_BYTES {
         return Err(AppError::Other(format!("Файл слишком большой для просмотра ({} МБ) — сохраните его", data.len() / 1024 / 1024)));
     }
@@ -2587,19 +2672,19 @@ pub struct NcStatus {
     uid: String,
 }
 
-async fn nc_status_of(state: &AppState) -> NcStatus {
-    let profile = state.profile.lock().await.clone();
-    let nc = state.nc.lock().await.clone();
+async fn nc_status_of(ctx: &AccountCtx) -> NcStatus {
+    let profile = ctx.profile().await;
+    let nc = ctx.nc.lock().await.clone();
     NcStatus {
-        url: profile.as_ref().map(|p| p.nextcloud_url.clone()).unwrap_or_else(|| settings::DEFAULT_NEXTCLOUD_URL.into()),
+        url: if profile.nextcloud_url.is_empty() { settings::DEFAULT_NEXTCLOUD_URL.into() } else { profile.nextcloud_url.clone() },
         connected: nc.is_some(),
         login: nc.as_ref().map(|(c, _)| c.login.clone()).unwrap_or_default(),
         uid: nc.map(|(_, u)| u).unwrap_or_default(),
     }
 }
 
-async fn nc(state: &AppState) -> Result<nextcloud::Nc> {
-    let (creds, uid) = state
+async fn nc(ctx: &AccountCtx) -> Result<nextcloud::Nc> {
+    let (creds, uid) = ctx
         .nc
         .lock()
         .await
@@ -2609,33 +2694,35 @@ async fn nc(state: &AppState) -> Result<nextcloud::Nc> {
 }
 
 /// Сохраняет подключение: проверяет пароль приложения и узнаёт ID пользователя.
-async fn nc_save(app: &AppHandle, state: &AppState, creds: nextcloud::NcCreds) -> Result<NcStatus> {
+async fn nc_save(app: &AppHandle, ctx: &AccountCtx, creds: nextcloud::NcCreds) -> Result<NcStatus> {
     let probe = nextcloud::Nc::new(creds.clone(), &creds.login)?;
     let (uid, _name) = probe.user_info().await?;
-    let mut guard = state.profile.lock().await;
-    let mut p = guard.clone().ok_or(AppError::NotLoggedIn)?;
+    let mut guard = ctx.profile.lock().await;
+    let mut p = guard.clone();
     p.nextcloud_url = creds.base.to_string();
     p.nextcloud_login = creds.login.clone();
     p.nextcloud_uid = uid.clone();
     settings::save(app, &p)?;
-    *guard = Some(p);
+    *guard = p;
     drop(guard);
     if let Err(e) = settings::nc_store_password(creds.base.as_str(), &creds.login, &creds.app_password) {
         log::warn!("nextcloud keyring: {e}");
     }
-    *state.nc.lock().await = Some((creds, uid));
-    Ok(nc_status_of(state).await)
+    *ctx.nc.lock().await = Some((creds, uid));
+    Ok(nc_status_of(ctx).await)
 }
 
 #[tauri::command]
 pub async fn nc_status(state: State<'_, AppState>) -> Result<NcStatus> {
-    Ok(nc_status_of(&state).await)
+    let ctx = state.ctx().await?;
+    Ok(nc_status_of(&ctx).await)
 }
 
 /// Начинает вход: открывает страницу входа Nextcloud в браузере и возвращает её
 /// адрес (на случай, если браузер не открылся).
 #[tauri::command]
 pub async fn nc_connect_start(app: AppHandle, state: State<'_, AppState>, url: String) -> Result<String> {
+    let ctx = state.ctx().await?;
     let base = nextcloud::normalize_base(&url)?;
     let flow = nextcloud::login_flow_start(&base).await?;
     let login_url = flow.login_url.clone();
@@ -2645,7 +2732,7 @@ pub async fn nc_connect_start(app: AppHandle, state: State<'_, AppState>, url: S
     if parsed.scheme() != "https" || parsed.host_str() != base.host_str() || parsed.port_or_known_default() != base.port_or_known_default() {
         return Err(AppError::Other("Nextcloud вернул адрес входа на другом сервере — вход отменён".into()));
     }
-    *state.nc_flow.lock().await = Some((base, flow));
+    *ctx.nc_flow.lock().await = Some((base, flow));
     if let Err(e) = host::open_url(&app, &login_url) {
         log::warn!("browser not opened: {e}");
     }
@@ -2655,14 +2742,15 @@ pub async fn nc_connect_start(app: AppHandle, state: State<'_, AppState>, url: S
 /// `None` — вход в браузере ещё не подтверждён.
 #[tauri::command]
 pub async fn nc_connect_poll(app: AppHandle, state: State<'_, AppState>) -> Result<Option<NcStatus>> {
-    let Some((base, flow)) = state.nc_flow.lock().await.clone() else {
+    let ctx = state.ctx().await?;
+    let Some((base, flow)) = ctx.nc_flow.lock().await.clone() else {
         return Err(AppError::Other("Вход в Nextcloud не начат".into()));
     };
     match nextcloud::login_flow_poll(&base, &flow).await? {
         None => Ok(None),
         Some(creds) => {
-            *state.nc_flow.lock().await = None;
-            Ok(Some(nc_save(&app, &state, creds).await?))
+            *ctx.nc_flow.lock().await = None;
+            Ok(Some(nc_save(&app, &ctx, creds).await?))
         }
     }
 }
@@ -2683,32 +2771,34 @@ pub async fn nc_connect_manual(
     if creds.login.is_empty() || creds.app_password.is_empty() {
         return Err(AppError::Other("Укажите логин и пароль приложения".into()));
     }
-    nc_save(&app, &state, creds).await
+    let ctx = state.ctx().await?;
+    nc_save(&app, &ctx, creds).await
 }
 
 #[tauri::command]
 pub async fn nc_disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<NcStatus> {
-    *state.nc_flow.lock().await = None;
-    if let Some((creds, uid)) = state.nc.lock().await.take() {
+    let ctx = state.ctx().await?;
+    *ctx.nc_flow.lock().await = None;
+    if let Some((creds, uid)) = ctx.nc.lock().await.take() {
         if let Ok(client) = nextcloud::Nc::new(creds.clone(), &uid) {
             client.revoke().await;
         }
         settings::nc_forget_password(creds.base.as_str(), &creds.login);
     }
-    let mut guard = state.profile.lock().await;
-    if let Some(p) = guard.as_mut() {
+    {
+        let mut p = ctx.profile.lock().await;
         p.nextcloud_login.clear();
         p.nextcloud_uid.clear();
-        let _ = settings::save(&app, p);
+        let _ = settings::save(&app, &p);
     }
-    drop(guard);
-    Ok(nc_status_of(&state).await)
+    Ok(nc_status_of(&ctx).await)
 }
 
 /// Открывает страницу Nextcloud (звонок, доска) в браузере — только на своём сервере.
 #[tauri::command]
 pub async fn nc_open(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<()> {
-    let client = nc(&state).await?;
+    let ctx = state.ctx().await?;
+    let client = nc(&ctx).await?;
     let target = client.creds.base.join(path.trim_start_matches('/')).map_err(|e| AppError::Other(e.to_string()))?;
     if target.origin() != client.creds.base.origin() {
         return Err(AppError::Other("Можно открывать только страницы своего Nextcloud".into()));
@@ -2718,12 +2808,14 @@ pub async fn nc_open(app: AppHandle, state: State<'_, AppState>, path: String) -
 
 #[tauri::command]
 pub async fn deck_boards(state: State<'_, AppState>) -> Result<Vec<nextcloud::DeckBoard>> {
-    nc(&state).await?.deck_boards().await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_boards().await
 }
 
 #[tauri::command]
 pub async fn deck_stacks(state: State<'_, AppState>, board_id: i64) -> Result<Vec<nextcloud::DeckStack>> {
-    nc(&state).await?.deck_stacks(board_id).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_stacks(board_id).await
 }
 
 #[tauri::command]
@@ -2735,7 +2827,8 @@ pub async fn deck_create_card(
     description: String,
     duedate: Option<String>,
 ) -> Result<()> {
-    nc(&state).await?.deck_create_card(board_id, stack_id, &title, &description, duedate.as_deref()).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_create_card(board_id, stack_id, &title, &description, duedate.as_deref()).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2750,7 +2843,8 @@ pub async fn deck_update_card(
     duedate: Option<String>,
     done: bool,
 ) -> Result<()> {
-    nc(&state).await?.deck_update_card(board_id, stack_id, card_id, &title, &description, duedate.as_deref(), done).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_update_card(board_id, stack_id, card_id, &title, &description, duedate.as_deref(), done).await
 }
 
 #[tauri::command]
@@ -2762,102 +2856,121 @@ pub async fn deck_move_card(
     target_stack_id: i64,
     order: i64,
 ) -> Result<()> {
-    nc(&state).await?.deck_move_card(board_id, stack_id, card_id, target_stack_id, order).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_move_card(board_id, stack_id, card_id, target_stack_id, order).await
 }
 
 #[tauri::command]
 pub async fn deck_delete_card(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64) -> Result<()> {
-    nc(&state).await?.deck_delete_card(board_id, stack_id, card_id).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_delete_card(board_id, stack_id, card_id).await
 }
 
 #[tauri::command]
 pub async fn deck_board_details(state: State<'_, AppState>, board_id: i64) -> Result<nextcloud::DeckBoardDetails> {
-    nc(&state).await?.deck_board_details(board_id).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_board_details(board_id).await
 }
 
 #[tauri::command]
 pub async fn deck_assign(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64, uid: String, assign: bool) -> Result<()> {
-    nc(&state).await?.deck_assign(board_id, stack_id, card_id, &uid, assign).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_assign(board_id, stack_id, card_id, &uid, assign).await
 }
 
 #[tauri::command]
 pub async fn deck_label(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64, label_id: i64, add: bool) -> Result<()> {
-    nc(&state).await?.deck_label(board_id, stack_id, card_id, label_id, add).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_label(board_id, stack_id, card_id, label_id, add).await
 }
 
 #[tauri::command]
 pub async fn deck_comments(state: State<'_, AppState>, card_id: i64) -> Result<Vec<nextcloud::DeckComment>> {
-    nc(&state).await?.deck_comments(card_id).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_comments(card_id).await
 }
 
 #[tauri::command]
 pub async fn deck_comment_add(state: State<'_, AppState>, card_id: i64, message: String) -> Result<()> {
-    nc(&state).await?.deck_comment_add(card_id, &message).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_comment_add(card_id, &message).await
 }
 
 #[tauri::command]
 pub async fn deck_comment_delete(state: State<'_, AppState>, card_id: i64, comment_id: i64) -> Result<()> {
-    nc(&state).await?.deck_comment_delete(card_id, comment_id).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_comment_delete(card_id, comment_id).await
 }
 
 #[tauri::command]
 pub async fn deck_attachments(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64) -> Result<Vec<nextcloud::DeckAttachment>> {
-    nc(&state).await?.deck_attachments(board_id, stack_id, card_id).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_attachments(board_id, stack_id, card_id).await
 }
 
 #[tauri::command]
 pub async fn deck_create_stack(state: State<'_, AppState>, board_id: i64, title: String) -> Result<()> {
-    nc(&state).await?.deck_create_stack(board_id, &title).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_create_stack(board_id, &title).await
 }
 
 #[tauri::command]
 pub async fn talk_rooms(state: State<'_, AppState>) -> Result<Vec<nextcloud::TalkRoom>> {
-    nc(&state).await?.talk_rooms().await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_rooms().await
 }
 
 #[tauri::command]
 pub async fn talk_history(state: State<'_, AppState>, token: String, before: Option<i64>) -> Result<nextcloud::TalkChunk> {
-    nc(&state).await?.talk_history(&token, before).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_history(&token, before).await
 }
 
 #[tauri::command]
 pub async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i64) -> Result<nextcloud::TalkChunk> {
-    let (creds, uid) = state.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
+    let ctx = state.ctx().await?;
+    let (creds, uid) = ctx.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
     nextcloud::Nc::long_poll(creds, &uid)?.talk_poll(&token, last_known).await
 }
 
 #[tauri::command]
 pub async fn talk_send(state: State<'_, AppState>, token: String, message: String, reply_to: Option<i64>) -> Result<()> {
-    nc(&state).await?.talk_send(&token, &message, reply_to).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_send(&token, &message, reply_to).await
 }
 
 #[tauri::command]
 pub async fn talk_react(state: State<'_, AppState>, token: String, message_id: i64, emoji: String, add: bool) -> Result<()> {
-    nc(&state).await?.talk_react(&token, message_id, &emoji, add).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_react(&token, message_id, &emoji, add).await
 }
 
 #[tauri::command]
 pub async fn talk_edit(state: State<'_, AppState>, token: String, message_id: i64, message: String) -> Result<()> {
-    nc(&state).await?.talk_edit(&token, message_id, &message).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_edit(&token, message_id, &message).await
 }
 
 #[tauri::command]
 pub async fn talk_delete(state: State<'_, AppState>, token: String, message_id: i64) -> Result<()> {
-    nc(&state).await?.talk_delete(&token, message_id).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_delete(&token, message_id).await
 }
 
 #[tauri::command]
 pub async fn talk_mentions(state: State<'_, AppState>, token: String, search: String) -> Result<Vec<nextcloud::TalkMention>> {
-    nc(&state).await?.talk_mentions(&token, &search).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_mentions(&token, &search).await
 }
 
 #[tauri::command]
 pub async fn nc_search_users(state: State<'_, AppState>, search: String) -> Result<Vec<nextcloud::NcUser>> {
+    let ctx = state.ctx().await?;
     let q = search.trim().to_string();
     if q.chars().count() < 2 {
         return Ok(Vec::new());
     }
-    let nc = nc(&state).await?;
+    let nc = nc(&ctx).await?;
     let mut users = nc.search_users(&q).await?;
     // Nextcloud часто ограничивает подсказки «теми, с кем уже общались» или своей
     // группой, но находит сотрудника по точному e-mail. Поэтому дополняем поиск
@@ -2881,7 +2994,8 @@ pub async fn nc_search_users(state: State<'_, AppState>, search: String) -> Resu
 
 #[tauri::command]
 pub async fn talk_create(state: State<'_, AppState>, users: Vec<String>, name: Option<String>) -> Result<String> {
-    nc(&state).await?.talk_create(&users, name.as_deref()).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_create(&users, name.as_deref()).await
 }
 
 /// Открывает ссылку из сообщения во внешнем браузере (только http/https/mailto).
@@ -2898,20 +3012,22 @@ pub async fn open_link(app: AppHandle, url: String) -> Result<()> {
 
 #[tauri::command]
 pub async fn nc_files_list(state: State<'_, AppState>, path: String) -> Result<Vec<nextcloud::NcFile>> {
-    nc(&state).await?.files_list(&path).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.files_list(&path).await
 }
 
 #[tauri::command]
 pub async fn nc_files_mkdir(state: State<'_, AppState>, parent: String, name: String) -> Result<String> {
-    nc(&state).await?.files_mkdir(&parent, &name).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.files_mkdir(&parent, &name).await
 }
 
 /// Выбранные пользователем файлы (по id из `pick_attachments`): имя, путь и размер.
 /// Содержимое не читается — оно уйдёт на сервер потоком.
-async fn picked_files(state: &AppState, ids: &[String]) -> Result<Vec<(String, String, PathBuf)>> {
+async fn picked_files(ctx: &AccountCtx, ids: &[String]) -> Result<Vec<(String, String, PathBuf)>> {
     let mut out = Vec::new();
     for id in ids {
-        let path = state.picked.lock().await.get(id).cloned().ok_or_else(|| AppError::Other("Файл не найден, выберите его заново".into()))?;
+        let path = ctx.picked.lock().await.get(id).cloned().ok_or_else(|| AppError::Other("Файл не найден, выберите его заново".into()))?;
         let size = tokio::fs::metadata(&path).await?.len();
         if size > MAX_TALK_FILE_MB * 1024 * 1024 {
             return Err(AppError::Other(format!("Файл больше {MAX_TALK_FILE_MB} МБ")));
@@ -2922,20 +3038,21 @@ async fn picked_files(state: &AppState, ids: &[String]) -> Result<Vec<(String, S
     Ok(out)
 }
 
-async fn nc_upload(state: &AppState) -> Result<nextcloud::Nc> {
-    let (creds, uid) = state.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён — подключите его в Настройках".into()))?;
+async fn nc_upload(ctx: &AccountCtx) -> Result<nextcloud::Nc> {
+    let (creds, uid) = ctx.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён — подключите его в Настройках".into()))?;
     nextcloud::Nc::upload(creds, &uid)
 }
 
 /// Загружает выбранные файлы в папку Nextcloud. Возвращает пути.
 #[tauri::command]
 pub async fn nc_files_upload(state: State<'_, AppState>, dir: String, attachments: Vec<String>) -> Result<Vec<String>> {
-    let files = picked_files(&state, &attachments).await?;
-    let client = nc_upload(&state).await?;
+    let ctx = state.ctx().await?;
+    let files = picked_files(&ctx, &attachments).await?;
+    let client = nc_upload(&ctx).await?;
     let mut paths = Vec::new();
     for (id, name, path) in files {
         paths.push(client.upload_unique_src(&dir, &name, nextcloud::UploadSource::File(path)).await?);
-        state.picked.lock().await.remove(&id);
+        ctx.picked.lock().await.remove(&id);
     }
     Ok(paths)
 }
@@ -2943,48 +3060,56 @@ pub async fn nc_files_upload(state: State<'_, AppState>, dir: String, attachment
 /// Скачивает файл: куда сохранить, выбирает пользователь в системном диалоге.
 #[tauri::command]
 pub async fn nc_files_download(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<Option<String>> {
+    let ctx = state.ctx().await?;
     let name = path.rsplit('/').next().unwrap_or("file").to_string();
     let Some(target) = host::save_file(&app, &name).await else {
         return Ok(None);
     };
-    nc_upload(&state).await?.files_download_to(&path, &target).await?;
+    nc_upload(&ctx).await?.files_download_to(&path, &target).await?;
     Ok(Some(target.display().to_string()))
 }
 
 #[tauri::command]
 pub async fn nc_files_delete(state: State<'_, AppState>, path: String) -> Result<()> {
-    nc(&state).await?.files_delete(&path).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.files_delete(&path).await
 }
 
 #[tauri::command]
 pub async fn nc_files_rename(state: State<'_, AppState>, path: String, name: String) -> Result<String> {
-    nc(&state).await?.files_rename(&path, &name).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.files_rename(&path, &name).await
 }
 
 #[tauri::command]
 pub async fn nc_shares(state: State<'_, AppState>, path: String) -> Result<Vec<nextcloud::NcShare>> {
-    nc(&state).await?.shares_list(&path).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.shares_list(&path).await
 }
 
 #[tauri::command]
 pub async fn nc_share_link(state: State<'_, AppState>, path: String, password: Option<String>, expire: Option<String>) -> Result<nextcloud::NcShare> {
-    nc(&state).await?.share_link(&path, password.as_deref(), expire.as_deref()).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.share_link(&path, password.as_deref(), expire.as_deref()).await
 }
 
 #[tauri::command]
 pub async fn nc_share_user(state: State<'_, AppState>, path: String, uid: String, can_edit: bool) -> Result<nextcloud::NcShare> {
-    nc(&state).await?.share_user(&path, &uid, can_edit).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.share_user(&path, &uid, can_edit).await
 }
 
 #[tauri::command]
 pub async fn nc_share_delete(state: State<'_, AppState>, id: String) -> Result<()> {
-    nc(&state).await?.share_delete(&id).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.share_delete(&id).await
 }
 
 /// Публичная ссылка на файл для письма (существующая без пароля или новая).
 #[tauri::command]
 pub async fn nc_link_for(state: State<'_, AppState>, path: String) -> Result<String> {
-    nc(&state).await?.link_for(&path, crate::policy::load().share_link_days()).await
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.link_for(&path, crate::policy::load().share_link_days()).await
 }
 
 #[derive(Serialize)]
@@ -2998,14 +3123,15 @@ pub struct UploadedLink {
 /// Файлы с компьютера → папка в Nextcloud → публичные ссылки (для больших вложений).
 #[tauri::command]
 pub async fn nc_upload_links(state: State<'_, AppState>, dir: String, attachments: Vec<String>) -> Result<Vec<UploadedLink>> {
+    let ctx = state.ctx().await?;
     let days = crate::policy::load().share_link_days();
-    let files = picked_files(&state, &attachments).await?;
-    let client = nc_upload(&state).await?;
+    let files = picked_files(&ctx, &attachments).await?;
+    let client = nc_upload(&ctx).await?;
     let mut out = Vec::new();
     for (id, name, file) in files {
         let path = client.upload_unique_src(&dir, &name, nextcloud::UploadSource::File(file)).await?;
         let url = client.link_for(&path, days).await?;
-        state.picked.lock().await.remove(&id);
+        ctx.picked.lock().await.remove(&id);
         out.push(UploadedLink { name: path.rsplit('/').next().unwrap_or(&name).to_string(), path, url });
     }
     Ok(out)
@@ -3014,8 +3140,9 @@ pub async fn nc_upload_links(state: State<'_, AppState>, dir: String, attachment
 /// Вложение письма → папка в Nextcloud. Возвращает путь.
 #[tauri::command]
 pub async fn nc_save_mail_attachment(state: State<'_, AppState>, folder: String, uid: u32, index: usize, dir: String) -> Result<String> {
-    let (name, data) = attachment(&state, &folder, uid, index).await?;
-    nc_upload(&state).await?.upload_unique(&dir, &name, data).await
+    let ctx = state.ctx().await?;
+    let (name, data) = attachment(&ctx, &folder, uid, index).await?;
+    nc_upload(&ctx).await?.upload_unique(&dir, &name, data).await
 }
 
 const MAX_TALK_FILE_MB: u64 = 512;
@@ -3023,8 +3150,9 @@ const MAX_TALK_FILE_MB: u64 = 512;
 /// Отправляет в беседу файл, выбранный через `pick_attachments`.
 #[tauri::command]
 pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachment: String, caption: String, reply_to: Option<i64>) -> Result<()> {
-    let (creds, uid) = state.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
-    let path = state
+    let ctx = state.ctx().await?;
+    let (creds, uid) = ctx.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
+    let path = ctx
         .picked
         .lock()
         .await
@@ -3037,14 +3165,15 @@ pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachmen
     }
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
     nextcloud::Nc::upload(creds, &uid)?.talk_send_file(&token, &name, nextcloud::UploadSource::File(path), &caption, reply_to).await?;
-    state.picked.lock().await.remove(&attachment);
+    ctx.picked.lock().await.remove(&attachment);
     Ok(())
 }
 
 /// Сбрасывает выбранный, но не отправленный файл.
 #[tauri::command]
 pub async fn forget_attachment(state: State<'_, AppState>, attachment: String) -> Result<()> {
-    state.picked.lock().await.remove(&attachment);
+    let ctx = state.ctx().await?;
+    ctx.picked.lock().await.remove(&attachment);
     Ok(())
 }
 
@@ -3059,21 +3188,22 @@ pub struct MailFilters {
 /// Фильтры почты пользователя — те же, что в веб-почте SOGo (Настройки → Фильтры).
 #[tauri::command]
 pub async fn mail_filters_get(state: State<'_, AppState>) -> Result<MailFilters> {
-    let (_, base) = dav_client(&state).await?;
-    let (_, defaults) = sogo_defaults(&state, &base).await?;
+    let ctx = state.ctx().await?;
+    let (_, base) = dav_client(&ctx).await?;
+    let (_, defaults) = sogo_defaults(&ctx, &base).await?;
     let filters = defaults.get("SOGoSieveFilters").cloned().filter(|v| v.is_array()).unwrap_or_else(|| serde_json::json!([]));
     Ok(MailFilters { filters })
 }
 
 /// Сессия SOGo и настройки пользователя; при ошибке (сессия истекла, прошлый вход
 /// не удался) — один повтор с новым входом.
-async fn sogo_defaults(state: &AppState, base: &url::Url) -> Result<(sogo::SogoSession, serde_json::Value)> {
-    if let Ok(s) = sogo_session(state, base, false).await {
+async fn sogo_defaults(ctx: &AccountCtx, base: &url::Url) -> Result<(sogo::SogoSession, serde_json::Value)> {
+    if let Ok(s) = sogo_session(ctx, base, false).await {
         if let Ok(d) = s.defaults().await {
             return Ok((s, d));
         }
     }
-    let s = sogo_session(state, base, true).await?;
+    let s = sogo_session(ctx, base, true).await?;
     let d = s.defaults().await?;
     Ok((s, d))
 }
@@ -3082,9 +3212,10 @@ async fn sogo_defaults(state: &AppState, base: &url::Url) -> Result<(sogo::SogoS
 /// и отправляет обратно целиком (SOGo пересобирает Sieve-скрипт).
 #[tauri::command]
 pub async fn mail_filters_save(state: State<'_, AppState>, filters: serde_json::Value) -> Result<()> {
+    let ctx = state.ctx().await?;
     sogo::validate_filters(&filters)?;
-    let (_, base) = dav_client(&state).await?;
-    let (session, mut defaults) = sogo_defaults(&state, &base).await?;
+    let (_, base) = dav_client(&ctx).await?;
+    let (session, mut defaults) = sogo_defaults(&ctx, &base).await?;
     defaults["SOGoSieveFilters"] = filters;
     session.save_defaults(&defaults).await
 }
@@ -3118,8 +3249,9 @@ pub async fn open_message_window(app: AppHandle, folder: String, uid: u32, title
 
 #[tauri::command]
 pub async fn move_messages(state: State<'_, AppState>, folder: String, uids: Vec<u32>, target: String) -> Result<()> {
+    let ctx = state.ctx().await?;
     with_conn!(state, c => imap::move_messages(c, &folder, &uids, &target))?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.remove(&folder, &uids);
     }
     Ok(())
@@ -3128,8 +3260,9 @@ pub async fn move_messages(state: State<'_, AppState>, folder: String, uids: Vec
 /// Удалить письма: в корзину `trash` или (из корзины) насовсем. `true` — насовсем.
 #[tauri::command]
 pub async fn delete_messages(state: State<'_, AppState>, folder: String, uids: Vec<u32>, trash: Option<String>) -> Result<bool> {
+    let ctx = state.ctx().await?;
     let permanent = with_conn!(state, c => imap::delete_messages(c, &folder, &uids, trash.as_deref()))?;
-    if let Some(st) = local(&state).await {
+    if let Some(st) = local(&ctx).await {
         st.remove(&folder, &uids);
     }
     Ok(permanent)
@@ -3307,7 +3440,8 @@ pub async fn import_pick_folder(app: AppHandle, state: State<'_, AppState>) -> R
 /// Начать импорт выбранного источника в папку `root` (по умолчанию «Импорт»).
 #[tauri::command]
 pub async fn import_start(state: State<'_, AppState>, source: String, root: Option<String>) -> Result<u64> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let ctx = state.ctx().await?;
+    let creds = ctx.creds.clone();
     let src = state.import_sources.lock().await.get(&source).cloned().ok_or_else(|| AppError::Other("Источник не найден — выберите файлы ещё раз".into()))?;
     if state.jobs.running("import") {
         return Err(AppError::Other("Импорт уже идёт — дождитесь окончания".into()));
@@ -3337,7 +3471,8 @@ pub fn job_cancel(state: State<'_, AppState>, id: u64) {
 /// Резервная копия папок (пустой список — все) в файлы mbox в выбранном каталоге.
 #[tauri::command]
 pub async fn backup_start(app: AppHandle, state: State<'_, AppState>, folders: Vec<String>) -> Result<Option<u64>> {
-    let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    let ctx = state.ctx().await?;
+    let creds = ctx.creds.clone();
     if state.jobs.running("backup") {
         return Err(AppError::Other("Резервная копия уже создаётся".into()));
     }
@@ -3382,7 +3517,8 @@ pub async fn backup_start(app: AppHandle, state: State<'_, AppState>, folders: V
 /// Импорт контактов из .vcf или .csv в адресную книгу `book_url`.
 #[tauri::command]
 pub async fn contacts_import(app: AppHandle, state: State<'_, AppState>, book_url: String) -> Result<Option<u64>> {
-    let cols = known(&state, dav::Kind::Contacts).await?;
+    let ctx = state.ctx().await?;
+    let cols = known(&ctx, dav::Kind::Contacts).await?;
     let book = cols.iter().find(|c| c.url == book_url).cloned().ok_or_else(|| AppError::Other("Адресная книга не найдена".into()))?;
     require_writable(&book)?;
     if state.jobs.running("contacts") {
@@ -3397,7 +3533,7 @@ pub async fn contacts_import(app: AppHandle, state: State<'_, AppState>, book_ur
     if list.is_empty() {
         return Err(AppError::Other("В файле не найдено контактов с адресом почты или телефоном".into()));
     }
-    let (client, _) = dav_client(&state).await?;
+    let (client, _) = dav_client(&ctx).await?;
     let job = crate::transfer::Job::new("contacts");
     job.update(|s| s.total = list.len() as u64);
     let id = state.jobs.add(job.clone());
@@ -3471,8 +3607,8 @@ pub struct AccountEntry {
 }
 
 async fn active_key(state: &AppState) -> Option<String> {
-    if let Some(c) = state.creds.lock().await.as_ref() {
-        return Some(account_key(&c.username, &c.host));
+    if let Some(c) = state.ctx_opt().await {
+        return Some(c.key.clone());
     }
     state.pending.lock().await.as_ref().map(|p| account_key(&p.creds.username, &p.creds.host))
 }
@@ -3572,7 +3708,7 @@ pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: Str
         .into_iter()
         .find(|a| settings::account_key(a) == key)
         .ok_or_else(|| AppError::Other("Учётная запись не найдена".into()))?;
-    if active_key(&state).await.as_deref() == Some(key.as_str()) && state.creds.lock().await.is_some() {
+    if state.ctx_opt().await.is_some_and(|c| c.key == key) {
         return Ok(LoginResult { account: account_of(&s), warning: None });
     }
     let password = password_of(&state, &s).await.ok_or_else(|| AppError::Other("Пароль этой учётной записи не сохранён — удалите её и добавьте снова".into()))?;
@@ -3588,19 +3724,17 @@ pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: Str
     state.outbox.flush().await;
     state.jobs.cancel_all();
     state.import_sources.lock().await.clear();
-    if let Some(c) = state.creds.lock().await.clone() {
-        state.session_passwords.lock().await.insert(account_key(&c.username, &c.host), c.password);
+    if let Some(c) = state.ctx_opt().await {
+        state.session_passwords.lock().await.insert(c.key.clone(), c.creds.password.clone());
     }
     if let Some(p) = state.pending.lock().await.take() {
         state.session_passwords.lock().await.insert(account_key(&p.creds.username, &p.creds.host), p.creds.password);
     }
-    *state.nc_flow.lock().await = None;
     *state.totp_setup.lock().await = None;
     if totp::load(&key).is_some() {
-        host::close_message_windows(&app);
-        deactivate_session(&state).await;
-        // Профиль — уже новой учётной записи (она ждёт кода), не прежней.
-        *state.profile.lock().await = Some(s.clone());
+        // Учётная запись с защитой кодом: прежний сеанс закрывается целиком, новый
+        // откроется только после кода — до этого в памяти нет ничего ни от одной.
+        end_session(&state).await;
         settings::save(&app, &s)?;
         *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: None });
         return Ok(LoginResult { account: Account { locked: true, ..account_of(&s) }, warning: None });
@@ -3695,9 +3829,7 @@ pub struct AccountUnread {
 /// Непрочитанные во «Входящих» других учётных записей.
 #[tauri::command]
 pub async fn accounts_unread(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<AccountUnread>> {
-    if state.creds.lock().await.is_none() {
-        return Err(AppError::NotLoggedIn);
-    }
+    state.ctx().await?;
     let mut out = Vec::new();
     for s in other_accounts(&app, &state).await {
         let key = settings::account_key(&s);
@@ -3721,9 +3853,7 @@ pub struct OtherNewMail {
 /// Первая проверка только запоминает последний UID.
 #[tauri::command]
 pub async fn accounts_poll(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<OtherNewMail>> {
-    if state.creds.lock().await.is_none() {
-        return Err(AppError::NotLoggedIn);
-    }
+    state.ctx().await?;
     let mut out = Vec::new();
     for s in other_accounts(&app, &state).await {
         let key = settings::account_key(&s);
@@ -3765,11 +3895,12 @@ pub struct UnifiedInbox {
 #[tauri::command]
 pub async fn unified_inbox(app: AppHandle, state: State<'_, AppState>, limit: u32) -> Result<UnifiedInbox> {
     let limit = limit.clamp(1, 100);
-    let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
-    let active = settings::account_key(&profile);
+    let ctx = state.ctx().await?;
+    let profile = ctx.profile().await;
+    let active = ctx.key.clone();
     let mut items = Vec::new();
     let mut errors = Vec::new();
-    let page = with_conn!(state, c => imap::list_messages(c, "INBOX", None, limit))?;
+    let page = with_ctx!(ctx, c => imap::list_messages(c, "INBOX", None, limit))?;
     items.extend(page.items.into_iter().map(|m| UnifiedItem { account: active.clone(), label: account_label(&profile), active: true, message: m }));
     for s in other_accounts(&app, &state).await {
         let key = settings::account_key(&s);
