@@ -11,6 +11,7 @@ export interface ViewContext {
   filter: MailFilter
   catFilter: string
   query: string
+  searchScope: 'current' | 'all'
   selected: MessageSummary | null
   scrollTop: number
 }

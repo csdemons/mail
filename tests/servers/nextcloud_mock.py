@@ -253,7 +253,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'],
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'],
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:
@@ -311,6 +311,43 @@ class H(BaseHTTPRequestHandler):
         if p.startswith(A) and p.endswith('/attachments') and method == 'GET':
             card_id = int(p[len(A):].split('/')[4])
             return self.send(200, state['attachments'].get(card_id, []))
+        if p.startswith(A) and p.endswith('/attachments') and method == 'POST':
+            # multipart/form-data: type=file и сам файл (как перетаскивание в веб-Deck)
+            card_id = int(p[len(A):].split('/')[4])
+            boundary = (self.headers.get('Content-Type') or '').split('boundary=')[-1].strip('"').encode()
+            raw = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+            fields, name, data = {}, None, None
+            for part in raw.split(b'--' + boundary):
+                head, _, body = part.partition(b'\r\n\r\n')
+                body = body[:-2] if body.endswith(b'\r\n') else body
+                disp = head.decode(errors='replace')
+                if 'name="file"' in disp:
+                    name = disp.split('filename="', 1)[1].split('"', 1)[0]; data = body
+                elif 'name="type"' in disp:
+                    fields['type'] = body.decode()
+            if fields.get('type') != 'file' or not name:
+                return self.send(400, {'message': 'bad upload'})
+            stem, _, ext = name.rpartition('.')
+            a = {'id': next(ids), 'cardId': card_id, 'type': 'file', 'data': name, 'deletedAt': 0,
+                 'extendedData': {'filesize': len(data), 'mimetype': 'text/plain', 'fileid': next(ids), 'info': {'filename': stem or ext, 'extension': ext if stem else ''}}}
+            state['attachments'].setdefault(card_id, []).append(a)
+            return self.send(200, a)
+        if p.startswith(A) and '/attachments/' in p and method == 'DELETE':
+            rest = p[len(A):].split('/')
+            card_id, att = int(rest[4]), int(rest[6])
+            if q.get('type') not in ('file', 'deck_file'):
+                return self.send(400, {'message': 'type missing'})
+            state['attachments'][card_id] = [x for x in state['attachments'].get(card_id, []) if x['id'] != att]
+            return self.send(200, {})
+        # История карточки (приложение Activity)
+        if p == '/ocs/v2.php/apps/activity/api/v2/activity/filter' and method == 'GET':
+            if q.get('object_type') != 'deck_card':
+                return self.send(404, {'message': 'not found'})
+            cid = q.get('object_id')
+            items = [{'activity_id': 9000 + i, 'user': 'ivanov', 'subject': text, 'datetime': '2026-10-26T09:0%d:00+00:00' % i,
+                      'subject_rich': ['', {'user': {'type': 'user', 'id': 'ivanov', 'name': 'Иванов Иван'}}]}
+                     for i, text in enumerate([f'Иванов Иван создал(а) карточку {cid}', 'Иванов Иван добавил(а) метку «Срочно»'])]
+            return self.ocs(items)
         parts = p[len(D):].strip('/').split('/') if p.startswith(D + '/') else []
         if len(parts) == 1 and method == 'GET':
             b = next(x for x in state['boards'] if x['id'] == int(parts[0]))
@@ -325,7 +362,7 @@ class H(BaseHTTPRequestHandler):
             if parts[1:] == ['stacks'] and method == 'GET':
                 out = []
                 for s in state['stacks'][board]:
-                    cards = sorted([c for c in state['cards'] if c['stackId'] == s['id']], key=lambda c: c['order'])
+                    cards = sorted([c for c in state['cards'] if c['stackId'] == s['id'] and not c.get('archived')], key=lambda c: c['order'])
                     out.append(dict(s, cards=cards))
                 return self.send(200, out)
             if parts[1:] == ['stacks'] and method == 'POST':
@@ -370,6 +407,9 @@ class H(BaseHTTPRequestHandler):
                     lid = int(self.body()['labelId'])
                     lab = next(l for l in state['board_labels'][board] if l['id'] == lid)
                     card['labels'] = [l for l in card.get('labels', []) if l['id'] != lid] + ([lab] if parts[5] == 'assignLabel' else [])
+                    return self.send(200, card)
+                if len(parts) == 6 and parts[5] in ('archive', 'unarchive') and method == 'PUT':
+                    card['archived'] = parts[5] == 'archive'
                     return self.send(200, card)
                 if len(parts) == 6 and parts[5] == 'reorder' and method == 'PUT':
                     b = self.body()

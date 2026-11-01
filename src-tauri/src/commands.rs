@@ -404,41 +404,35 @@ pub async fn cached_messages(state: State<'_, AppState>, folder: String, before_
     Ok(local(&ctx).await.and_then(|st| st.page(&folder, before_uid, limit.clamp(1, 200) as usize)))
 }
 
-/// Мгновенный поиск по индексу: все свои папки, отправитель/получатели/тема и
-/// текст писем, хранимых на компьютере.
+/// Мгновенный поиск по индексу: все свои папки, отправитель/получатели/тема,
+/// имена вложений и текст писем, хранимых на компьютере. Запрос — с операторами
+/// (`от:`, `кому:`, `тема:`, `вложение:`, `важные`, `после:`… — см. модуль `search`).
 #[tauri::command]
 pub async fn search_mail(state: State<'_, AppState>, query: String) -> Result<Vec<imap::MessageSummary>> {
     let ctx = state.ctx().await?;
-    let Some(st) = local(&ctx).await else { return Ok(Vec::new()) };
-    let q = query.trim().to_string();
-    if q.chars().count() < 2 {
+    let q = crate::search::Query::parse(&query);
+    if !q.account_ok(&ctx.key) {
         return Ok(Vec::new());
     }
+    let Some(st) = local(&ctx).await else { return Ok(Vec::new()) };
     tokio::task::spawn_blocking(move || st.search(&q, 300)).await.map_err(|e| AppError::Other(e.to_string()))
 }
 
-/// Поиск по тексту всех писем на сервере (своих папок) — отдельным соединением,
-/// чтобы не задерживать остальную работу.
-#[tauri::command]
-pub async fn search_server(state: State<'_, AppState>, query: String) -> Result<Vec<imap::MessageSummary>> {
-    let ctx = state.ctx().await?;
-    let q = query.trim().to_string();
-    if q.chars().count() < 2 {
-        return Ok(Vec::new());
-    }
-    let creds = ctx.creds.clone();
-    let mut conn = imap::connect(&creds).await?;
+/// Поиск на сервере по всем своим папкам (без общих ящиков) — отдельным
+/// соединением, чтобы не задерживать остальную работу.
+async fn server_search(creds: &Credentials, q: &crate::search::Query) -> Result<Vec<imap::MessageSummary>> {
+    let mut conn = tokio::time::timeout(Duration::from_secs(20), imap::connect(creds)).await.map_err(|_| AppError::Timeout)??;
     let folders = imap::list_folders(&mut conn).await?;
     let mut out = Vec::new();
-    for f in folders.iter().filter(|f| f.selectable && !imap::is_shared(f)) {
+    for f in folders.iter().filter(|f| f.selectable && !imap::is_shared(f) && q.folder_ok(&f.path)) {
         let found = tokio::time::timeout(Duration::from_secs(60), async {
-            let uids = imap::search_server(&mut conn, &f.id, &q).await?;
-            let uids: Vec<u32> = uids.into_iter().take(100).collect();
+            let uids = imap::search_server(&mut conn, &f.id, q).await?;
+            let uids: Vec<u32> = uids.into_iter().take(if q.has_attachment { 300 } else { 100 }).collect();
             imap::summaries_of(&mut conn, &f.id, &uids).await
         })
         .await;
         match found {
-            Ok(Ok(items)) => out.extend(items),
+            Ok(Ok(items)) => out.extend(items.into_iter().filter(|m| q.matches_structure(m)).take(100)),
             Ok(Err(e)) if e.is_connection() => return Err(e),
             Ok(Err(e)) => log::warn!("server search in a folder failed: {e}"),
             Err(_) => return Err(AppError::Timeout),
@@ -448,11 +442,84 @@ pub async fn search_server(state: State<'_, AppState>, query: String) -> Result<
         }
     }
     conn.logout().await;
-    out.sort_by(|a, b| {
-        let ts = |m: &imap::MessageSummary| m.date.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map_or(0, |d| d.timestamp());
-        ts(b).cmp(&ts(a))
-    });
+    out.sort_by_key(|m| std::cmp::Reverse(m.date.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map_or(0, |d| d.timestamp())));
     Ok(out)
+}
+
+/// Поиск по тексту всех писем на сервере (своих папок).
+#[tauri::command]
+pub async fn search_server(state: State<'_, AppState>, query: String) -> Result<Vec<imap::MessageSummary>> {
+    let ctx = state.ctx().await?;
+    let q = crate::search::Query::parse(&query);
+    if !q.is_meaningful() || !q.account_ok(&ctx.key) {
+        return Ok(Vec::new());
+    }
+    server_search(&ctx.creds, &q).await
+}
+
+/// Сохранённый поиск: запрос с операторами и где искать (`current` | `all`).
+#[derive(Serialize, serde::Deserialize, Clone)]
+pub struct SavedView {
+    id: String,
+    name: String,
+    query: String,
+    scope: String,
+}
+
+fn views_path(app: &AppHandle) -> Result<PathBuf> {
+    Ok(host::config_dir(app)?.join("views.json"))
+}
+
+/// Сохранённые поиски пользователя (общие для всех его учётных записей).
+#[tauri::command]
+pub fn views_get(app: AppHandle) -> Result<Vec<SavedView>> {
+    let Ok(raw) = std::fs::read(views_path(&app)?) else { return Ok(Vec::new()) };
+    Ok(serde_json::from_slice(&raw).unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn views_save(app: AppHandle, views: Vec<SavedView>) -> Result<()> {
+    if views.len() > 50 {
+        return Err(AppError::Other("Не больше 50 сохранённых поисков".into()));
+    }
+    for v in &views {
+        if v.name.trim().is_empty() || v.name.chars().count() > 60 || v.query.chars().count() > 500 || v.id.len() > 40 || !matches!(v.scope.as_str(), "current" | "all") {
+            return Err(AppError::Other(format!("Некорректный сохранённый поиск «{}»", v.name.chars().take(60).collect::<String>())));
+        }
+    }
+    let raw = serde_json::to_vec_pretty(&views).map_err(|e| AppError::Other(e.to_string()))?;
+    settings::write_private(&views_path(&app)?, &raw)
+}
+
+/// Поиск в других подключённых учётных записях (на их серверах). Каждая — своим
+/// соединением, с её паролем; учётные записи, которые не ответили, перечислены в `errors`.
+#[tauri::command]
+pub async fn search_others(app: AppHandle, state: State<'_, AppState>, query: String) -> Result<UnifiedInbox> {
+    state.ctx().await?;
+    let q = crate::search::Query::parse(&query);
+    let mut items = Vec::new();
+    let mut errors = Vec::new();
+    if !q.is_meaningful() {
+        return Ok(UnifiedInbox { items, errors });
+    }
+    for s in other_accounts(&app, &state).await {
+        let key = settings::account_key(&s);
+        if !q.account_ok(&key) {
+            continue;
+        }
+        let Some(password) = password_of(&state, &s).await else {
+            errors.push(format!("{}: пароль не сохранён", s.email()));
+            continue;
+        };
+        match server_search(&creds_of(&s, password), &q).await {
+            Ok(found) => items.extend(found.into_iter().map(|m| UnifiedItem { account: key.clone(), label: account_label(&s), active: false, message: m })),
+            Err(e) => errors.push(format!("{}: {e}", s.email())),
+        }
+    }
+    let ts = |i: &UnifiedItem| i.message.date.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map(|d| d.timestamp()).unwrap_or(0);
+    items.sort_by_key(|i| std::cmp::Reverse(ts(i)));
+    items.truncate(500);
+    Ok(UnifiedInbox { items, errors })
 }
 
 #[derive(Serialize)]
@@ -2902,6 +2969,39 @@ pub async fn deck_comment_delete(state: State<'_, AppState>, card_id: i64, comme
     nc(&ctx).await?.deck_comment_delete(card_id, comment_id).await
 }
 
+/// Добавить к карточке файл, выбранный через `pick_attachments` (не больше 50 МБ).
+#[tauri::command]
+pub async fn deck_attachment_add(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64, attachment: String) -> Result<()> {
+    let ctx = state.ctx().await?;
+    let path = ctx.picked.lock().await.get(&attachment).cloned().ok_or_else(|| AppError::Other("Файл не найден, выберите его заново".into()))?;
+    if tokio::fs::metadata(&path).await?.len() > 50 * 1024 * 1024 {
+        return Err(AppError::Other("Файл больше 50 МБ — положите его в Nextcloud и добавьте ссылку".into()));
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+    let data = tokio::fs::read(&path).await?;
+    nc(&ctx).await?.deck_attachment_upload(board_id, stack_id, card_id, &name, data).await?;
+    ctx.picked.lock().await.remove(&attachment);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn deck_attachment_delete(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64, attachment_id: i64, kind: String) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_attachment_delete(board_id, stack_id, card_id, attachment_id, &kind).await
+}
+
+#[tauri::command]
+pub async fn deck_archive(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64, archive: bool) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_archive(board_id, stack_id, card_id, archive).await
+}
+
+#[tauri::command]
+pub async fn deck_activity(state: State<'_, AppState>, card_id: i64) -> Result<Vec<nextcloud::DeckActivity>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_activity(card_id).await
+}
+
 #[tauri::command]
 pub async fn deck_attachments(state: State<'_, AppState>, board_id: i64, stack_id: i64, card_id: i64) -> Result<Vec<nextcloud::DeckAttachment>> {
     let ctx = state.ctx().await?;
@@ -4042,6 +4142,13 @@ macro_rules! app_commands {
             crate::commands::attach_data,
             crate::commands::talk_file_preview,
             crate::commands::unified_folder,
+            crate::commands::search_others,
+            crate::commands::views_get,
+            crate::commands::views_save,
+            crate::commands::deck_attachment_add,
+            crate::commands::deck_attachment_delete,
+            crate::commands::deck_archive,
+            crate::commands::deck_activity,
             crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,

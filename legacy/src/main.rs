@@ -39,6 +39,8 @@ mod transfer;
 mod winacl;
 #[path = "../../src-tauri/src/netio.rs"]
 mod netio;
+#[path = "../../src-tauri/src/search.rs"]
+mod search;
 #[path = "../../src-tauri/src/totp.rs"]
 mod totp;
 #[path = "../../src-tauri/src/smtp.rs"]

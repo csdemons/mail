@@ -7,7 +7,12 @@
   -webkit-font-smoothing: antialiased;
   font-optical-sizing: auto;
   font-size: 13px;
+  /* Цвета темы — на всей странице: и в окне программы, и в том, что выводится поверх
+     (уведомление об обновлении, всплывающие окна). */
+  --line: #e8edf4; --muted: #778397; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed;
 }
+html.theme-dark { color-scheme: dark; }
+html.theme-dark body { background: #151a23; color: #e6ebf3; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 360px; min-height: 100vh; }
 button, input, textarea { font: inherit; }
@@ -519,6 +524,29 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .deck-label-chip { display: inline-flex; align-items: center; gap: 4px; color: #fff; border-radius: 10px; padding: 2px 9px; font-size: 11px; font-weight: 600; text-shadow: 0 1px 1px #0003; }
 .deck-picker { grid-column: 2; display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--surface); box-shadow: 0 6px 20px #0001; }
 .deck-picker label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.deck-full-backdrop { align-items: stretch; justify-content: center; padding: 28px; }
+.deck-full { width: min(1180px, 100%); max-height: 100%; display: flex; flex-direction: column; background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 24px 80px #0005; overflow: hidden; }
+.deck-full .reader-toolbar { border-bottom: 1px solid var(--line); }
+.deck-card-info { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck-full-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 380px); gap: 0; padding: 0; overflow: hidden; }
+.deck-full-main { overflow-y: auto; padding: 18px 22px; display: flex; flex-direction: column; gap: 12px; }
+.deck-full-side { overflow-y: auto; padding: 18px; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; gap: 14px; }
+.deck-section { display: flex; flex-direction: column; gap: 8px; }
+.deck-section-head { display: flex; align-items: center; gap: 8px; }
+.deck-section-head b { display: inline-flex; align-items: center; gap: 6px; }
+.deck-section-head .text-button { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.deck-section textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; background: var(--surface); color: inherit; }
+.deck-markdown { line-height: 1.5; overflow-wrap: anywhere; }
+.deck-markdown p { margin: 0 0 8px; white-space: pre-wrap; }
+.deck-markdown h3, .deck-markdown h4 { margin: 8px 0 6px; }
+.deck-markdown ul { margin: 0 0 8px; padding-left: 20px; }
+.deck-markdown a { color: var(--blue); }
+.deck-file-row .talk-file { flex: 1; }
+.deck-upload { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; }
+.deck-activity ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.deck-activity li { display: flex; flex-direction: column; gap: 1px; }
+.deck-activity time { color: var(--muted); font-size: 11px; }
+@media (max-width: 860px) { .deck-full-body { grid-template-columns: 1fr; overflow-y: auto; } .deck-full-side { border-left: 0; border-top: 1px solid var(--line); } }
 .deck-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
 .deck-tabs button { display: inline-flex; align-items: center; gap: 5px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 7px 10px; cursor: pointer; }
 .deck-tabs button.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
@@ -714,6 +742,8 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 /* HTML-письма */
 .message-html { display: block; width: 100%; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
 .theme-dark .message-html { border-color: #3a4558; }
+.theme-dark .message-html.dark { background: #202735; }
+.html-foot { display: flex; gap: 12px; }
 .html-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--hover); font-size: 12px; color: var(--muted, #667085); }
 .html-bar.remote { background: #fff7e6; color: #8a5300; }
 .theme-dark .html-bar.remote { background: #3a2c12; color: #f5c46b; }
@@ -910,6 +940,18 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .account-pick-text small, .account-current { color: var(--muted); font-size: 11px; }
 .status-dot.idle { background: var(--muted); }
 .add-account .login-card { max-height: 92vh; overflow: auto; }
+.search-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px 8px; font-size: 12px; }
+.search-scope { display: inline-flex; gap: 4px; }
+.search-saved { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.search-tools .text-button { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.save-view { display: inline-flex; align-items: center; gap: 4px; }
+.save-view input { height: 26px; border: 1px solid var(--line); border-radius: 6px; padding: 0 8px; font: inherit; font-size: 12px; background: var(--surface); color: inherit; width: 160px; }
+.search-help { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); color: var(--muted); cursor: help; font-size: 11px; margin-left: auto; white-space: pre-line; }
+.search-account { color: #1f6ce3; }
+.views-group { font-weight: 600; }
+.view-item { cursor: pointer; }
+.view-item .view-remove { margin-left: auto; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 2px; display: none; }
+.view-item:hover .view-remove, .view-item:focus-within .view-remove { display: inline-flex; }
 .unified-separator { height: 1px; background: var(--line); margin: 6px 8px; }
 .unified-group { font-weight: 600; }
 .unified-title { display: flex; align-items: center; gap: 6px; margin-right: auto; }

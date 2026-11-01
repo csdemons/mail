@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deck-attachment-delete"
+description = "Enables the deck_attachment_delete command without any pre-configured scope."
+commands.allow = ["deck_attachment_delete"]
+
+[[permission]]
+identifier = "deny-deck-attachment-delete"
+description = "Denies the deck_attachment_delete command without any pre-configured scope."
+commands.deny = ["deck_attachment_delete"]

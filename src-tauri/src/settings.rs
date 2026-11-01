@@ -127,7 +127,7 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<()> {
 
 /// Атомарная запись (временный файл + rename); в Linux каталог 0700, файл 0600 —
 /// другие пользователи компьютера не читают и не меняют настройки.
-fn write_private(path: &std::path::Path, raw: &[u8]) -> Result<()> {
+pub fn write_private(path: &std::path::Path, raw: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

@@ -28,6 +28,8 @@ pub const MAX_RAW_BYTES: u32 = 15 * 1024 * 1024;
 /// Сколько текста письма держать в индексе для поиска.
 const TEXT_CHARS: usize = 20_000;
 pub const DEFAULT_DAYS: u32 = 7;
+/// 2 — в записях есть имена вложений (поиск по вложениям).
+const INDEX_FORMAT: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Entry {
@@ -51,7 +53,7 @@ impl Entry {
 
     fn rebuild(&mut self) {
         let s = &self.s;
-        self.hay = format!("{} {} {} {} {}", s.from_name, s.from_address, s.subject, s.to.join(" "), self.text.as_deref().unwrap_or("")).to_lowercase();
+        self.hay = format!("{} {} {} {} {} {}", s.from_name, s.from_address, s.subject, s.to.join(" "), s.attachments.join(" "), self.text.as_deref().unwrap_or("")).to_lowercase();
     }
 
     fn timestamp(&self) -> i64 {
@@ -63,6 +65,9 @@ impl Entry {
 struct FolderIndex {
     folder: String,
     uid_validity: u32,
+    /// Версия формата записей; старая — индекс папки собирается заново.
+    #[serde(default)]
+    format: u32,
     total: u32,
     items: BTreeMap<u32, Entry>,
 }
@@ -505,9 +510,9 @@ impl Store {
 
     /// Поиск по всем папкам: отправитель, получатели, тема и текст хранимых писем.
     /// Все слова запроса должны встретиться; новые письма сверху.
-    pub fn search(&self, query: &str, limit: usize) -> Vec<MessageSummary> {
-        let words: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_string).collect();
-        if words.is_empty() {
+    /// Поиск по индексу: запрос с операторами (см. модуль `search`).
+    pub fn search(&self, query: &crate::search::Query, limit: usize) -> Vec<MessageSummary> {
+        if !query.is_meaningful() {
             return Vec::new();
         }
         let mut inner = self.lock();
@@ -515,8 +520,9 @@ impl Store {
         let mut hits: Vec<(i64, &Entry)> = inner
             .index
             .values()
+            .filter(|i| query.folder_ok(&utf7_imap::decode_utf7_imap(i.folder.clone())))
             .flat_map(|i| i.items.values())
-            .filter(|e| words.iter().all(|w| e.hay.contains(w.as_str())))
+            .filter(|e| query.matches(&e.s, &e.hay))
             .map(|e| (e.timestamp(), e))
             .collect();
         hits.sort_by_key(|h| std::cmp::Reverse(h.0));
@@ -602,13 +608,14 @@ async fn sync_folder(store: &Store, conn: &mut imap::Connection, folder: &str) -
     let missing: Vec<u32> = {
         let mut inner = store.lock();
         let idx = store.ensure_loaded(&mut inner, folder);
-        if idx.uid_validity != validity {
+        if idx.uid_validity != validity || idx.format < INDEX_FORMAT {
             // Папку пересоздали на сервере — старые UID ничего не значат.
             for u in idx.items.keys() {
                 let _ = std::fs::remove_file(store.dir.join(Store::raw_name(folder, *u)));
             }
             idx.items.clear();
             idx.uid_validity = validity;
+            idx.format = INDEX_FORMAT;
         }
         let live: HashMap<u32, imap::FlagState> = flags.iter().cloned().collect();
         let gone: Vec<u32> = idx.items.keys().copied().filter(|u| !live.contains_key(u)).collect();
@@ -715,6 +722,7 @@ mod tests {
             message_id: None,
             thread: vec![],
             has_attachments: false,
+            attachments: vec![],
             size: 100,
         }
     }
@@ -761,9 +769,9 @@ mod tests {
         assert!(p.has_more);
         assert_eq!(st2.raw("INBOX", 12).as_deref(), Some(raw));
         assert!(st2.raw("INBOX", 10).is_none());
-        assert_eq!(st2.search("бюджет", 10).iter().map(|m| m.uid).collect::<Vec<_>>(), vec![12]);
-        assert_eq!(st2.search("иванов совещание", 10).len(), 1);
-        assert_eq!(st2.search("ivanov", 10).len(), 3);
+        assert_eq!(st2.search(&crate::search::Query::parse("бюджет"), 10).iter().map(|m| m.uid).collect::<Vec<_>>(), vec![12]);
+        assert_eq!(st2.search(&crate::search::Query::parse("иванов совещание"), 10).len(), 1);
+        assert_eq!(st2.search(&crate::search::Query::parse("ivanov"), 10).len(), 3);
 
         // Письмо 11 удалено на сервере: свежая страница без него.
         st2.merge_page("INBOX", None, &MessagePage { items: vec![summary("INBOX", 12, "Отчёт за квартал", 1), summary("INBOX", 10, "Старое", 30)], total: 2, has_more: false });

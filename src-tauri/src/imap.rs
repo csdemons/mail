@@ -451,6 +451,9 @@ pub struct MessageSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread: Vec<String>,
     pub has_attachments: bool,
+    /// Имена файлов-вложений (из BODYSTRUCTURE) — для поиска по вложениям.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
     pub size: u32,
 }
 
@@ -562,6 +565,71 @@ fn has_param(params: &async_imap::imap_proto::types::BodyParams<'_>, names: &[&s
         .is_some_and(|list| list.iter().any(|(k, _)| names.iter().any(|n| k.eq_ignore_ascii_case(n))))
 }
 
+/// Имена файлов во вложениях (не больше 20, каждое до 200 символов).
+fn attachment_names(bs: &async_imap::imap_proto::types::BodyStructure<'_>) -> Vec<String> {
+    use async_imap::imap_proto::types::BodyStructure as B;
+    fn param(params: &async_imap::imap_proto::types::BodyParams<'_>, names: &[&str]) -> Option<String> {
+        params.as_ref()?.iter().find(|(k, _)| names.iter().any(|n| k.eq_ignore_ascii_case(n))).map(|(k, v)| decode_param(k, v))
+    }
+    fn walk(bs: &B<'_>, out: &mut Vec<String>) {
+        match bs {
+            B::Multipart { bodies, .. } => bodies.iter().for_each(|b| walk(b, out)),
+            B::Basic { common, .. } | B::Text { common, .. } | B::Message { common, .. } => {
+                let name = common
+                    .disposition
+                    .as_ref()
+                    .and_then(|d| param(&d.params, &["filename*", "filename"]))
+                    .or_else(|| param(&common.ty.params, &["name*", "name"]));
+                if let Some(n) = name.map(|n| n.trim().chars().take(200).collect::<String>()).filter(|n| !n.is_empty()) {
+                    if out.len() < 20 && !out.contains(&n) {
+                        out.push(n);
+                    }
+                }
+                if let B::Message { body, .. } = bs {
+                    walk(body, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(bs, &mut out);
+    out
+}
+
+/// Значение параметра MIME: RFC 2231 (`utf-8''%D0%9E…`) или RFC 2047 (`=?utf-8?B?…?=`).
+pub fn decode_param(key: &str, value: &str) -> String {
+    if key.ends_with('*') {
+        if let Some((charset, rest)) = value.split_once('\'') {
+            let encoded = rest.split_once('\'').map_or(rest, |(_, v)| v);
+            let mut bytes = Vec::new();
+            let b = encoded.as_bytes();
+            let mut i = 0;
+            while i < b.len() {
+                if b[i] == b'%' {
+                    if let Some(x) = encoded.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                        bytes.push(x);
+                        i += 3;
+                        continue;
+                    }
+                }
+                bytes.push(b[i]);
+                i += 1;
+            }
+            let enc = encoding_rs::Encoding::for_label(charset.trim().as_bytes()).unwrap_or(encoding_rs::UTF_8);
+            return enc.decode(&bytes).0.into_owned();
+        }
+    }
+    if value.contains("=?") {
+        let header = format!("Subject: {value}\r\n\r\n");
+        if let Some(m) = MessageParser::default().parse_headers(header.as_bytes()) {
+            if let Some(subj) = m.subject() {
+                return subj.to_string();
+            }
+        }
+    }
+    value.to_string()
+}
+
 /// Есть ли во вложенной структуре MIME части-файлы: часть с
 /// `Content-Disposition: attachment`, нетекстовая часть с именем файла или
 /// вложенное письмо (message/rfc822).
@@ -666,6 +734,7 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
         .or_else(|| msg.and_then(|m| m.date()).map(|d| d.to_rfc3339()));
 
     let has_attachments = fetch.bodystructure().is_some_and(has_attachment_part);
+    let attachments = fetch.bodystructure().map(attachment_names).unwrap_or_default();
 
     let mut summary = MessageSummary {
         folder: folder.to_string(),
@@ -687,6 +756,7 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
         message_id: msg.and_then(|m| m.message_id()).map(|id| format!("<{}>", id.trim_matches(['<', '>']))),
         thread: msg.map(thread_ids).unwrap_or_default(),
         has_attachments,
+        attachments,
         size: fetch.size.unwrap_or(0),
     };
     summary.set_flags(flag_state(fetch));
@@ -1210,20 +1280,10 @@ pub async fn export_batch(conn: &mut Connection, uids: &[u32]) -> Result<Vec<Exp
 }
 
 /// Поиск по тексту писем на сервере (IMAP SEARCH TEXT, UTF-8).
-pub async fn search_server(conn: &mut Connection, folder: &str, query: &str) -> Result<Vec<u32>> {
+pub async fn search_server(conn: &mut Connection, folder: &str, query: &crate::search::Query) -> Result<Vec<u32>> {
+    let Some(criteria) = query.imap_criteria() else { return Ok(Vec::new()) };
     conn.ensure_selected(folder).await?;
-    let mut criteria = String::new();
-    for word in query.split_whitespace().take(6) {
-        let w: String = word.chars().filter(|c| !c.is_control()).collect::<String>().replace('\\', "\\\\").replace('"', "\\\"");
-        if !w.is_empty() {
-            criteria.push_str(&format!(" TEXT \"{w}\""));
-        }
-    }
-    if criteria.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ascii = query.is_ascii();
-    let cmd = if ascii { criteria.trim().to_string() } else { format!("CHARSET UTF-8{criteria}") };
+    let cmd = if query.needs_utf8() { format!("CHARSET UTF-8 {criteria}") } else { criteria };
     let mut uids: Vec<u32> = conn.session.uid_search(cmd).await?.into_iter().collect();
     uids.sort_unstable_by(|a, b| b.cmp(a));
     Ok(uids)

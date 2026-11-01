@@ -6,11 +6,18 @@ import type { MessageDetail } from './types'
 
 /** Письмо в HTML показывается как задумал отправитель — в изолированной рамке
  *  (без скриптов, без обращений в сеть); иначе — обычным текстом. */
-export default function MessageBody({ detail, scale = 1, onNotice }: {
+const DARK_KEY = 'rrcki-mail.mail-dark'
+
+export default function MessageBody({ detail, scale = 1, dark = false, onNotice }: {
   detail: MessageDetail
   scale?: number
+  /** Тёмная тема программы: письмо затемняется (картинки остаются как есть). */
+  dark?: boolean
   onNotice?: (text: string) => void
 }) {
+  // В тёмной теме письмо можно показать как задумал отправитель — на светлом фоне.
+  const [darkBody, setDarkBody] = useState(() => { try { return localStorage.getItem(DARK_KEY) !== 'off' } catch { return true } })
+  useEffect(() => { try { localStorage.setItem(DARK_KEY, darkBody ? 'on' : 'off') } catch { /* необязательно */ } }, [darkBody])
   const [html, setHtml] = useState(detail.bodyHtml)
   const [remoteLeft, setRemoteLeft] = useState(detail.remoteImages)
   const [asText, setAsText] = useState(false)
@@ -62,7 +69,7 @@ export default function MessageBody({ detail, scale = 1, onNotice }: {
           <button className="text-button" disabled={loadingImages} onClick={() => void showImages()}>{loadingImages ? 'Загрузка…' : 'Показать картинки'}</button>
         </>}
     </div>}
-    <HtmlFrame html={html} scale={scale} onHover={setHover} onLink={openChecked} />
+    <HtmlFrame html={html} scale={scale} dark={dark && darkBody} onHover={setHover} onLink={openChecked} />
     {hover && <div className="link-status" title={hover}>{hover}</div>}
     {suspicious && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setSuspicious(null) }}>
       <div className="settings-modal confirm-modal" role="alertdialog" aria-label="Подозрительная ссылка">
@@ -75,7 +82,10 @@ export default function MessageBody({ detail, scale = 1, onNotice }: {
         </div>
       </div>
     </div>}
-    <div className="html-foot"><button className="text-button" onClick={() => setAsText(true)}>Показать как текст</button></div>
+    <div className="html-foot">
+      <button className="text-button" onClick={() => setAsText(true)}>Показать как текст</button>
+      {dark && <button className="text-button mail-bg-toggle" onClick={() => setDarkBody(!darkBody)}>{darkBody ? 'Светлый фон письма' : 'Тёмный фон письма'}</button>}
+    </div>
   </>
 }
 
@@ -88,9 +98,17 @@ blockquote { margin: 0 0 0 6px; padding-left: 10px; border-left: 3px solid #cbd5
 a { color: #1d4ed8; }
 `
 
+/** Тёмная тема: письмо инвертируется целиком (так сохраняется задуманный
+ *  отправителем контраст), а картинки и видео — обратно, чтобы остались как есть.
+ *  Фон подобран так, чтобы после инверсии совпасть с фоном программы. */
+const FRAME_DARK_CSS = `
+html { background: #d0d8df; filter: invert(1) hue-rotate(180deg); }
+img, video, picture, svg, canvas, [style*="background-image"], [background] { filter: invert(1) hue-rotate(180deg); }
+`
+
 const FRAME_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; script-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; connect-src 'none'"
 
-function HtmlFrame({ html, scale, onHover, onLink }: { html: string; scale: number; onHover: (href: string) => void; onLink: (href: string, text: string) => void }) {
+function HtmlFrame({ html, scale, dark, onHover, onLink }: { html: string; scale: number; dark: boolean; onHover: (href: string) => void; onLink: (href: string, text: string) => void }) {
   const frame = useRef<HTMLIFrameElement>(null)
   // Обработчики — через ref: иначе каждое наведение мыши перезапускало бы подписки рамки.
   const cb = useRef({ onHover, onLink })
@@ -100,7 +118,7 @@ function HtmlFrame({ html, scale, onHover, onLink }: { html: string; scale: numb
   // встраивания; картинки — только data: (внешние программа подставляет сама).
   // Атрибут sandbox не используется: в WebKitGTK с ним не срабатывают обработчики
   // щелчков, и ссылки из писем нельзя было бы проверить и открыть в браузере.
-  const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}"><style>${FRAME_CSS} html { zoom: ${scale}; }</style></head><body>${html}</body></html>`
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}"><style>${FRAME_CSS}${dark ? FRAME_DARK_CSS : ''} html { zoom: ${scale}; }</style></head><body>${html}</body></html>`
 
   useEffect(() => {
     const el = frame.current
@@ -142,12 +160,12 @@ function HtmlFrame({ html, scale, onHover, onLink }: { html: string; scale: numb
     const ready = el.contentDocument
     if (ready?.readyState === 'complete' && ready.body && ready.body.childNodes.length > 0) onLoad()
     return () => { el.removeEventListener('load', onLoad); observer?.disconnect() }
-  }, [html, scale])
+  }, [html, scale, dark])
 
   return (
     <iframe
       ref={frame}
-      className="message-html"
+      className={`message-html ${dark ? 'dark' : ''}`}
       title="Текст письма"
       srcDoc={doc}
       style={{ height }}

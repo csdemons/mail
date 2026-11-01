@@ -312,6 +312,9 @@ pub struct DeckCard {
     pub owner: String,
     pub comments_unread: i64,
     pub attachment_count: i64,
+    /// Когда создана и последний раз изменена (Unix-время, секунды).
+    pub created_at: i64,
+    pub last_modified: i64,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -349,6 +352,19 @@ pub struct DeckAttachment {
     pub mimetype: String,
     /// ID файла в Nextcloud (открывается по `/f/<id>`), если вложение — файл.
     pub file_id: Option<i64>,
+    /// Тип вложения в Deck: `file` (файл Nextcloud) или `deck_file` (старый формат).
+    pub kind: String,
+}
+
+/// Событие в истории карточки (приложение Activity).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeckActivity {
+    pub id: i64,
+    pub author: String,
+    pub author_id: String,
+    pub subject: String,
+    pub date: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -438,6 +454,8 @@ pub fn parse_card(v: &Value) -> DeckCard {
         owner: user_name(&v["owner"]),
         comments_unread: int(&v["commentsUnread"]),
         attachment_count: int(&v["attachmentCount"]),
+        created_at: int(&v["createdAt"]),
+        last_modified: int(&v["lastModified"]),
     }
 }
 
@@ -565,8 +583,72 @@ impl Nc {
                 match ext.pointer("/info/extension").and_then(Value::as_str) { Some(e) if !e.is_empty() => format!("{f}.{e}"), _ => f.to_string() }
             }).unwrap_or_else(|| text(&x["data"]));
             let file_id = ext["fileid"].as_i64().or_else(|| (x["type"].as_str() == Some("file")).then(|| int(&x["id"])));
-            DeckAttachment { id: int(&x["id"]), name, size: int(&ext["filesize"]), mimetype: text(&ext["mimetype"]), file_id }
+            DeckAttachment { id: int(&x["id"]), name, size: int(&ext["filesize"]), mimetype: text(&ext["mimetype"]), file_id, kind: x["type"].as_str().unwrap_or("file").to_string() }
         }).collect()).unwrap_or_default())
+    }
+
+    /// Добавить файл к карточке (как перетаскивание файла в карточку в веб-Deck).
+    pub async fn deck_attachment_upload(&self, board: i64, stack: i64, card: i64, name: &str, data: Vec<u8>) -> Result<()> {
+        let url = self
+            .creds
+            .base
+            .join(&format!("index.php/apps/deck/api/v1.1/boards/{board}/stacks/{stack}/cards/{card}/attachments"))
+            .map_err(|e| AppError::Other(e.to_string()))?;
+        let part = reqwest::multipart::Part::bytes(data).file_name(name.to_string()).mime_str("application/octet-stream").map_err(|e| AppError::Other(e.to_string()))?;
+        let form = reqwest::multipart::Form::new().text("type", "file").part("file", part);
+        let resp = self
+            .client
+            .post(url)
+            .basic_auth(&self.creds.login, Some(&self.creds.app_password))
+            .header("OCS-APIRequest", "true")
+            .header("Accept", "application/json")
+            .multipart(form)
+            .send()
+            .await
+            .map_err(net_error)?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = crate::netio::text_limited(resp, 64 * 1024).await.unwrap_or_default();
+            let msg = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["message"].as_str().map(str::to_string)).unwrap_or_default();
+            return Err(if msg.is_empty() { status_error(status, "Вложение") } else { AppError::Other(format!("Вложение: {msg}")) });
+        }
+        Ok(())
+    }
+
+    pub async fn deck_attachment_delete(&self, board: i64, stack: i64, card: i64, attachment: i64, kind: &str) -> Result<()> {
+        let kind = if kind == "deck_file" { "deck_file" } else { "file" };
+        self.call(Method::DELETE, &format!("index.php/apps/deck/api/v1.1/boards/{board}/stacks/{stack}/cards/{card}/attachments/{attachment}"),
+            &[("type", kind.into())], None, "Удаление вложения").await?;
+        Ok(())
+    }
+
+    /// Убрать карточку в архив доски (или вернуть из архива).
+    pub async fn deck_archive(&self, board: i64, stack: i64, card: i64, archive: bool) -> Result<()> {
+        let action = if archive { "archive" } else { "unarchive" };
+        self.call(Method::PUT, &format!("{DECK}boards/{board}/stacks/{stack}/cards/{card}/{action}"), &[], None, "Архив").await?;
+        Ok(())
+    }
+
+    /// История карточки из приложения Activity. Нет приложения — пустой список.
+    pub async fn deck_activity(&self, card: i64) -> Result<Vec<DeckActivity>> {
+        let query = [("format", "json".to_string()), ("object_type", "deck_card".to_string()), ("object_id", card.to_string()), ("limit", "50".to_string())];
+        let Ok((_, _, d)) = self.ocs(Method::GET, "ocs/v2.php/apps/activity/api/v2/activity/filter", &query, None, "История").await else {
+            return Ok(Vec::new());
+        };
+        Ok(d.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|x| DeckActivity {
+                        id: int(&x["activity_id"]),
+                        author_id: text(&x["user"]),
+                        author: x.pointer("/subject_rich/1/user/name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| text(&x["user"])),
+                        subject: text(&x["subject"]),
+                        date: text(&x["datetime"]),
+                    })
+                    .filter(|a| !a.subject.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     pub async fn deck_create_stack(&self, board: i64, title: &str) -> Result<()> {

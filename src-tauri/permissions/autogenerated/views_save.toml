@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-views-save"
+description = "Enables the views_save command without any pre-configured scope."
+commands.allow = ["views_save"]
+
+[[permission]]
+identifier = "deny-views-save"
+description = "Denies the views_save command without any pre-configured scope."
+commands.deny = ["views_save"]

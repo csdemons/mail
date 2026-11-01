@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarClock, CheckCircle2, ExternalLink, FileText, Filter, ListChecks, Lock, MessageSquare, Paperclip, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, CalendarClock, CheckCircle2, ExternalLink, FileText, Filter, History, ListChecks, Lock, Maximize2, MessageSquare, Minimize2, Paperclip, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
 import { addItem, checklistProgress, parseChecklist, removeItem, renameItem, toggleItem } from './checklist'
 import Avatar from './Avatar'
-import type { DeckAttachment, DeckBoard, DeckBoardDetails, DeckCard, DeckComment, DeckLabel, DeckStack, DeckUser } from './types'
+import TalkText from './TalkText'
+import type { DeckActivity, DeckAttachment, DeckBoard, DeckBoardDetails, DeckCard, DeckComment, DeckLabel, DeckStack, DeckUser } from './types'
 
 const LAST_BOARD_KEY = 'rrcki-mail.deck-board'
 const FILTER_KEY = 'rrcki-mail.deck-filter.'
@@ -81,6 +82,8 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<DeckCard | null>(null)
+  /** Карточка целиком (двойной щелчок), как в веб-Deck; иначе — панель справа. */
+  const [full, setFull] = useState(false)
   const [adding, setAdding] = useState<number | null>(null)
   const [newTitle, setNewTitle] = useState('')
   // Перетаскивание сделано на pointer-событиях: HTML5 drag-and-drop в WebView2
@@ -347,6 +350,8 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
                       }}
                       onDragStart={(e) => e.preventDefault()}
                       onClick={() => { if (!suppressClick.current) setSelected(c) }}
+                      onDoubleClick={() => { setSelected(c); setFull(true) }}
+                      title="Двойной щелчок — открыть карточку целиком"
                     >
                       {c.labels.length > 0 && <div className="deck-labels">{c.labels.map((l) => <span key={l.id} style={{ background: `#${l.color}` }}>{l.title}</span>)}</div>}
                       <div className="deck-card-title">{c.done && <CheckCircle2 size={14} />} {c.title}</div>
@@ -381,7 +386,9 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           board={board}
           card={selected}
           stacks={stacks}
-          onClose={() => setSelected(null)}
+          full={full}
+          onFull={setFull}
+          onClose={() => { setSelected(null); setFull(false) }}
           onChanged={async (text) => { onNotice(text); await loadStacks(board.id) }}
           onRefresh={() => loadStacks(board.id, true)}
           onMove={(target) => void move(selected, target)}
@@ -391,10 +398,41 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   )
 }
 
-function CardPanel({ board, card, stacks, onClose, onChanged, onRefresh, onMove }: {
+/** Описание карточки с оформлением Markdown (заголовки, списки, жирный, ссылки, код);
+ *  строки-подзадачи «- [ ] …» показываются отдельно, списком с галочками. */
+function DeckMarkdown({ text }: { text: string }) {
+  const blocks: React.ReactNode[] = []
+  let para: string[] = []
+  let list: string[] = []
+  const flush = () => {
+    if (para.length) { blocks.push(<p key={`p${blocks.length}`}><TalkText text={para.join('\n')} /></p>); para = [] }
+    if (list.length) { blocks.push(<ul key={`u${blocks.length}`}>{list.map((x, i) => <li key={i}><TalkText text={x} /></li>)}</ul>); list = [] }
+  }
+  for (const raw of text.split('\n')) {
+    const line = raw.trimEnd()
+    if (/^\s*[-*+]\s+\[[ xX]\]/.test(line)) continue
+    const h = /^(#{1,4})\s+(.*)$/.exec(line)
+    const li = /^\s*(?:[-*+]|\d+\.)\s+(.*)$/.exec(line)
+    if (h) { flush(); blocks.push(h[1].length <= 2 ? <h3 key={`h${blocks.length}`}>{h[2]}</h3> : <h4 key={`h${blocks.length}`}>{h[2]}</h4>) }
+    else if (li) { if (para.length) { const l = list; list = []; flush(); list = l } list.push(li[1]) }
+    else if (!line.trim()) flush()
+    else { if (list.length) { const p = para; para = []; flush(); para = p } para.push(line) }
+  }
+  flush()
+  return <div className="deck-markdown">{blocks}</div>
+}
+
+function when(ts: string | number) {
+  const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
+  return Number.isNaN(d.getTime()) || d.getTime() <= 0 ? '' : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRefresh, onMove }: {
   board: DeckBoard
   card: DeckCard
   stacks: DeckStack[]
+  full: boolean
+  onFull: (full: boolean) => void
   onClose: () => void
   onChanged: (text: string) => Promise<void>
   onRefresh: () => Promise<void>
@@ -415,6 +453,9 @@ function CardPanel({ board, card, stacks, onClose, onChanged, onRefresh, onMove 
   const [comment, setComment] = useState('')
   const [attachments, setAttachments] = useState<DeckAttachment[] | null>(null)
   const [tab, setTab] = useState<'tasks' | 'comments' | 'files'>('tasks')
+  const [activity, setActivity] = useState<DeckActivity[] | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [editDesc, setEditDesc] = useState(false)
   const [picker, setPicker] = useState<'users' | 'labels' | null>(null)
   const ro = !board.canEdit
   const items = useMemo(() => parseChecklist(description), [description])
@@ -424,7 +465,52 @@ function CardPanel({ board, card, stacks, onClose, onChanged, onRefresh, onMove 
     api.deckBoardDetails(board.id).then(setDetails).catch(() => undefined)
     api.deckComments(card.id).then(setComments).catch((e) => { setComments([]); setError(errorText(e)) })
     api.deckAttachments(board.id, card.stackId, card.id).then(setAttachments).catch(() => setAttachments([]))
+    api.deckActivity(card.id).then(setActivity).catch(() => setActivity([]))
   }, [board.id, card.id, card.stackId])
+
+  // Esc закрывает карточку целиком (возврат к доске), а не всю программу.
+  useEffect(() => {
+    if (!full) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onFull(false) } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [full, onFull])
+
+  async function addFiles() {
+    try {
+      const picked = await api.pickAttachments()
+      if (picked.length === 0) return
+      setUploading(true)
+      for (const f of picked) await api.deckAttachmentAdd(board.id, card.stackId, card.id, f.id)
+      setAttachments(await api.deckAttachments(board.id, card.stackId, card.id))
+      await onChanged(picked.length === 1 ? `Файл «${picked[0].name}» добавлен к карточке.` : `Добавлено файлов: ${picked.length}.`)
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function removeFile(a: DeckAttachment) {
+    if (!window.confirm(`Убрать вложение «${a.name}» из карточки?`)) return
+    try {
+      await api.deckAttachmentDelete(board.id, card.stackId, card.id, a.id, a.kind)
+      setAttachments((list) => list?.filter((x) => x.id !== a.id) ?? list)
+      await onRefresh()
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+
+  async function toggleArchive() {
+    try {
+      await api.deckArchive(board.id, card.stackId, card.id, !card.archived)
+      onClose()
+      await onChanged(card.archived ? 'Карточка возвращена из архива.' : 'Карточка перенесена в архив доски.')
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
 
   const dueIso = () => (due ? new Date(`${due}T12:00:00`).toISOString() : null)
 
@@ -517,133 +603,192 @@ function CardPanel({ board, card, stacks, onClose, onChanged, onRefresh, onMove 
     }
   }
 
+  const sectionTasks = (
+    <div className="deck-tasks">
+      {items.length > 0 && <div className="deck-progress"><i style={{ width: `${progress}%` }} /><span>{progress}%</span></div>}
+      <ul className="deck-checklist">
+        {items.map((it) => (
+          <li key={it.line} className={it.done ? 'done' : ''}>
+            <input type="checkbox" checked={it.done} disabled={ro} aria-label={it.text} onChange={() => void saveDescription(toggleItem(description, it.line))} />
+            {editingItem?.line === it.line ? (
+              <input autoFocus className="deck-item-edit" value={editingItem.text}
+                onChange={(e) => setEditingItem({ line: it.line, text: e.target.value })}
+                onBlur={() => { const t = editingItem.text.trim(); setEditingItem(null); if (t && t !== it.text) void saveDescription(renameItem(description, it.line, t)) }}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingItem(null) }} />
+            ) : (
+              <span onDoubleClick={() => !ro && setEditingItem({ line: it.line, text: it.text })}>{it.text}</span>
+            )}
+            {!ro && <button aria-label={`Удалить подзадачу ${it.text}`} title="Удалить" onClick={() => void saveDescription(removeItem(description, it.line))}><X size={13} /></button>}
+          </li>
+        ))}
+      </ul>
+      {!ro && (
+        <form className="deck-add-item" onSubmit={(e) => { e.preventDefault(); void addSubtask() }}>
+          <Plus size={15} />
+          <input value={newItem} onChange={(e) => setNewItem(e.target.value)} placeholder="Новая подзадача — Enter, чтобы добавить" />
+        </form>
+      )}
+      {items.length === 0 && ro && <div className="muted">Подзадач нет.</div>}
+    </div>
+  )
+
+  const descriptionEditor = <textarea rows={full ? 10 : 6} value={description} disabled={ro} aria-label="Описание" onChange={(e) => setDescription(e.target.value)} placeholder="Поддерживается Markdown; подзадачи — строки «- [ ] …»" />
+  const sectionDescription = full ? (
+    <div className="deck-section">
+      <div className="deck-section-head"><b>Описание</b>{!ro && <button className="text-button" onClick={() => setEditDesc(!editDesc)}><Pencil size={13} /> {editDesc ? 'Просмотр' : 'Изменить'}</button>}</div>
+      {editDesc ? descriptionEditor : description.replace(/^\s*[-*+]\s+\[[ xX]\].*$/gm, '').trim() ? <DeckMarkdown text={description} /> : <div className="muted">Описания нет.</div>}
+    </div>
+  ) : <label className="login-field"><span>Описание</span>{descriptionEditor}</label>
+
+  const sectionComments = (
+    <div className="deck-comments">
+      {comments === null && <div className="muted">Загрузка…</div>}
+      {comments?.length === 0 && <div className="muted">Комментариев пока нет.</div>}
+      {comments?.map((c) => (
+        <div key={c.id} className={`deck-comment ${c.own ? 'own' : ''}`}>
+          <Avatar id={c.authorId} name={c.author} />
+          <div>
+            <div className="deck-comment-head"><b>{c.author}</b><span>{c.created ? new Date(c.created).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+              {c.own && <button aria-label="Удалить комментарий" title="Удалить" onClick={() => void deleteComment(c)}><Trash2 size={12} /></button>}</div>
+            <div className="deck-comment-text"><TalkText text={c.message} /></div>
+          </div>
+        </div>
+      ))}
+      <form className="deck-add-item" onSubmit={(e) => { e.preventDefault(); void sendComment() }}>
+        <MessageSquare size={15} />
+        <input value={comment} onChange={(e) => setComment(e.target.value)} aria-label="Новый комментарий" placeholder="Комментарий — Enter, чтобы отправить" />
+      </form>
+    </div>
+  )
+
+  const sectionFiles = (
+    <div className="deck-files">
+      {attachments === null && <div className="muted">Загрузка…</div>}
+      {attachments?.length === 0 && <div className="muted">Вложений нет.</div>}
+      {attachments?.map((a) => (
+        <div key={a.id} className="talk-file-row deck-file-row">
+          <button className="talk-file" title="Открыть в Nextcloud"
+            onClick={() => void api.ncOpen(a.fileId ? `f/${a.fileId}` : `apps/deck/board/${board.id}/card/${card.id}`)}>
+            <FileText size={15} /><span>{a.name}</span>{a.size > 0 && <small>{formatSize(a.size)}</small>}
+          </button>
+          {!ro && <button className="icon-button soft" aria-label={`Убрать вложение ${a.name}`} title="Убрать из карточки" onClick={() => void removeFile(a)}><X size={14} /></button>}
+        </div>
+      ))}
+      {!ro && <button className="text-button deck-upload" disabled={uploading} onClick={() => void addFiles()}><Upload size={14} /> {uploading ? 'Загрузка…' : 'Добавить файл'}</button>}
+    </div>
+  )
+
+  const sectionActivity = activity && activity.length > 0 && (
+    <div className="deck-section deck-activity">
+      <div className="deck-section-head"><b><History size={14} /> История</b></div>
+      <ul>{activity.map((a) => <li key={a.id}><span>{a.subject}</span><time>{when(a.date)}</time></li>)}</ul>
+    </div>
+  )
+
+  const meta = (
+    <>
+      <div className="editor-row">
+        <label className="login-field"><span>Колонка</span>
+          <select value={card.stackId} disabled={ro} onChange={(e) => onMove(Number(e.target.value))}>
+            {stacks.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+          </select>
+        </label>
+        <label className="login-field"><span>Срок</span><input type="date" value={due} disabled={ro} onChange={(e) => setDue(e.target.value)} /></label>
+        <label className="login-remember deck-done"><input type="checkbox" checked={done} disabled={ro} onChange={(e) => setDone(e.target.checked)} /><span>Выполнено</span></label>
+      </div>
+      <div className="deck-people-row">
+        <span className="muted">Исполнители</span>
+        <div className="deck-chips">
+          {assigned.map((u) => <span key={u.uid} className="deck-chip"><Avatar id={u.uid} name={u.name} className="deck-avatar" />{u.name}{!ro && <button aria-label={`Снять ${u.name}`} onClick={() => void toggleUser(u)}><X size={11} /></button>}</span>)}
+          {!ro && <button className="deck-chip add" onClick={() => setPicker(picker === 'users' ? null : 'users')}><Plus size={12} /> {assigned.length ? '' : 'Назначить'}</button>}
+        </div>
+        {picker === 'users' && details && (
+          <div className="deck-picker">
+            {details.users.map((u) => (
+              <label key={u.uid}><input type="checkbox" checked={assigned.some((a) => a.uid === u.uid)} onChange={() => void toggleUser(u)} /> {u.name}</label>
+            ))}
+            {details.users.length === 0 && <span className="muted">Нет участников доски</span>}
+          </div>
+        )}
+      </div>
+      <div className="deck-people-row">
+        <span className="muted">Метки</span>
+        <div className="deck-chips">
+          {labels.map((l) => <span key={l.id} className="deck-label-chip" style={{ background: `#${l.color}` }}>{l.title}{!ro && <button aria-label={`Снять ${l.title}`} onClick={() => void toggleLabel(l)}><X size={11} /></button>}</span>)}
+          {!ro && <button className="deck-chip add" onClick={() => setPicker(picker === 'labels' ? null : 'labels')}><Plus size={12} /> {labels.length ? '' : 'Метка'}</button>}
+        </div>
+        {picker === 'labels' && details && (
+          <div className="deck-picker">
+            {details.labels.map((l) => (
+              <label key={l.id}><input type="checkbox" checked={labels.some((x) => x.id === l.id)} onChange={() => void toggleLabel(l)} /> <span className="deck-label-chip" style={{ background: `#${l.color}` }}>{l.title}</span></label>
+            ))}
+            {details.labels.length === 0 && <span className="muted">На доске нет меток</span>}
+          </div>
+        )}
+      </div>
+    </>
+  )
+
+  const actions = !ro && (
+    <div className="reader-actions">
+      <button className="primary-button" disabled={busy} onClick={() => void save()}>{busy ? 'Сохранение…' : 'Сохранить'}</button>
+      <button className="secondary-button" onClick={() => void toggleArchive()}>{card.archived ? <><ArchiveRestore size={15} /> Из архива</> : <><Archive size={15} /> В архив</>}</button>
+      <button className="secondary-button danger" onClick={() => void remove()}><Trash2 size={15} /> Удалить</button>
+    </div>
+  )
+
+  const toolbar = (
+    <div className="reader-toolbar">
+      <button className="icon-button soft" aria-label="Открыть в Nextcloud" title="Открыть в Nextcloud" onClick={() => void api.ncOpen(`apps/deck/board/${board.id}/card/${card.id}`)}><ExternalLink size={17} /></button>
+      <button className="icon-button soft" aria-label={full ? 'Свернуть карточку' : 'Открыть карточку целиком'} title={full ? 'Свернуть в панель' : 'Открыть целиком'} onClick={() => onFull(!full)}>{full ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>
+      {full && <span className="deck-card-info">{[card.owner && `Создал(а): ${card.owner}`, when(card.createdAt) && `создана ${when(card.createdAt)}`, when(card.lastModified) && `изменена ${when(card.lastModified)}`].filter(Boolean).join(' · ')}</span>}
+      <div className="reader-toolbar-spacer" />
+      <button className="icon-button soft" aria-label="Закрыть" onClick={onClose}><X size={18} /></button>
+    </div>
+  )
+
+  if (full) {
+    return (
+      <div className="modal-backdrop deck-full-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onFull(false) }}>
+        <section className="deck-full" role="dialog" aria-label={`Карточка ${card.title}`}>
+          {toolbar}
+          <div className="deck-full-body editor-modal deck-card-detail">
+            <div className="deck-full-main">
+              <input className="deck-title-input" value={title} disabled={ro} onChange={(e) => setTitle(e.target.value)} aria-label="Название" />
+              {card.archived && <div className="inline-warning">Карточка в архиве доски.</div>}
+              {meta}
+              {sectionDescription}
+              <div className="deck-section"><div className="deck-section-head"><b><ListChecks size={14} /> Подзадачи{items.length ? ` ${items.filter((i) => i.done).length}/${items.length}` : ''}</b></div>{sectionTasks}</div>
+              <div className="deck-section"><div className="deck-section-head"><b><Paperclip size={14} /> Вложения{attachments?.length ? ` ${attachments.length}` : ''}</b></div>{sectionFiles}</div>
+              {error && <div className="login-error" role="alert">{error}</div>}
+              {actions}
+            </div>
+            <aside className="deck-full-side">
+              <div className="deck-section"><div className="deck-section-head"><b><MessageSquare size={14} /> Комментарии{comments?.length ? ` ${comments.length}` : ''}</b></div>{sectionComments}</div>
+              {sectionActivity}
+            </aside>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
   return (
     <section className="reader-pane deck-panel">
-      <div className="reader-toolbar">
-        <button className="icon-button soft" aria-label="Открыть в Nextcloud" title="Открыть в Nextcloud" onClick={() => void api.ncOpen(`apps/deck/board/${board.id}/card/${card.id}`)}><ExternalLink size={17} /></button>
-        <div className="reader-toolbar-spacer" />
-        <button className="icon-button soft" aria-label="Закрыть" onClick={onClose}><X size={18} /></button>
-      </div>
+      {toolbar}
       <div className="reader-content editor-modal deck-card-detail">
         <input className="deck-title-input" value={title} disabled={ro} onChange={(e) => setTitle(e.target.value)} aria-label="Название" />
-        <div className="editor-row">
-          <label className="login-field"><span>Колонка</span>
-            <select value={card.stackId} disabled={ro} onChange={(e) => onMove(Number(e.target.value))}>
-              {stacks.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
-            </select>
-          </label>
-          <label className="login-field"><span>Срок</span><input type="date" value={due} disabled={ro} onChange={(e) => setDue(e.target.value)} /></label>
-          <label className="login-remember deck-done"><input type="checkbox" checked={done} disabled={ro} onChange={(e) => setDone(e.target.checked)} /><span>Выполнено</span></label>
-        </div>
-
-        <div className="deck-people-row">
-          <span className="muted">Исполнители</span>
-          <div className="deck-chips">
-            {assigned.map((u) => <span key={u.uid} className="deck-chip"><Avatar id={u.uid} name={u.name} className="deck-avatar" />{u.name}{!ro && <button aria-label={`Снять ${u.name}`} onClick={() => void toggleUser(u)}><X size={11} /></button>}</span>)}
-            {!ro && <button className="deck-chip add" onClick={() => setPicker(picker === 'users' ? null : 'users')}><Plus size={12} /> {assigned.length ? '' : 'Назначить'}</button>}
-          </div>
-          {picker === 'users' && details && (
-            <div className="deck-picker">
-              {details.users.map((u) => (
-                <label key={u.uid}><input type="checkbox" checked={assigned.some((a) => a.uid === u.uid)} onChange={() => void toggleUser(u)} /> {u.name}</label>
-              ))}
-              {details.users.length === 0 && <span className="muted">Нет участников доски</span>}
-            </div>
-          )}
-        </div>
-        <div className="deck-people-row">
-          <span className="muted">Метки</span>
-          <div className="deck-chips">
-            {labels.map((l) => <span key={l.id} className="deck-label-chip" style={{ background: `#${l.color}` }}>{l.title}{!ro && <button aria-label={`Снять ${l.title}`} onClick={() => void toggleLabel(l)}><X size={11} /></button>}</span>)}
-            {!ro && <button className="deck-chip add" onClick={() => setPicker(picker === 'labels' ? null : 'labels')}><Plus size={12} /> {labels.length ? '' : 'Метка'}</button>}
-          </div>
-          {picker === 'labels' && details && (
-            <div className="deck-picker">
-              {details.labels.map((l) => (
-                <label key={l.id}><input type="checkbox" checked={labels.some((x) => x.id === l.id)} onChange={() => void toggleLabel(l)} /> <span className="deck-label-chip" style={{ background: `#${l.color}` }}>{l.title}</span></label>
-              ))}
-              {details.labels.length === 0 && <span className="muted">На доске нет меток</span>}
-            </div>
-          )}
-        </div>
-
+        {meta}
         <div className="deck-tabs" role="tablist">
           <button role="tab" className={tab === 'tasks' ? 'active' : ''} onClick={() => setTab('tasks')}><ListChecks size={14} /> Подзадачи{items.length ? ` ${items.filter((i) => i.done).length}/${items.length}` : ''}</button>
           <button role="tab" className={tab === 'comments' ? 'active' : ''} onClick={() => setTab('comments')}><MessageSquare size={14} /> Комментарии{comments?.length ? ` ${comments.length}` : ''}</button>
           <button role="tab" className={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}><Paperclip size={14} /> Вложения{attachments?.length ? ` ${attachments.length}` : ''}</button>
         </div>
-
-        {tab === 'tasks' && (
-          <div className="deck-tasks">
-            {items.length > 0 && <div className="deck-progress"><i style={{ width: `${progress}%` }} /><span>{progress}%</span></div>}
-            <ul className="deck-checklist">
-              {items.map((it) => (
-                <li key={it.line} className={it.done ? 'done' : ''}>
-                  <input type="checkbox" checked={it.done} disabled={ro} aria-label={it.text} onChange={() => void saveDescription(toggleItem(description, it.line))} />
-                  {editingItem?.line === it.line ? (
-                    <input autoFocus className="deck-item-edit" value={editingItem.text}
-                      onChange={(e) => setEditingItem({ line: it.line, text: e.target.value })}
-                      onBlur={() => { const t = editingItem.text.trim(); setEditingItem(null); if (t && t !== it.text) void saveDescription(renameItem(description, it.line, t)) }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditingItem(null) }} />
-                  ) : (
-                    <span onDoubleClick={() => !ro && setEditingItem({ line: it.line, text: it.text })}>{it.text}</span>
-                  )}
-                  {!ro && <button aria-label={`Удалить подзадачу ${it.text}`} title="Удалить" onClick={() => void saveDescription(removeItem(description, it.line))}><X size={13} /></button>}
-                </li>
-              ))}
-            </ul>
-            {!ro && (
-              <form className="deck-add-item" onSubmit={(e) => { e.preventDefault(); void addSubtask() }}>
-                <Plus size={15} />
-                <input value={newItem} onChange={(e) => setNewItem(e.target.value)} placeholder="Новая подзадача — Enter, чтобы добавить" />
-              </form>
-            )}
-            {items.length === 0 && ro && <div className="muted">Подзадач нет.</div>}
-            <label className="login-field"><span>Описание</span><textarea rows={6} value={description} disabled={ro} onChange={(e) => setDescription(e.target.value)} placeholder="Поддерживается Markdown; подзадачи — строки «- [ ] …»" /></label>
-          </div>
-        )}
-
-        {tab === 'comments' && (
-          <div className="deck-comments">
-            {comments === null && <div className="muted">Загрузка…</div>}
-            {comments?.length === 0 && <div className="muted">Комментариев пока нет.</div>}
-            {comments?.map((c) => (
-              <div key={c.id} className={`deck-comment ${c.own ? 'own' : ''}`}>
-                <Avatar id={c.authorId} name={c.author} />
-                <div>
-                  <div className="deck-comment-head"><b>{c.author}</b><span>{c.created ? new Date(c.created).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span>
-                    {c.own && <button aria-label="Удалить комментарий" title="Удалить" onClick={() => void deleteComment(c)}><Trash2 size={12} /></button>}</div>
-                  <div className="deck-comment-text">{c.message}</div>
-                </div>
-              </div>
-            ))}
-            <form className="deck-add-item" onSubmit={(e) => { e.preventDefault(); void sendComment() }}>
-              <MessageSquare size={15} />
-              <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Комментарий — Enter, чтобы отправить" />
-            </form>
-          </div>
-        )}
-
-        {tab === 'files' && (
-          <div className="deck-files">
-            {attachments === null && <div className="muted">Загрузка…</div>}
-            {attachments?.length === 0 && <div className="muted">Вложений нет. Добавить файл можно в Nextcloud.</div>}
-            {attachments?.map((a) => (
-              <button key={a.id} className="talk-file" title="Открыть в Nextcloud"
-                onClick={() => void api.ncOpen(a.fileId ? `f/${a.fileId}` : `apps/deck/board/${board.id}/card/${card.id}`)}>
-                <FileText size={15} /><span>{a.name}</span>{a.size > 0 && <small>{formatSize(a.size)}</small>}
-              </button>
-            ))}
-          </div>
-        )}
-
+        {tab === 'tasks' && <>{sectionTasks}{sectionDescription}</>}
+        {tab === 'comments' && sectionComments}
+        {tab === 'files' && sectionFiles}
         {error && <div className="login-error" role="alert">{error}</div>}
-        {!ro && (
-          <div className="reader-actions">
-            <button className="primary-button" disabled={busy} onClick={() => void save()}>{busy ? 'Сохранение…' : 'Сохранить'}</button>
-            <button className="secondary-button danger" onClick={() => void remove()}><Trash2 size={15} /> Удалить</button>
-          </div>
-        )}
+        {actions}
       </div>
     </section>
   )

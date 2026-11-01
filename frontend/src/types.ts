@@ -293,6 +293,8 @@ export interface DeckCard {
   owner: string
   commentsUnread: number
   attachmentCount: number
+  createdAt: number
+  lastModified: number
 }
 
 export interface DeckStack {
@@ -411,7 +413,10 @@ export interface DeckAttachment {
   size: number
   mimetype: string
   fileId: number | null
+  kind: string
 }
+
+export interface DeckActivity { id: number; author: string; authorId: string; subject: string; date: string }
 
 export interface NcFile {
   path: string
@@ -497,6 +502,8 @@ export interface AccountUnread { key: string; unread: number | null; error: stri
 export interface OtherNewMail { key: string; label: string; items: MessageSummary[] }
 export type UnifiedItem = MessageSummary & { account: string; label: string; active: boolean }
 export interface UnifiedInbox { items: UnifiedItem[]; errors: string[] }
+/** Сохранённый поиск (быстрое представление): запрос с операторами и где искать. */
+export interface SavedView { id: string; name: string; query: string; scope: 'current' | 'all' }
 /** Общие папки нескольких учётных записей. */
 export type UnifiedRole = 'inbox' | 'sent' | 'drafts' | 'archive' | 'junk' | 'trash'
 export type UnifiedMark = 'all' | 'unread' | 'important' | 'flagged' | 'attachments'

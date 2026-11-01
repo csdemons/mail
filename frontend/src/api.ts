@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
-import type {
+import type { DeckActivity,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole,
+  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
 export interface LoginParams {
@@ -71,6 +71,9 @@ export const api = {
   accountsPoll: () => invoke<OtherNewMail[]>('accounts_poll'),
   unifiedInbox: (limit: number) => invoke<UnifiedInbox>('unified_inbox', { limit }),
   unifiedFolder: (role: UnifiedRole, limit: number) => invoke<UnifiedInbox>('unified_folder', { role, limit }),
+  searchOthers: (query: string) => invoke<UnifiedInbox>('search_others', { query }),
+  viewsGet: () => invoke<SavedView[]>('views_get'),
+  viewsSave: (views: SavedView[]) => invoke<void>('views_save', { views }),
   importThunderbird: () => invoke<ImportSource[]>('import_thunderbird'),
   importPickFiles: () => invoke<ImportSource | null>('import_pick_files'),
   importPickFolder: () => invoke<ImportSource | null>('import_pick_folder'),
@@ -124,6 +127,12 @@ export const api = {
   deckDeleteCard: (boardId: number, stackId: number, cardId: number) =>
     invoke<void>('deck_delete_card', { boardId, stackId, cardId }),
   deckCreateStack: (boardId: number, title: string) => invoke<void>('deck_create_stack', { boardId, title }),
+  deckAttachmentAdd: (boardId: number, stackId: number, cardId: number, attachment: string) =>
+    invoke<void>('deck_attachment_add', { boardId, stackId, cardId, attachment }),
+  deckAttachmentDelete: (boardId: number, stackId: number, cardId: number, attachmentId: number, kind: string) =>
+    invoke<void>('deck_attachment_delete', { boardId, stackId, cardId, attachmentId, kind }),
+  deckArchive: (boardId: number, stackId: number, cardId: number, archive: boolean) => invoke<void>('deck_archive', { boardId, stackId, cardId, archive }),
+  deckActivity: (cardId: number) => invoke<DeckActivity[]>('deck_activity', { cardId }),
 
   talkRooms: () => invoke<TalkRoom[]>('talk_rooms'),
   talkHistory: (token: string, before: number | null = null) => invoke<TalkChunk>('talk_history', { token, before }),
@@ -206,8 +215,9 @@ export const api = {
     invoke<string | null>('save_attachment', { folder, uid, index }),
 }
 
-export function messageKey(m: Pick<MessageSummary, 'folder' | 'uid'>): string {
-  return `${m.folder}\u0001${m.uid}`
+export function messageKey(m: Pick<MessageSummary, 'folder' | 'uid'> & { account?: string; active?: boolean }): string {
+  // Письмо другой учётной записи (поиск по всем ящикам) — ключ с её именем.
+  return m.account && !m.active ? `${m.account}\u0002${m.folder}\u0001${m.uid}` : `${m.folder}\u0001${m.uid}`
 }
 
 export function formatListDate(value: string | null): string {

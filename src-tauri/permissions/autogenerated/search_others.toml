@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-search-others"
+description = "Enables the search_others command without any pre-configured scope."
+commands.allow = ["search_others"]
+
+[[permission]]
+identifier = "deny-search-others"
+description = "Denies the search_others command without any pre-configured scope."
+commands.deny = ["search_others"]

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
-  FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, Layers, LogOut, Mail,
+  FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, Layers, LogOut, Mail, Bookmark, BookmarkPlus, Zap,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
   Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
 } from 'lucide-react'
@@ -10,7 +10,7 @@ import {
   api, editNotice, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE,
 } from './api'
 import type {
-  Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile, UnifiedFilters, UnifiedRole,
+  Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile, UnifiedFilters, UnifiedRole, UnifiedItem, SavedView,
 } from './types'
 import About from './About'
 import kurchatovLogo from './assets/kurchatov-logo.png'
@@ -53,6 +53,21 @@ const ROLE_LABELS: Partial<Record<FolderRole, string>> = {
   junk: 'Спам',
   trash: 'Корзина',
 }
+
+/** Быстрые представления — готовые поиски по всем ящикам. */
+const QUICK_VIEWS: SavedView[] = [
+  { id: 'q-unread', name: 'Непрочитанные', query: 'непрочитанные', scope: 'all' },
+  { id: 'q-important', name: 'Важные', query: 'важные', scope: 'all' },
+  { id: 'q-files', name: 'С вложениями за неделю', query: 'есть:вложение после:7д', scope: 'all' },
+]
+
+const SEARCH_HELP = [
+  'Поиск: слова ищутся в отправителе, получателях, теме, именах вложений и тексте писем.',
+  'от:петрова  кому:иванов  тема:"план работ"  вложение:xlsx  есть:вложение',
+  'непрочитанные  важные  флажок  отвеченные',
+  'после:2026-10-01  до:01.12.2026  после:7д  после:вчера',
+  'папка:входящие  ящик:noc  подразделение:ihep.ru',
+].join('\n')
 
 const ROLE_ICONS: Record<FolderRole, typeof Inbox> = {
   inbox: Inbox,
@@ -159,9 +174,11 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     } catch { /* нет хранилища */ }
     return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
   })
-  // Тема запоминается — окна писем открываются в той же теме.
+  // Тема запоминается — окна писем открываются в той же теме. Класс темы — и на
+  // всей странице: то, что выводится поверх окна программы, тоже меняет цвета.
   useEffect(() => {
     try { localStorage.setItem('rrcki-mail.theme', dark ? 'dark' : 'light') } catch { /* нет хранилища */ }
+    document.documentElement.classList.toggle('theme-dark', dark)
   }, [dark])
   const [foldersOpen, setFoldersOpen] = useState(true)
   const [readerOpen, setReaderOpen] = useState(true)
@@ -206,16 +223,21 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   /** Поиск по всей почте: результаты из локального индекса (и, по кнопке, с сервера). */
   const [localResults, setLocalResults] = useState<MessageSummary[] | null>(null)
   const [serverResults, setServerResults] = useState<MessageSummary[] | null>(null)
+  /** Поиск в других учётных записях (область «Все ящики»). */
+  const [searchScope, setSearchScope] = useState<'current' | 'all'>(saved?.searchScope ?? 'current')
+  const [otherResults, setOtherResults] = useState<UnifiedItem[] | null>(null)
+  const [otherErrors, setOtherErrors] = useState<string[]>([])
+  const [othersBusy, setOthersBusy] = useState(false)
   const [searchBusy, setSearchBusy] = useState(false)
   const serverSearched = serverResults !== null
   /** Найденное в индексе и (по кнопке) на сервере — без повторов, новые сверху. */
   const searchResults = useMemo(() => {
-    if (localResults === null && serverResults === null) return null
+    if (localResults === null && serverResults === null && otherResults === null) return null
     const seen = new Set<string>()
-    return [...(localResults ?? []), ...(serverResults ?? [])]
+    return [...(localResults ?? []), ...(serverResults ?? []), ...(otherResults ?? [])]
       .filter((m) => { const k = messageKey(m); if (seen.has(k)) return false; seen.add(k); return true })
       .sort((a, b) => (Date.parse(b.date ?? '') || 0) - (Date.parse(a.date ?? '') || 0))
-  }, [localResults, serverResults])
+  }, [localResults, serverResults, otherResults])
   function setSearchResults(update: (items: MessageSummary[] | null) => MessageSummary[] | null) {
     setLocalResults(update)
     setServerResults(update)
@@ -227,6 +249,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     setQuery('')
     setLocalResults(null)
     setServerResults(null)
+    setOtherResults(null)
+    setOtherErrors([])
   }
 
   const [diagText, setDiagText] = useState<string | null>(null)
@@ -327,7 +351,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const listRef = useRef<HTMLDivElement>(null)
   const scrollTop = useRef(saved?.scrollTop ?? 0)
   const lastOpened = useRef<MessageSummary | null>(saved?.selected ?? null)
-  const viewBase = useRef<ViewContext>({ module: 'mail', folderId: 'INBOX', unified: null, unifiedFilters: NO_FILTERS, filter: 'Все', catFilter: '', query: '', selected: null, scrollTop: 0 })
+  const viewBase = useRef<ViewContext>({ module: 'mail', folderId: 'INBOX', unified: null, unifiedFilters: NO_FILTERS, filter: 'Все', catFilter: '', query: '', searchScope: 'current', selected: null, scrollTop: 0 })
   const [notifyPolicy, setNotifyPolicy] = useState<'full' | 'sender' | 'none'>('full')
   useEffect(() => { api.getPolicy().then((p) => setNotifyPolicy(p.notificationContent ?? 'full')).catch(() => undefined) }, [])
   // Значок в трее: непрочитанные во «Входящих» всех учётных записей.
@@ -606,8 +630,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   }, [initialOpen])
 
   useEffect(() => {
-    saveView(viewKey, { module, folderId, unified, unifiedFilters, filter, catFilter, query, selected: selectedKey ? lastOpened.current : null }, viewBase.current)
-  }, [viewKey, module, folderId, unified, unifiedFilters, filter, catFilter, query, selectedKey])
+    saveView(viewKey, { module, folderId, unified, unifiedFilters, filter, catFilter, query, searchScope, selected: selectedKey ? lastOpened.current : null }, viewBase.current)
+  }, [viewKey, module, folderId, unified, unifiedFilters, filter, catFilter, query, searchScope, selectedKey])
   // Прокрутка списка — при уходе из учётной записи (и при каждой смене папки).
   useEffect(() => () => saveView(viewKey, { scrollTop: scrollTop.current }, viewBase.current), [viewKey])
   // Вернуть прокрутку, когда список той же папки загрузился.
@@ -876,6 +900,52 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [query])
 
+  // «Все ящики»: те же условия на серверах остальных учётных записей.
+  useEffect(() => {
+    const q = query.trim()
+    setOtherResults(null)
+    setOtherErrors([])
+    if (q.length < 2 || searchScope !== 'all' || !acc.multi) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      setOthersBusy(true)
+      api.searchOthers(q)
+        .then((r) => { if (!cancelled) { setOtherResults(r.items); setOtherErrors(r.errors) } })
+        .catch((e) => { if (!cancelled) { setOtherResults([]); setOtherErrors([errorText(e)]) } })
+        .finally(() => { if (!cancelled) setOthersBusy(false) })
+    }, 600)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [query, searchScope, acc.multi])
+
+  /** Сохранённые поиски и быстрые представления. */
+  const [views, setViews] = useState<SavedView[]>([])
+  const [viewsOpen, setViewsOpen] = useState(() => { try { return localStorage.getItem('rrcki-mail.views-open') !== 'off' } catch { return true } })
+  useEffect(() => { try { localStorage.setItem('rrcki-mail.views-open', viewsOpen ? 'on' : 'off') } catch { /* необязательно */ } }, [viewsOpen])
+  useEffect(() => { api.viewsGet().then(setViews).catch(() => undefined) }, [])
+  const [saveViewName, setSaveViewName] = useState<string | null>(null)
+  function runView(v: SavedView) {
+    setModule('mail')
+    setUnified(null)
+    setSearchScope(v.scope === 'all' && acc.multi ? 'all' : 'current')
+    setQuery(v.query)
+  }
+  async function storeViews(next: SavedView[], done: string) {
+    try {
+      await api.viewsSave(next)
+      setViews(next)
+      setNotice(done)
+    } catch (e) { setNotice(errorText(e)) }
+  }
+  function saveCurrentSearch() {
+    const name = (saveViewName ?? '').trim()
+    const q = query.trim()
+    if (!name || q.length < 2) return
+    const view: SavedView = { id: `v${Date.now().toString(36)}`, name: name.slice(0, 60), query: q, scope: searchScope }
+    setSaveViewName(null)
+    void storeViews([...views.filter((v) => v.name !== view.name), view], `Поиск «${view.name}» сохранён`)
+  }
+  const activeView = [...QUICK_VIEWS, ...views].find((v) => v.query === query.trim() && (v.scope === searchScope || !acc.multi))
+
   async function searchOnServer() {
     const q = query.trim()
     if (q.length < 2) return
@@ -896,8 +966,16 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     return selected ? [selected] : []
   }
 
+  /** Письмо другой учётной записи (поиск по всем ящикам) открывается с переключением на неё. */
+  function otherOf(m: MessageSummary): UnifiedItem | null {
+    const u = m as UnifiedItem
+    return u.account && !u.active ? u : null
+  }
+
   function onRowClick(e: React.MouseEvent, m: MessageSummary) {
     if (suppressRowClick.current) return
+    const other = otherOf(m)
+    if (other) { switchAccount(other.account, other); return }
     const key = messageKey(m)
     if (e.ctrlKey || e.metaKey) {
       setChecked((prev) => {
@@ -1296,6 +1374,22 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               })}
               <div className="unified-separator" />
             </>}
+            <button className="folder-item folder-node views-group" aria-expanded={viewsOpen} onClick={() => setViewsOpen(!viewsOpen)}>
+              <span className="folder-toggle">{viewsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+              <Search size={17} /><span>Поиски</span>
+            </button>
+            {viewsOpen && [...QUICK_VIEWS, ...views].map((v) => {
+              const quick = v.id.startsWith('q-')
+              return (
+                <div key={v.id} className={`folder-item view-item ${activeView?.id === v.id ? 'selected' : ''}`} data-view={v.id} style={{ paddingLeft: 18 }} role="button" tabIndex={0}
+                  title={`${v.query}${v.scope === 'all' ? ' — все ящики' : ''}`}
+                  onClick={() => runView(v)} onKeyDown={(e) => { if (e.key === 'Enter') runView(v) }}>
+                  <span className="folder-toggle" />{quick ? <Zap size={16} /> : <Bookmark size={16} />}<span>{v.name}</span>
+                  {!quick && <button className="view-remove" aria-label={`Удалить поиск ${v.name}`} title="Удалить" onClick={(e) => { e.stopPropagation(); void storeViews(views.filter((x) => x.id !== v.id), `Поиск «${v.name}» удалён`) }}><X size={13} /></button>}
+                </div>
+              )
+            })}
+            <div className="unified-separator" />
             {folders.length === 0 && <div className="folder-placeholder">Загрузка папок…</div>}
             {visibleFolders.map((f) => {
               const Icon = f.role === 'other' && !f.selectable ? FolderOpen : ROLE_ICONS[f.role]
@@ -1392,12 +1486,29 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <button className={`filter-chip ${threadsOn ? 'active' : ''}`} aria-pressed={threadsOn} title="Группировать письма одной переписки" onClick={() => setThreadsOn(!threadsOn)}><MessagesSquare size={13} /> Цепочки</button>
           </div>
           {searching
-            ? <div className="message-list-header search-header">
-              <span>Найдено: {searchResults.length}{searchResults.length >= 300 ? '+' : ''}</span>
+            ? <><div className="message-list-header search-header">
+              <span>Найдено: {searchResults.length}{searchResults.length >= 300 ? '+' : ''}{othersBusy ? ' · ищу в других ящиках…' : ''}</span>
               {serverSearched
                 ? <span>с учётом текста писем на сервере</span>
                 : <button className="text-button" disabled={searchBusy} onClick={() => void searchOnServer()}>{searchBusy ? 'Поиск на сервере…' : 'Искать и в тексте старых писем'}</button>}
             </div>
+            <div className="search-tools">
+              {acc.multi && <div className="search-scope" role="group" aria-label="Где искать">
+                <button className={`filter-chip ${searchScope === 'current' ? 'active' : ''}`} aria-pressed={searchScope === 'current'} onClick={() => setSearchScope('current')}>Этот ящик</button>
+                <button className={`filter-chip ${searchScope === 'all' ? 'active' : ''}`} aria-pressed={searchScope === 'all'} onClick={() => setSearchScope('all')}>Все ящики</button>
+              </div>}
+              {activeView
+                ? <span className="search-saved"><Bookmark size={13} /> {activeView.name}</span>
+                : saveViewName === null
+                  ? <button className="text-button" onClick={() => setSaveViewName('')}><BookmarkPlus size={14} /> Сохранить поиск</button>
+                  : <form className="save-view" onSubmit={(e) => { e.preventDefault(); saveCurrentSearch() }}>
+                    <input autoFocus value={saveViewName} maxLength={60} aria-label="Название поиска" placeholder="Название" onChange={(e) => setSaveViewName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setSaveViewName(null) } }} />
+                    <button className="text-button" type="submit" disabled={!saveViewName.trim()}>Сохранить</button>
+                  </form>}
+              <span className="search-help" title={SEARCH_HELP}>?</span>
+            </div>
+            {otherErrors.length > 0 && <div className="unified-errors" role="alert">Не ответили: {otherErrors.join('; ')}</div>}
+            </>
             : <div className="message-list-header"><span>{listTitle}</span><span>{total} {pluralLetters(total)}</span></div>}
           {checked.size > 0 && <div className="bulk-bar">
             <span>Отмечено: {checked.size}</span>
@@ -1426,8 +1537,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
                   key={key}
                   className={`message-row ${child ? 'thread-child' : ''} ${selectedKey === key ? 'selected' : ''} ${checked.has(key) ? 'checked' : ''} ${m.unread ? 'unread' : ''} ${rowMenu?.items.some((x) => messageKey(x) === key) ? 'menu-target' : ''}`}
                   onClick={(e) => onRowClick(e, m)}
-                  onDoubleClick={() => openInWindow(m)}
-                  onContextMenu={(e) => openRowMenu(e, m)}
+                  onDoubleClick={() => { if (!otherOf(m)) openInWindow(m) }}
+                  onContextMenu={(e) => { if (otherOf(m)) e.preventDefault(); else openRowMenu(e, m) }}
                   title="Двойной щелчок — открыть в отдельном окне"
                   onPointerDown={(e) => startMessageDrag(e, m)}
                   onDragStart={(e) => e.preventDefault()}
@@ -1446,7 +1557,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
                       ><ChevronRight size={12} />{count}</span>}
                       {m.subject || '(без темы)'}
                     </div>
-                    {searching && <div className="message-folder">{folderName(m.folder)}</div>}
+                    {searching && <div className="message-folder">{otherOf(m) ? <><span className="search-account">{otherOf(m)!.label}</span> · {m.folder}</> : folderName(m.folder)}</div>}
                     {(cats.length > 0 || due || snoozedUntil(m.keywords)) && <div className="message-tags">
                       {snoozedUntil(m.keywords) && <span className="snooze-tag" title="Отложено"><AlarmClock size={11} /> до {dueLabel(snoozedUntil(m.keywords)!)}</span>}
                       {due && <span className={`due-tag ${due.getTime() < Date.now() ? 'overdue' : ''}`} title="Срок флажка"><Flag size={11} /> {dueLabel(due)}</span>}
@@ -1556,7 +1667,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               onEdit={ncStatus?.connected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(detail.folder, detail.uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined}
             />}
             <MdnBar detail={detail} me={account.username} onNotice={setNotice} onDone={() => { setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] }); patchMessage(messageKey(detail), { keywords: [...detail.keywords, '$MDNSent'] }) }} />
-            <MessageBody detail={detail} onNotice={setNotice} />
+            <MessageBody detail={detail} dark={dark} onNotice={setNotice} />
             <div className="reader-actions">
               <button className="primary-button" onClick={() => openComposer('reply')}><Reply size={16} /> Ответить</button>
               <button className="secondary-button" onClick={() => openComposer('replyAll')}><ReplyAll size={16} /> Ответить всем</button>

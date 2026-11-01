@@ -500,6 +500,41 @@ try:
     accept_confirm(d)
     W(d, 20).until(lambda d: not any(c['id'] == new['id'] for c in nc_mock('GET', '/test/state')['cards']))
     ok('card deleted')
+
+    # Карточка целиком (двойной щелчок), как в веб-Deck: все разделы сразу, Markdown,
+    # вложения (добавить/убрать), история, архив.
+    def inv(cmd, args=None):
+        return d.execute_async_script("const cb = arguments[2]; window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1] || {}).then((r) => cb({ok: r}), (e) => cb({err: JSON.stringify(e)}))", cmd, args)
+    st1 = inv('deck_stacks', {'boardId': 1})['ok']
+    inv('deck_create_card', {'boardId': 1, 'stackId': st1[0]['id'], 'title': 'E2E полная карточка', 'description': '## Цель\nОбновить **сеть** до 1 ноября\n- [ ] коммутаторы', 'duedate': None})
+    d.find_element(By.CSS_SELECTOR, '.deck-main button[aria-label="Обновить"]').click()
+    full_card = W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'E2E полная карточка' in c.get_attribute('textContent')])[0]
+    from selenium.webdriver.common.action_chains import ActionChains
+    ActionChains(d).double_click(full_card).perform()
+    dlg = wait(d, '.deck-full', 10)
+    heads = [h.get_attribute('textContent') for h in dlg.find_elements(By.CSS_SELECTOR, '.deck-section-head b')]
+    assert any('Описание' in h for h in heads) and any('Подзадачи' in h for h in heads) and any('Вложения' in h for h in heads) and any('Комментарии' in h for h in heads), heads
+    W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.deck-full .deck-markdown h3').get_attribute('textContent') == 'Цель')
+    assert d.find_element(By.CSS_SELECTOR, '.deck-full .deck-markdown b').get_attribute('textContent') == 'сеть'
+    assert 'коммутаторы' not in d.find_element(By.CSS_SELECTOR, '.deck-full .deck-markdown').get_attribute('textContent'), 'checklist shown separately'
+    assert [l.get_attribute('aria-label') for l in d.find_elements(By.CSS_SELECTOR, '.deck-full .deck-checklist input[type=checkbox]')] == ['коммутаторы']
+    W(d, 10).until(lambda d: 'создал(а) карточку' in d.find_element(By.CSS_SELECTOR, '.deck-full .deck-activity').get_attribute('textContent'))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-full .deck-upload')][0].click()
+    full_id = int(full_card.get_attribute('data-card'))
+    W(d, 15).until(lambda d: any('отчёт-e2e.txt' in a['data'] for a in nc_mock('GET', '/test/state')['attachments'].get(str(full_id), [])))
+    W(d, 10).until(lambda d: 'отчёт-e2e.txt' in d.find_element(By.CSS_SELECTOR, '.deck-full .deck-files').get_attribute('textContent'))
+    d.save_screenshot(f'{OUT}/10b-deck-full-card.png')
+    d.find_element(By.CSS_SELECTOR, '.deck-full button[aria-label="Убрать вложение отчёт-e2e.txt"]').click(); accept_confirm(d)
+    W(d, 10).until(lambda d: not nc_mock('GET', '/test/state')['attachments'].get(str(full_id)))
+    # Esc — к доске (карточка остаётся открытой панелью), снова целиком — кнопкой.
+    d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.deck-full') and d.find_elements(By.CSS_SELECTOR, '.deck-panel'))
+    d.find_element(By.CSS_SELECTOR, '.deck-panel button[aria-label="Открыть карточку целиком"]').click()
+    wait(d, '.deck-full', 5)
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-full .reader-actions button') if 'В архив' in b.text][0].click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.deck-full') and not [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'E2E полная карточка' in c.get_attribute('textContent')])
+    assert next(c for c in nc_mock('GET', '/test/state')['cards'] if c['id'] == full_id)['archived'] is True
+    ok('deck: double click opens the whole card (Markdown, subtasks, files add/remove, comments, history), archive')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item') if 'Объявления' in b.get_attribute('textContent')][0].click()
     W(d, 20).until(lambda d: 'Новости' in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('textContent'))
     assert not d.find_elements(By.CSS_SELECTOR, '.deck-add-button') and 'только чтение' in d.find_element(By.CSS_SELECTOR, '.deck-main').get_attribute('textContent')
@@ -1036,6 +1071,23 @@ try:
     d.switch_to.default_content(); time.sleep(1)
     assert d.execute_script('return window.__xss') is None, 'inline handler must be blocked by the frame CSP'
     ok('mail frame CSP blocks injected inline handlers')
+    # Тёмная тема: тело письма тоже тёмное (картинки — как есть), по кнопке — исходный светлый фон.
+    frame_filter = lambda: d.execute_script("const f = document.querySelector('iframe.message-html'); return f && f.contentDocument && getComputedStyle(f.contentDocument.documentElement).filter")
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Тема"]').click()
+    W(d, 5).until(lambda d: 'invert' in (frame_filter() or ''))
+    img_filter = d.execute_script("const i = document.querySelector('iframe.message-html').contentDocument.querySelector('img'); return i ? getComputedStyle(i).filter : 'invert(1)'")
+    assert 'invert' in img_filter, img_filter
+    # Тема — на всей странице: и то, что выводится поверх окна программы, в цветах тёмной темы.
+    assert d.execute_script("return document.documentElement.classList.contains('theme-dark') && getComputedStyle(document.documentElement).getPropertyValue('--surface').trim()") == '#202735'
+    assert d.execute_script("return getComputedStyle(document.body).backgroundColor") == 'rgb(21, 26, 35)'
+    d.save_screenshot(f'{OUT}/27a-dark-html-mail.png')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.html-foot button') if 'Светлый фон' in b.text][0].click()
+    W(d, 5).until(lambda d: 'invert' not in (frame_filter() or ''))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.html-foot button') if 'Тёмный фон' in b.text][0].click()
+    W(d, 5).until(lambda d: 'invert' in (frame_filter() or ''))
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Тема"]').click()
+    W(d, 5).until(lambda d: (frame_filter() or 'none') == 'none' and not d.execute_script("return document.documentElement.classList.contains('theme-dark')"))
+    ok('dark theme: HTML mail body darkened (images kept), light background on request; theme applies page-wide')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.html-foot button') if 'как текст' in b.text][0].click()
     W(d, 5).until(lambda d: 'Вёрстка рассылки' in d.find_element(By.CSS_SELECTOR, '.message-body.plain').get_attribute('textContent'))
     ok('HTML mail: plain-text view toggle')
@@ -1169,6 +1221,42 @@ try:
     q.send_keys(Keys.ESCAPE)
     W(d, 5).until(lambda d: q.get_attribute('value') == '')
     ok('search clear button and Esc reset the search')
+
+    # Операторы запроса и имена вложений (индекс на компьютере).
+    set_value(d, q, 'вложение:октябрь')
+    try:
+        W(d, 15).until(lambda d: subj(d) == ['Отчёт с вложением'])
+    except Exception:
+        print('ROWS:', subj(d)); raise
+    set_value(d, q, 'от:robot тема:119')
+    W(d, 10).until(lambda d: subj(d) == ['Письмо №119'])
+    set_value(d, q, 'тема:119 после:2000-01-01 до:2000-01-02')
+    W(d, 10).until(lambda d: subj(d) == [])
+    set_value(d, q, 'от:robot тема:119')
+    W(d, 10).until(lambda d: subj(d) == ['Письмо №119'])
+    ok('search operators: attachment name, sender + subject, date range')
+    # Сохранённый поиск и быстрые представления.
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.search-tools button') if 'Сохранить поиск' in b.text][0].click()
+    set_value(d, wait(d, 'input[aria-label="Название поиска"]'), 'Робот 119')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.save-view button') if b.text == 'Сохранить'][0].click()
+    W(d, 10).until(lambda d: [v for v in d.find_elements(By.CSS_SELECTOR, '.view-item') if 'Робот 119' in v.get_attribute('textContent')])
+    views_file = os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/views.json'
+    assert json.load(open(views_file))[0]['query'] == 'от:robot тема:119' and os.stat(views_file).st_mode & 0o077 == 0
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Очистить поиск"]').click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.search-header'))
+    [v for v in d.find_elements(By.CSS_SELECTOR, '.view-item') if 'Робот 119' in v.get_attribute('textContent')][0].click()
+    W(d, 10).until(lambda d: q.get_attribute('value') == 'от:robot тема:119' and subj(d) == ['Письмо №119'])
+    assert 'Робот 119' in d.find_element(By.CSS_SELECTOR, '.search-saved').get_attribute('textContent')
+    d.find_element(By.CSS_SELECTOR, '.view-item[data-view="q-important"]').click()
+    W(d, 10).until(lambda d: q.get_attribute('value') == 'важные' and d.find_elements(By.CSS_SELECTOR, '.search-header'))
+    assert all(r.find_elements(By.CSS_SELECTOR, '.important-mark') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')), 'only important mail'
+    d.save_screenshot(f'{OUT}/42a-saved-searches.png')
+    d.execute_script("arguments[0].click()", d.find_element(By.CSS_SELECTOR, 'button[aria-label="Удалить поиск Робот 119"]'))
+    W(d, 10).until(lambda d: not [v for v in d.find_elements(By.CSS_SELECTOR, '.view-item') if 'Робот 119' in v.get_attribute('textContent')])
+    assert json.load(open(views_file)) == []
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Очистить поиск"]').click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.search-header'))
+    ok('saved search: stored privately, listed under «Поиски», runs in one click; quick view «Важные»; delete')
 
     # подпись: из веб-почты SOGo, изменение сохраняется в SOGo и попадает в письмо
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
@@ -1905,6 +1993,18 @@ try:
     W(d, 20).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.unified-row'))
     assert not any('E2E второй ящик' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row'))
     ok('switch back from the account menu without a password prompt')
+    # Поиск по всем ящикам: найденное во втором ящике подписано и открывается с переключением.
+    q_all = d.find_element(By.CSS_SELECTOR, 'input[aria-label="Поиск писем"]')
+    set_value(d, q_all, 'тема:второй')
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.search-scope'))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.search-scope button') if b.text == 'Все ящики'][0].click()
+    W(d, 40).until(lambda d: len([r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if r.find_elements(By.CSS_SELECTOR, '.search-account') and 'E2E второй ящик' in r.get_attribute('textContent')]) == 2)
+    assert all('second@rrcki.ru' in r.find_element(By.CSS_SELECTOR, '.search-account').get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if r.find_elements(By.CSS_SELECTOR, '.search-account'))
+    d.save_screenshot(f'{OUT}/55a-search-all-mailboxes.png')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.search-scope button') if b.text == 'Этот ящик'][0].click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.search-account'))
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Очистить поиск"]').click()
+    ok('search across all mailboxes: results of the other account labelled')
     # Отключение второй учётной записи.
     item = [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'second@rrcki.ru' in i.get_attribute('textContent')][0]
     item.find_element(By.CSS_SELECTOR, 'button[aria-label="Отключить second@rrcki.ru"]').click()

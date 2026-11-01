@@ -11,6 +11,7 @@ mod settings;
 mod discover;
 mod desktop;
 mod store;
+mod search;
 mod totp;
 mod netio;
 mod winacl;

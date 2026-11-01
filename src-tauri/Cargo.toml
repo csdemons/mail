@@ -1,6 +1,6 @@
 [package]
 name = "rrcki-mail"
-version = "0.22.0"
+version = "0.23.0"
 description = "RRCKI Mail — корпоративный почтовый клиент"
 authors = ["RRCKI"]
 license = ""
@@ -38,7 +38,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # macOS: пароли — в Связке ключей (apple-native).
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-native-tls", "hostname"] }
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "charset", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "charset", "json", "stream", "multipart"] }
 bytes = "1"
 roxmltree = "0.20"
 ical = { version = "0.11", default-features = false, features = ["ical", "vcard"] }

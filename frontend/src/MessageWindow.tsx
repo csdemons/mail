@@ -41,6 +41,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
   const [ncConnected, setNcConnected] = useState(false)
   const [font, setFont] = useState(() => loadNumber(FONT_KEY, 15))
   const [dark] = useState(() => { try { return localStorage.getItem(THEME_KEY) === 'dark' } catch { return false } })
+  useEffect(() => { document.documentElement.classList.toggle('theme-dark', dark) }, [dark])
 
   useEffect(() => {
     api.getProfile().then(setProfile).catch(() => undefined)
@@ -181,7 +182,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
         </div>
         {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} onEdit={ncConnected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(folder, uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined} />}
         <MdnBar detail={detail} me={me} onNotice={setNotice} onDone={() => setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] })} />
-        <MessageBody detail={detail} scale={font / 15} onNotice={setNotice} />
+        <MessageBody detail={detail} scale={font / 15} dark={dark} onNotice={setNotice} />
       </div> : <div className="empty-reader">
         {error ? <><strong>Не удалось открыть письмо</strong><span>{error}</span></> : <span>Загрузка письма…</span>}
       </div>}
