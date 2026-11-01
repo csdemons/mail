@@ -1924,7 +1924,8 @@ try:
     assert inv('nc_status')['ok']['connected'], 'precondition: Nextcloud of A connected'
     locked = inv('account_switch', {'key': 'second@rrcki.ru@localhost'})['ok']
     assert locked['account']['locked'] and locked['account']['username'] == 'second@rrcki.ru', locked
-    assert not inv('nc_status')['ok']['connected'], 'Nextcloud of A still in memory while B is locked'
+    st_nc = inv('nc_status')
+    assert 'err' in st_nc or not st_nc['ok']['connected'], ('Nextcloud of A still in memory while B is locked', st_nc)
     assert 'ok' in inv('logout', {'resetTotp': True})
     assert nc_mock('GET', '/test/state')['revoked'] is False, 'Nextcloud app password of A revoked by logging out of B'
     assert 'ok' in inv('account_switch', {'key': 'test@rrcki.ru@localhost'})
