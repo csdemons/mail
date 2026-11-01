@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Inbox, Lock, LogOut, Paperclip, Plus, RefreshCw, X } from 'lucide-react'
 
 import { api, errorText } from './api'
 import Login from './Login'
 import { appInFront, notify } from './notifications'
-import type { AccountEntry, MessageSummary, UnifiedItem } from './types'
+import type { AccountEntry, MessageSummary, UnifiedFilters, UnifiedItem, UnifiedMark, UnifiedRole } from './types'
 
 export function accountTitle(a: { displayName: string; username: string }) {
   return a.displayName.trim() || a.username
@@ -129,55 +129,145 @@ function when(iso: string | null) {
 }
 
 /** «Все входящие»: последние письма всех учётных записей. */
-export function UnifiedColumn({ accounts, onOpen, onNotice }: {
+export const UNIFIED_ROLES: { role: UnifiedRole; title: string }[] = [
+  { role: 'inbox', title: 'Входящие' },
+  { role: 'sent', title: 'Отправленные' },
+  { role: 'drafts', title: 'Черновики' },
+  { role: 'archive', title: 'Архив' },
+  { role: 'junk', title: 'Спам' },
+  { role: 'trash', title: 'Корзина' },
+]
+
+export const NO_FILTERS: UnifiedFilters = { account: '', domain: '', person: '', mark: 'all' }
+
+const MARKS: { mark: UnifiedMark; title: string }[] = [
+  { mark: 'all', title: 'Все' },
+  { mark: 'unread', title: 'Непрочитанные' },
+  { mark: 'important', title: 'Важные' },
+  { mark: 'flagged', title: 'С флажком' },
+  { mark: 'attachments', title: 'С вложениями' },
+]
+
+/** Адрес из «Имя <a@b.ru>» или «a@b.ru». */
+function addressOf(s: string): string {
+  const m = /<([^>]+)>/.exec(s)
+  return (m ? m[1] : s).trim().toLowerCase()
+}
+
+/** Собеседник письма: в «Отправленных» и «Черновиках» — первый получатель, иначе отправитель. */
+export function peerOf(m: MessageSummary, role: UnifiedRole): { name: string; address: string } {
+  if (role === 'sent' || role === 'drafts') {
+    const first = m.to[0] ?? ''
+    const name = first.includes('<') ? first.slice(0, first.indexOf('<')).trim().replace(/^"|"$/g, '') : ''
+    return { name, address: addressOf(first) }
+  }
+  return { name: m.fromName, address: m.fromAddress.toLowerCase() }
+}
+
+/** Подразделение — домен адреса собеседника. */
+export function domainOf(address: string): string {
+  const at = address.lastIndexOf('@')
+  return at >= 0 ? address.slice(at + 1).toLowerCase() : ''
+}
+
+export function matchesFilters(m: UnifiedItem, role: UnifiedRole, f: UnifiedFilters): boolean {
+  if (f.account && m.account !== f.account) return false
+  const peer = peerOf(m, role)
+  if (f.domain && domainOf(peer.address) !== f.domain) return false
+  const q = f.person.trim().toLowerCase()
+  if (q && !peer.address.includes(q) && !peer.name.toLowerCase().includes(q)) return false
+  switch (f.mark) {
+    case 'unread': return m.unread
+    case 'important': return m.important
+    case 'flagged': return m.flagged
+    case 'attachments': return m.hasAttachments
+    default: return true
+  }
+}
+
+export function UnifiedColumn({ role, accounts, filters, onFilters, onOpen, onNotice }: {
+  role: UnifiedRole
   accounts: AccountEntry[]
+  filters: UnifiedFilters
+  onFilters: (f: UnifiedFilters) => void
   onOpen: (item: UnifiedItem) => void
   onNotice: (t: string) => void
 }) {
   const [items, setItems] = useState<UnifiedItem[] | null>(null)
   const [errors, setErrors] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
-  const [only, setOnly] = useState('')
+  const title = UNIFIED_ROLES.find((r) => r.role === role)?.title ?? 'Входящие'
 
   const load = useCallback(async () => {
     setBusy(true)
     try {
-      const r = await api.unifiedInbox(50)
+      const r = role === 'inbox' ? await api.unifiedInbox(50) : await api.unifiedFolder(role, 50)
       setItems(r.items)
       setErrors(r.errors)
     } catch (e) { onNotice(errorText(e)) } finally { setBusy(false) }
-  }, [onNotice])
+  }, [onNotice, role])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { setItems(null); void load() }, [load])
 
-  const shown = (items ?? []).filter((m) => !only || m.account === only)
+  const domains = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const m of items ?? []) {
+      const d = domainOf(peerOf(m, role).address)
+      if (d) counts.set(d, (counts.get(d) ?? 0) + 1)
+    }
+    if (filters.domain && !counts.has(filters.domain)) counts.set(filters.domain, 0)
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  }, [items, role, filters.domain])
+  const shown = (items ?? []).filter((m) => matchesFilters(m, role, filters))
+  const filtered = filters.account || filters.domain || filters.person.trim() || filters.mark !== 'all'
   const colors = ['#2474ed', '#1f9d74', '#d9822b', '#9b51e0', '#e5484d', '#0ea5a4']
   const colorOf = (key: string) => colors[Math.max(0, accounts.findIndex((a) => a.key === key)) % colors.length]
+  const set = (patch: Partial<UnifiedFilters>) => onFilters({ ...filters, ...patch })
+  const personLabel = role === 'sent' || role === 'drafts' ? 'Получатель' : 'Отправитель'
 
   return (
-    <main className="message-column unified-column" aria-label="Все входящие">
+    <main className="message-column unified-column" aria-label={`Все ящики — ${title}`} data-role={role}>
       <div className="list-toolbar">
-        <strong className="unified-title"><Inbox size={17} /> Все входящие</strong>
-        <select className="filter-chip filter-select" aria-label="Учётная запись" value={only} onChange={(e) => setOnly(e.target.value)}>
-          <option value="">Все учётные записи</option>
+        <strong className="unified-title"><Inbox size={17} /> {role === 'inbox' ? 'Все входящие' : `Все ящики — ${title}`}</strong>
+        <button className="icon-button soft refresh-button" aria-label="Обновить" disabled={busy} onClick={() => void load()}><RefreshCw size={17} className={busy ? 'spin' : ''} /></button>
+      </div>
+      <div className="unified-filters">
+        <select className="filter-chip filter-select" aria-label="Учётная запись" value={filters.account} onChange={(e) => set({ account: e.target.value })}>
+          <option value="">Все ящики</option>
           {accounts.map((a) => <option key={a.key} value={a.key}>{accountTitle(a)}</option>)}
         </select>
-        <button className="icon-button soft refresh-button" aria-label="Обновить" disabled={busy} onClick={() => void load()}><RefreshCw size={17} className={busy ? 'spin' : ''} /></button>
+        <select className="filter-chip filter-select" aria-label="Подразделение" value={filters.domain} onChange={(e) => set({ domain: e.target.value })}>
+          <option value="">Все подразделения</option>
+          {domains.map(([d, n]) => <option key={d} value={d}>{d}{n ? ` (${n})` : ''}</option>)}
+        </select>
+        <label className="unified-person">
+          <input value={filters.person} aria-label={personLabel} placeholder={personLabel} onChange={(e) => set({ person: e.target.value })} />
+          {filters.person && <button type="button" aria-label={`Очистить: ${personLabel}`} onClick={() => set({ person: '' })}><X size={13} /></button>}
+        </label>
+        <div className="unified-marks" role="group" aria-label="Важность">
+          {MARKS.map((x) => (
+            <button key={x.mark} className={`filter-chip ${filters.mark === x.mark ? 'active' : ''}`} aria-pressed={filters.mark === x.mark} onClick={() => set({ mark: x.mark })}>{x.title}</button>
+          ))}
+        </div>
+        {filtered && <button className="text-button unified-reset" onClick={() => onFilters(NO_FILTERS)}>Сбросить</button>}
       </div>
       {errors.length > 0 && <div className="unified-errors" role="alert">Не ответили: {errors.join('; ')}</div>}
       <div className="message-list">
         {items === null && <div className="empty-state"><span>Загрузка писем всех учётных записей…</span></div>}
-        {items !== null && shown.length === 0 && <div className="empty-state"><span>Писем нет</span></div>}
-        {shown.map((m: UnifiedItem & MessageSummary) => (
-          <button key={`${m.account}|${m.uid}`} className={`message-row unified-row ${m.unread ? 'unread' : ''}`} data-account={m.account} onClick={() => onOpen(m)}>
-            <span className="unified-account" style={{ background: colorOf(m.account) }} title={m.label} />
-            <div className="message-summary">
-              <div className="message-topline"><span className="sender-name">{m.fromName || m.fromAddress}</span><time>{when(m.date)}</time></div>
-              <div className="message-subject">{m.subject || '(без темы)'}</div>
-              <div className="message-folder unified-label">{m.label}{m.hasAttachments && <Paperclip size={12} />}</div>
-            </div>
-          </button>
-        ))}
+        {items !== null && shown.length === 0 && <div className="empty-state"><span>{filtered ? 'Ничего не найдено' : 'Писем нет'}</span>{filtered && <button className="text-button" onClick={() => onFilters(NO_FILTERS)}>Сбросить фильтры</button>}</div>}
+        {shown.map((m: UnifiedItem & MessageSummary) => {
+          const peer = peerOf(m, role)
+          return (
+            <button key={`${m.account}|${m.folder}|${m.uid}`} className={`message-row unified-row ${m.unread ? 'unread' : ''}`} data-account={m.account} onClick={() => onOpen(m)}>
+              <span className="unified-account" style={{ background: colorOf(m.account) }} title={m.label} />
+              <div className="message-summary">
+                <div className="message-topline"><span className="sender-name">{(role === 'sent' || role === 'drafts' ? 'Кому: ' : '') + (peer.name || peer.address || '—')}</span><time>{when(m.date)}</time></div>
+                <div className="message-subject">{m.important && <b className="unified-important" title="Важное">!</b>}{m.subject || '(без темы)'}</div>
+                <div className="message-folder unified-label">{m.label}{domainOf(peer.address) && <span className="unified-domain">· {domainOf(peer.address)}</span>}{m.hasAttachments && <Paperclip size={12} />}</div>
+              </div>
+            </button>
+          )
+        })}
       </div>
     </main>
   )

@@ -1266,6 +1266,31 @@ pub async fn role_folder(conn: &mut Connection, role: FolderRole) -> Result<Opti
     Ok(by_attr.or(by_name))
 }
 
+/// Последние письма папки с заданной ролью («Входящие», «Отправленные»…) — для
+/// общих папок нескольких учётных записей. `None` — такой папки в ящике нет.
+pub async fn role_messages(conn: &mut Connection, role: FolderRole, limit: u32) -> Result<Option<MessagePage>> {
+    let folder = match role {
+        FolderRole::Inbox => Some("INBOX".to_string()),
+        FolderRole::Other => None,
+        r => role_folder(conn, r).await?,
+    };
+    let Some(folder) = folder else { return Ok(None) };
+    list_messages(conn, &folder, None, limit).await.map(Some)
+}
+
+/// Роль папки по имени из интерфейса общих папок.
+pub fn parse_role(name: &str) -> Option<FolderRole> {
+    Some(match name {
+        "inbox" => FolderRole::Inbox,
+        "sent" => FolderRole::Sent,
+        "drafts" => FolderRole::Drafts,
+        "archive" => FolderRole::Archive,
+        "junk" => FolderRole::Junk,
+        "trash" => FolderRole::Trash,
+        _ => return None,
+    })
+}
+
 /// Положить письмо в «Черновики» (отложенная отправка). Возвращает имя папки.
 pub async fn append_draft(conn: &mut Connection, raw: &[u8]) -> Result<String> {
     let folder = match role_folder(conn, FolderRole::Drafts).await? {

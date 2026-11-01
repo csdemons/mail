@@ -3894,18 +3894,33 @@ pub struct UnifiedInbox {
 /// Общие «Входящие»: последние письма всех учётных записей, новые сверху.
 #[tauri::command]
 pub async fn unified_inbox(app: AppHandle, state: State<'_, AppState>, limit: u32) -> Result<UnifiedInbox> {
+    unified(&app, &state, imap::FolderRole::Inbox, limit).await
+}
+
+/// Общая папка нескольких учётных записей по роли: inbox, sent, drafts, archive,
+/// junk, trash. Последние письма каждой учётной записи, новые сверху; у кого
+/// такой папки нет — просто без писем.
+#[tauri::command]
+pub async fn unified_folder(app: AppHandle, state: State<'_, AppState>, role: String, limit: u32) -> Result<UnifiedInbox> {
+    let role = imap::parse_role(&role).ok_or_else(|| AppError::Other("Неизвестная папка".into()))?;
+    unified(&app, &state, role, limit).await
+}
+
+async fn unified(app: &AppHandle, state: &AppState, role: imap::FolderRole, limit: u32) -> Result<UnifiedInbox> {
     let limit = limit.clamp(1, 100);
     let ctx = state.ctx().await?;
     let profile = ctx.profile().await;
     let active = ctx.key.clone();
     let mut items = Vec::new();
     let mut errors = Vec::new();
-    let page = with_ctx!(ctx, c => imap::list_messages(c, "INBOX", None, limit))?;
-    items.extend(page.items.into_iter().map(|m| UnifiedItem { account: active.clone(), label: account_label(&profile), active: true, message: m }));
-    for s in other_accounts(&app, &state).await {
+    if let Some(page) = with_ctx!(ctx, c => imap::role_messages(c, role, limit))? {
+        items.extend(page.items.into_iter().map(|m| UnifiedItem { account: active.clone(), label: account_label(&profile), active: true, message: m }));
+    }
+    for s in other_accounts(app, state).await {
         let key = settings::account_key(&s);
-        match on_other(&state, &s, move |c| Box::pin(imap::list_messages(c, "INBOX", None, limit))).await {
-            Ok(page) => items.extend(page.items.into_iter().map(|m| UnifiedItem { account: key.clone(), label: account_label(&s), active: false, message: m })),
+        match on_other(state, &s, move |c| Box::pin(imap::role_messages(c, role, limit))).await {
+            Ok(Some(page)) => items.extend(page.items.into_iter().map(|m| UnifiedItem { account: key.clone(), label: account_label(&s), active: false, message: m })),
+            Ok(None) => {}
             Err(e) => errors.push(format!("{}: {e}", s.email())),
         }
     }
@@ -4026,6 +4041,7 @@ macro_rules! app_commands {
             crate::commands::discover_servers,
             crate::commands::attach_data,
             crate::commands::talk_file_preview,
+            crate::commands::unified_folder,
             crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,

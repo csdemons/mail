@@ -97,6 +97,7 @@
     "allow-talk-send",
     "allow-talk-send-file",
     "allow-talk-file-preview",
+    "allow-unified-folder",
     "allow-talk-file-data",
     "allow-update-contact",
     "allow-update-event",

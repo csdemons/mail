@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
-  FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, LogOut, Mail,
+  FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, Layers, LogOut, Mail,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
   Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
 } from 'lucide-react'
@@ -10,7 +10,7 @@ import {
   api, editNotice, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE,
 } from './api'
 import type {
-  Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile,
+  Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile, UnifiedFilters, UnifiedRole,
 } from './types'
 import About from './About'
 import kurchatovLogo from './assets/kurchatov-logo.png'
@@ -37,7 +37,8 @@ import ScheduledMail from './ScheduledMail'
 import { useOutbox } from './sending'
 import { CategoriesSettings, DesktopSettings, OfflineSettings, SendingSettings, SignatureSettings } from './MailSettings'
 import { TransferSettings } from './Transfer'
-import { AccountMenu, UnifiedColumn, useAccounts } from './Accounts'
+import { AccountMenu, NO_FILTERS, UNIFIED_ROLES, UnifiedColumn, useAccounts } from './Accounts'
+import { saveView, savedView, type ViewContext } from './viewContext'
 import TotpSettings, { AUTOLOCK_KEY, loadAutolock } from './TotpSettings'
 import { buildDraft, ensureArchive, withSignature } from './mailActions'
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
@@ -110,6 +111,9 @@ interface Props {
 }
 
 export default function App({ account, initialNotice, onLogout, onLock, onSwitch, initialOpen }: Props) {
+  // Контекст этой учётной записи с прошлого раза (переключение туда и обратно).
+  const viewKey = `${account.username}@${account.host}`.toLowerCase()
+  const [saved] = useState(() => savedView(viewKey))
   // Защита кодом: блокировка по Ctrl+L, из меню и при бездействии.
   const [totpOn, setTotpOn] = useState(false)
   const [autolock, setAutolock] = useState(loadAutolock)
@@ -166,7 +170,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const [notice, setNotice] = useState(initialNotice)
 
   const [folders, setFolders] = useState<Folder[]>([])
-  const [folderId, setFolderId] = useState('INBOX')
+  const [folderId, setFolderId] = useState(saved?.folderId ?? 'INBOX')
   const [expanded, setExpanded] = useState<Set<string>>(loadExpanded)
 
   const [messages, setMessages] = useState<MessageSummary[]>([])
@@ -195,10 +199,10 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
 
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(saved?.query ?? '')
   const queryRef = useRef('')
   queryRef.current = query
-  const [filter, setFilter] = useState<MailFilter>('Все')
+  const [filter, setFilter] = useState<MailFilter>(saved?.filter ?? 'Все')
   /** Поиск по всей почте: результаты из локального индекса (и, по кнопке, с сервера). */
   const [localResults, setLocalResults] = useState<MessageSummary[] | null>(null)
   const [serverResults, setServerResults] = useState<MessageSummary[] | null>(null)
@@ -228,7 +232,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const [diagText, setDiagText] = useState<string | null>(null)
   const [diagBusy, setDiagBusy] = useState(false)
 
-  const [module, setModule] = useState<'mail' | 'calendar' | 'contacts' | 'deck' | 'chat' | 'files'>('mail')
+  const [module, setModule] = useState<'mail' | 'calendar' | 'contacts' | 'deck' | 'chat' | 'files'>(saved?.module ?? 'mail')
   const [ncStatus, setNcStatus] = useState<NcStatus | null>(null)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -236,7 +240,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   // Категории (общие с веб-почтой), фильтр по категории, цепочки писем.
   const [categories, setCategories] = useState<Category[]>([])
   useEffect(() => { api.categoriesGet().then(setCategories).catch(() => undefined) }, [])
-  const [catFilter, setCatFilter] = useState('')
+  const [catFilter, setCatFilter] = useState(saved?.catFilter ?? '')
   const [threadsOn, setThreadsOn] = useState(() => { try { return localStorage.getItem('rrcki-mail.threads') !== 'off' } catch { return true } })
   useEffect(() => { try { localStorage.setItem('rrcki-mail.threads', threadsOn ? 'on' : 'off') } catch { /* нет хранилища */ } }, [threadsOn])
   const [openThreads, setOpenThreads] = useState<Set<string>>(new Set())
@@ -315,7 +319,15 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   useEffect(() => { api.notifyPollSecs().then((s) => { pollSecs.current = Math.max(5, s) }).catch(() => undefined) }, [])
   const acc = useAccounts(() => pollSecs.current, () => prefsRef.current, setNotice)
   const switchAccount = (key: string, open?: MessageSummary) => { setNotice('Переключение учётной записи…'); void onSwitch(key, open).then((err) => { if (err) setNotice(err) }) }
-  const [unified, setUnified] = useState(false)
+  const [unified, setUnified] = useState<UnifiedRole | null>(saved?.unified ?? null)
+  const [unifiedFilters, setUnifiedFilters] = useState<UnifiedFilters>(saved?.unifiedFilters ?? NO_FILTERS)
+  const [unifiedOpen, setUnifiedOpen] = useState(() => { try { return localStorage.getItem('rrcki-mail.unified-open') !== 'off' } catch { return true } })
+  useEffect(() => { try { localStorage.setItem('rrcki-mail.unified-open', unifiedOpen ? 'on' : 'off') } catch { /* необязательно */ } }, [unifiedOpen])
+  // Контекст учётной записи: запоминается при каждом изменении, восстанавливается при возврате.
+  const listRef = useRef<HTMLDivElement>(null)
+  const scrollTop = useRef(saved?.scrollTop ?? 0)
+  const lastOpened = useRef<MessageSummary | null>(saved?.selected ?? null)
+  const viewBase = useRef<ViewContext>({ module: 'mail', folderId: 'INBOX', unified: null, unifiedFilters: NO_FILTERS, filter: 'Все', catFilter: '', query: '', selected: null, scrollTop: 0 })
   const [notifyPolicy, setNotifyPolicy] = useState<'full' | 'sender' | 'none'>('full')
   useEffect(() => { api.getPolicy().then((p) => setNotifyPolicy(p.notificationContent ?? 'full')).catch(() => undefined) }, [])
   // Значок в трее: непрочитанные во «Входящих» всех учётных записей.
@@ -577,17 +589,37 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     setFolders((list) => list.map((f) => (f.id === folder ? { ...f, unseen: Math.max(0, f.unseen + delta) } : f)))
   }
 
-  // Переключились из «Все входящие» на другую учётную запись — сразу открыть выбранное письмо.
+  // Переключились из общей папки на другую учётную запись — сразу открыть выбранное
+  // письмо; иначе — вернуть письмо, открытое в этой учётной записи в прошлый раз.
   const openedInitial = useRef(false)
   useEffect(() => {
-    if (!initialOpen || openedInitial.current) return
+    if (openedInitial.current) return
     openedInitial.current = true
-    setFolderId(initialOpen.folder)
-    void openMessage(initialOpen)
+    if (initialOpen) {
+      setUnified(null)
+      setFolderId(initialOpen.folder)
+      void openMessage(initialOpen)
+    } else if (saved?.selected) {
+      void openMessage(saved.selected)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialOpen])
 
+  useEffect(() => {
+    saveView(viewKey, { module, folderId, unified, unifiedFilters, filter, catFilter, query, selected: selectedKey ? lastOpened.current : null }, viewBase.current)
+  }, [viewKey, module, folderId, unified, unifiedFilters, filter, catFilter, query, selectedKey])
+  // Прокрутка списка — при уходе из учётной записи (и при каждой смене папки).
+  useEffect(() => () => saveView(viewKey, { scrollTop: scrollTop.current }, viewBase.current), [viewKey])
+  // Вернуть прокрутку, когда список той же папки загрузился.
+  const scrollRestored = useRef(false)
+  useEffect(() => {
+    if (scrollRestored.current || loading || messages.length === 0 || unified) return
+    scrollRestored.current = true
+    if (saved && saved.folderId === folderId && saved.scrollTop > 0 && listRef.current) listRef.current.scrollTop = saved.scrollTop
+  }, [loading, messages.length, unified, folderId, saved])
+
   async function openMessage(message: MessageSummary) {
+    lastOpened.current = message
     const key = messageKey(message)
     const request = ++detailRequest.current
     setSelectedKey(key)
@@ -1248,9 +1280,22 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         {foldersOpen && <aside className="folder-sidebar">
           <div className="sidebar-heading"><span>Папки</span><ChevronDown size={15} /></div>
           <div className="folder-list">
-            {acc.multi && <button className={`folder-item unified-item ${unified ? 'selected' : ''}`} onClick={() => { clearSearch(); setUnified(true) }}>
-              <span className="folder-toggle" /><Inbox size={17} /><span>Все входящие</span>
-            </button>}
+            {acc.multi && <>
+              <button className="folder-item folder-node unified-group" aria-expanded={unifiedOpen} onClick={() => setUnifiedOpen(!unifiedOpen)}>
+                <span className="folder-toggle">{unifiedOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+                <Layers size={17} /><span>Все ящики</span>
+              </button>
+              {unifiedOpen && UNIFIED_ROLES.map((r) => {
+                const Icon = ROLE_ICONS[r.role]
+                return (
+                  <button key={r.role} className={`folder-item unified-item ${unified === r.role ? 'selected' : ''}`} data-role={r.role} style={{ paddingLeft: 18 }}
+                    onClick={() => { clearSearch(); setUnified(r.role) }}>
+                    <span className="folder-toggle" /><Icon size={17} /><span>{r.title}</span>
+                  </button>
+                )
+              })}
+              <div className="unified-separator" />
+            </>}
             {folders.length === 0 && <div className="folder-placeholder">Загрузка папок…</div>}
             {visibleFolders.map((f) => {
               const Icon = f.role === 'other' && !f.selectable ? FolderOpen : ROLE_ICONS[f.role]
@@ -1273,7 +1318,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
                   data-folder-id={f.id}
                   style={indent}
                   title={`${f.path} — ${f.total} ${pluralLetters(f.total)}${f.unseen ? `, непрочитанных ${f.unseen}` : ''}`}
-                  onClick={() => { clearSearch(); setUnified(false); setFolderId(f.id) }}
+                  onClick={() => { clearSearch(); setUnified(null); setFolderId(f.id) }}
                 >
                   {toggle}
                   <Icon size={17} />
@@ -1298,7 +1343,10 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         </aside>}
 
         {unified ? <UnifiedColumn
+          role={unified}
           accounts={acc.accounts}
+          filters={unifiedFilters}
+          onFilters={setUnifiedFilters}
           onNotice={setNotice}
           onOpen={(m) => {
             if (m.active) { void openMessage(m) } else { switchAccount(m.account, m) }
@@ -1358,7 +1406,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <button className="text-button danger-text" onClick={() => requestDelete(actionTargets())}><Trash2 size={15} /> Удалить</button>
             <button className="icon-button soft" aria-label="Снять отметку" onClick={() => setChecked(new Set())}><X size={15} /></button>
           </div>}
-          <div className="message-list">
+          <div className="message-list" ref={listRef} onScroll={(e) => { scrollTop.current = e.currentTarget.scrollTop }}>
             {loading && messages.length === 0 && <div className="empty-state"><span>Загрузка писем с сервера…</span></div>}
             {listError && (
               <div className="empty-state" role="alert">

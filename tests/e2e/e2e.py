@@ -1823,14 +1823,50 @@ try:
     M.logout()
     W(d, 60).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.account-badge') and d.find_element(By.CSS_SELECTOR, '.account-badge').get_attribute('textContent') == '2')
     ok('unread mail of the other account counted on the account button')
-    # «Все входящие».
-    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Все входящие' in f.get_attribute('textContent')][0].click()
+    # «Все ящики» → «Входящие».
+    assert [b.get_attribute('data-role') for b in d.find_elements(By.CSS_SELECTOR, '.unified-item')] == ['inbox', 'sent', 'drafts', 'archive', 'junk', 'trash']
+    d.find_element(By.CSS_SELECTOR, '.unified-item[data-role=inbox]').click()
     rows = W(d, 30).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')] and d.find_elements(By.CSS_SELECTOR, '.unified-row'))
     owners = {r.get_attribute('data-account') for r in rows}
     assert owners == {'test@rrcki.ru@localhost', 'second@rrcki.ru@localhost'}, owners
     assert 'E2E второй ящик' in rows[0].get_attribute('textContent'), rows[0].get_attribute('textContent')
     d.save_screenshot(f'{OUT}/54-unified-inbox.png')
     ok('unified inbox: newest mail of both accounts together')
+
+    # Фильтры общей папки: ящик, подразделение (домен), отправитель, важность.
+    from selenium.webdriver.support.ui import Select
+    urows = lambda: d.find_elements(By.CSS_SELECTOR, '.unified-row')
+    total_rows = len(urows())
+    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Учётная запись"]')).select_by_value('second@rrcki.ru@localhost')
+    W(d, 5).until(lambda d: urows() and all(r.get_attribute('data-account') == 'second@rrcki.ru@localhost' for r in urows()))
+    assert len(urows()) == 2, len(urows())
+    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Учётная запись"]')).select_by_value('')
+    W(d, 5).until(lambda d: len(urows()) == total_rows)
+    domains = [o.get_attribute('value') for o in d.find_elements(By.CSS_SELECTOR, 'select[aria-label="Подразделение"] option') if o.get_attribute('value')]
+    assert 'nrcki.ru' in domains, domains
+    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).select_by_value('nrcki.ru')
+    W(d, 5).until(lambda d: urows() and all('· nrcki.ru' in r.find_element(By.CSS_SELECTOR, '.unified-label').get_attribute('textContent') for r in urows()))
+    nrcki_rows = len(urows())
+    assert 0 < nrcki_rows <= total_rows
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Отправитель"]'), 'colleague')
+    W(d, 5).until(lambda d: urows() and all('Коллега' in r.find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent') for r in urows()))
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Отправитель"]'), '')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.unified-marks button') if b.text == 'Непрочитанные'][0].click()
+    W(d, 5).until(lambda d: all('unread' in r.get_attribute('class') for r in urows()))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.unified-marks button') if b.text == 'Все'][0].click()
+    W(d, 5).until(lambda d: len(urows()) == nrcki_rows)
+    d.save_screenshot(f'{OUT}/54a-unified-filters.png')
+    ok(f'unified folder filters: by mailbox, department (domain, {len(domains)} found), sender and importance')
+    # «Отправленные» всех ящиков: собеседник — получатель.
+    d.find_element(By.CSS_SELECTOR, '.unified-item[data-role=sent]').click()
+    W(d, 30).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.unified-column[data-role=sent] .unified-row'))
+    assert all(r.find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent').startswith('Кому:') for r in urows())
+    assert d.find_element(By.CSS_SELECTOR, 'input[aria-label="Получатель"]')
+    ok('unified Sent of all mailboxes: recipient shown and filtered')
+    d.find_element(By.CSS_SELECTOR, '.unified-item[data-role=inbox]').click()
+    rows = W(d, 30).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-column[data-role=inbox] .unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')] and urows())
+    # Фильтр «подразделение» остаётся — проверяется сохранение контекста при переключении.
+    assert Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).first_selected_option.get_attribute('value') == 'nrcki.ru'
     # Письмо своей учётной записи открывается на месте, чужой — с переключением.
     mine = [r for r in rows if r.get_attribute('data-account') == 'test@rrcki.ru@localhost'][0]
     subj_mine = mine.find_element(By.CSS_SELECTOR, '.message-subject').get_attribute('textContent')
@@ -1858,7 +1894,15 @@ try:
     # Обратно — из меню, без ввода пароля.
     [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'test@rrcki.ru' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.account-pick').click()
     W(d, 30).until(lambda d: 'test@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    # Контекст восстановлен: та же общая папка с тем же фильтром и то же открытое письмо.
+    wait(d, '.unified-column[data-role=inbox]', 30)
+    assert Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).first_selected_option.get_attribute('value') == 'nrcki.ru'
+    W(d, 20).until(lambda d: subj_mine in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
+    d.save_screenshot(f'{OUT}/55-context-restored.png')
+    ok('switching back restores the view: unified folder, filters and the open message')
+    d.find_element(By.CSS_SELECTOR, '.folder-item[data-folder-id=INBOX]').click()
     wait(d, '.message-row', 30)
+    W(d, 20).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.unified-row'))
     assert not any('E2E второй ящик' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row'))
     ok('switch back from the account menu without a password prompt')
     # Отключение второй учётной записи.
@@ -1872,7 +1916,7 @@ try:
         r = subprocess.run(['secret-tool', 'search', '--all', 'service', 'ru.rrcki.mail'], capture_output=True, text=True)
         assert 'second@rrcki.ru' not in r.stdout + r.stderr, r.stdout
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
-    W(d, 10).until(lambda d: not [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Все входящие' in f.get_attribute('textContent')])
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.unified-item'))
     ok('second account removed: list, keyring password and unified inbox gone')
 
     # Письмо учётной записи A уходит, а пользователь в это время переключается на B:

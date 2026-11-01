@@ -6,6 +6,7 @@ import MessageWindow from './MessageWindow'
 import Login from './Login'
 import LockScreen from './LockScreen'
 import UpdateNotice from './UpdateNotice'
+import { forgetView } from './viewContext'
 import kurchatovLogo from './assets/kurchatov-logo.png'
 import type { Account, MessageSummary, Settings } from './types'
 
@@ -52,6 +53,7 @@ function MainRoot() {
   }
 
   async function logout(resetTotp = false) {
+    if (state.kind === 'ready' || state.kind === 'locked') forgetView(`${state.account.username}@${state.account.host}`.toLowerCase())
     await api.logout(resetTotp).catch(() => undefined)
     resetSession()
     // Остались другие учётные записи — переходим в первую из них.

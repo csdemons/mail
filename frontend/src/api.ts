@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type {
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox,
+  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole,
 } from './types'
 
 export interface LoginParams {
@@ -70,6 +70,7 @@ export const api = {
   accountsUnread: () => invoke<AccountUnread[]>('accounts_unread'),
   accountsPoll: () => invoke<OtherNewMail[]>('accounts_poll'),
   unifiedInbox: (limit: number) => invoke<UnifiedInbox>('unified_inbox', { limit }),
+  unifiedFolder: (role: UnifiedRole, limit: number) => invoke<UnifiedInbox>('unified_folder', { role, limit }),
   importThunderbird: () => invoke<ImportSource[]>('import_thunderbird'),
   importPickFiles: () => invoke<ImportSource | null>('import_pick_files'),
   importPickFolder: () => invoke<ImportSource | null>('import_pick_folder'),

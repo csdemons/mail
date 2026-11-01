@@ -96,6 +96,7 @@ const COMMANDS: &[&str] = &[
         "update_profile",
         "update_progress",
             "talk_file_preview",
+            "unified_folder",
             "talk_file_data",
         "accounts_list",
         "account_add",

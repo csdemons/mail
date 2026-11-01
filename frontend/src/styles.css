@@ -910,9 +910,20 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .account-pick-text small, .account-current { color: var(--muted); font-size: 11px; }
 .status-dot.idle { background: var(--muted); }
 .add-account .login-card { max-height: 92vh; overflow: auto; }
+.unified-separator { height: 1px; background: var(--line); margin: 6px 8px; }
+.unified-group { font-weight: 600; }
 .unified-title { display: flex; align-items: center; gap: 6px; margin-right: auto; }
 .unified-row { position: relative; padding-left: 18px; }
 .unified-account { position: absolute; left: 6px; top: 12px; bottom: 12px; width: 4px; border-radius: 2px; }
 .unified-label { display: flex; align-items: center; gap: 4px; }
+.unified-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 12px 8px; }
+.unified-filters .filter-select { max-width: 190px; }
+.unified-person { display: inline-flex; align-items: center; gap: 2px; height: 28px; border: 1px solid var(--line); border-radius: 14px; padding: 0 8px; background: var(--surface); }
+.unified-person input { border: 0; outline: none; background: transparent; color: inherit; font: inherit; font-size: 12px; width: 110px; }
+.unified-person button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; display: inline-flex; }
+.unified-marks { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.unified-reset { font-size: 12px; }
+.unified-domain { color: var(--muted); }
+.unified-important { color: #e5484d; margin-right: 4px; }
 .unified-errors { padding: 6px 12px; font-size: 12px; color: #b45309; }
 .transfer-warning { color: #b45309; }

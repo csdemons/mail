@@ -497,3 +497,8 @@ export interface AccountUnread { key: string; unread: number | null; error: stri
 export interface OtherNewMail { key: string; label: string; items: MessageSummary[] }
 export type UnifiedItem = MessageSummary & { account: string; label: string; active: boolean }
 export interface UnifiedInbox { items: UnifiedItem[]; errors: string[] }
+/** Общие папки нескольких учётных записей. */
+export type UnifiedRole = 'inbox' | 'sent' | 'drafts' | 'archive' | 'junk' | 'trash'
+export type UnifiedMark = 'all' | 'unread' | 'important' | 'flagged' | 'attachments'
+/** Фильтры общей папки: ящик, подразделение (домен адреса), отправитель/получатель, важность. */
+export interface UnifiedFilters { account: string; domain: string; person: string; mark: UnifiedMark }
