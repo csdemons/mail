@@ -523,7 +523,7 @@ try:
     assert nc_mock('GET', '/test/state')['previews'] >= 1
     d.find_element(By.CSS_SELECTOR, '.talk-image-open').click()
     W(d, 15).until(lambda d: [i for i in d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop img.viewer-image') if d.execute_script('return arguments[0].naturalWidth', i) == 64])
-    assert 'Фото с объекта.png' in d.find_element(By.CSS_SELECTOR, '.viewer-head').text
+    assert 'Фото с объекта.png' in d.find_element(By.CSS_SELECTOR, '.viewer-head').get_attribute('textContent')
     d.save_screenshot(f'{OUT}/11a-chat-photo.png')
     d.find_element(By.CSS_SELECTOR, '.viewer-backdrop button[aria-label="Сохранить"]').click()
     saved = os.path.join(os.environ['E2E_HOME'], 'saved', 'Фото с объекта.png')
@@ -554,8 +554,8 @@ try:
     st = nc_mock('GET', '/test/state')
     assert st['files'].get('/Talk/отчёт-e2e.txt') == 'test file for talk\n', st['files']
     assert not d.find_elements(By.CSS_SELECTOR, '.talk-pending'); ok('file uploaded to /Talk and shared with caption')
-    [f for f in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own .talk-file') if 'отчёт-e2e.txt' in f.text][0].click()
-    W(d, 15).until(lambda d: 'test file for talk' in ''.join(e.text for e in d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop .viewer-text')))
+    [f for f in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own .talk-file') if 'отчёт-e2e.txt' in f.get_attribute('textContent')][0].click()
+    W(d, 15).until(lambda d: 'test file for talk' in ''.join(e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop .viewer-text')))
     d.find_element(By.CSS_SELECTOR, '.viewer-backdrop button[aria-label="Закрыть просмотр"]').click()
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop'))
     ok('text file from chat opens in the built-in viewer')
