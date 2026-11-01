@@ -178,6 +178,12 @@ pub async fn pick_folder(app: &AppHandle) -> Option<PathBuf> {
 
 /// Куда сохранить файл. `None` — пользователь отменил.
 pub async fn save_file(app: &AppHandle, name: &str) -> Option<PathBuf> {
+    // Автотесты: «выбранная» папка без системного диалога. В релизной сборке — никогда.
+    if cfg!(debug_assertions) {
+        if let Some(dir) = std::env::var_os("RRCKI_E2E_SAVE_DIR") {
+            return Some(PathBuf::from(dir).join(name));
+        }
+    }
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().set_file_name(name).save_file(move |path| {
         let _ = tx.send(path);

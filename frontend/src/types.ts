@@ -359,6 +359,9 @@ export interface TalkFile {
   name: string
   size: number
   mimetype: string
+  /** Путь у текущего пользователя (обычно «Talk/имя»); null — старый сервер, только «Открыть в Nextcloud». */
+  path: string | null
+  preview: boolean
 }
 
 export interface UpdateInfo {

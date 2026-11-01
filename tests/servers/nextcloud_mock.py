@@ -13,14 +13,25 @@ from urllib.parse import unquote, urlparse, parse_qs
 LOGIN, APP_PASSWORD, UID = 'test@rrcki.ru', 'app-pass-123', 'test'
 lock = threading.Condition()
 ids = itertools.count(100)
+
+
+def png(w, h, color):
+    import zlib, struct
+    raw = b''.join(b'\x00' + bytes(color) * w for _ in range(h))
+    ch = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+    return b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw)) + ch(b'IEND', b'')
+
+
+PHOTO = png(64, 48, (30, 150, 90))
 UPDATE_BLOB = b'fake package for update test\n' * 4000
 
 state = {
-    'dirs': {'/', '/Документы'},
+    'dirs': {'/', '/Документы', '/Talk'},
     'dir_ids': {},
     'shares': [],
     'files': {'/Документы/Регламент.txt': {'id': 4242, 'data': 'Регламент работ\n'.encode()},
-              '/Документы/План.docx': {'id': 4243, 'data': b'PK fake docx'}},
+              '/Документы/План.docx': {'id': 4243, 'data': b'PK fake docx'},
+              '/Talk/Фото с объекта.png': {'id': 4300, 'data': PHOTO}},
     'direct': {},
     'polls': 0,
     'revoked': False,
@@ -67,6 +78,10 @@ state = {
              'messageParameters': {'file': {'type': 'file', 'id': '42', 'name': 'План работ.xlsx'}}},
             {'id': 3, 'actorType': 'users', 'actorId': 'petrova', 'actorDisplayName': 'Петрова Анна', 'timestamp': 1793000150,
              'message': 'reaction', 'messageType': 'system', 'systemMessage': 'reaction', 'messageParameters': []},
+            {'id': 4, 'actorType': 'users', 'actorId': 'ivanov', 'actorDisplayName': 'Иванов Иван', 'timestamp': 1793000200,
+             'message': '{file}', 'messageType': 'comment', 'systemMessage': '',
+             'messageParameters': {'file': {'type': 'file', 'id': '4300', 'name': 'Фото с объекта.png', 'size': len(PHOTO), 'mimetype': 'image/png',
+                                            'path': 'Talk/Фото с объекта.png', 'preview-available': 'yes'}}},
         ],
         'dm-ivanov': [],
     },
@@ -169,6 +184,17 @@ class H(BaseHTTPRequestHandler):
             state['avatars'] = state.get('avatars', 0) + 1
             self.send_response(200); self.send_header('Content-Type', 'image/png'); self.send_header('Content-Length', str(len(body))); self.end_headers()
             return self.wfile.write(body)
+        # --- Уменьшенные копии файлов (core/preview по fileId)
+        if method == 'GET' and p == '/index.php/core/preview':
+            from urllib.parse import parse_qs
+            fid = (parse_qs(urlparse(self.path).query).get('fileId') or [''])[0]
+            f = next((v for v in state['files'].values() if str(v['id']) == fid), None)
+            if f is None or not f['data'].startswith(b'\x89PNG'):
+                return self.send(404)
+            state['previews'] = state.get('previews', 0) + 1
+            body = png(32, 24, (30, 150, 90))
+            self.send_response(200); self.send_header('Content-Type', 'image/png'); self.send_header('Content-Length', str(len(body))); self.end_headers()
+            return self.wfile.write(body)
         if method == 'GET' and p.startswith('/ocs/v2.php/apps/spreed/api/v1/room/') and p.endswith('/avatar'):
             body = b'<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#0a7"/></svg>'
             self.send_response(200); self.send_header('Content-Type', 'image/svg+xml'); self.send_header('Content-Length', str(len(body))); self.end_headers()
@@ -228,7 +254,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'],
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'],
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:

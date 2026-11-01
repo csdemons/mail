@@ -135,15 +135,20 @@ interface ViewerProps {
   onIndex: (index: number) => void
   onClose: () => void
   onSave: (index: number) => void
+  /** Откуда брать содержимое (base64); по умолчанию — вложение письма folder/uid. */
+  load?: (a: AttachmentInfo) => Promise<string>
+  saveTitle?: string
 }
 
-export default function AttachmentViewer({ folder, uid, items, index, onIndex, onClose, onSave }: ViewerProps) {
+export default function AttachmentViewer({ folder, uid, items, index, onIndex, onClose, onSave, load, saveTitle = 'Сохранить на компьютер' }: ViewerProps) {
   const pos = Math.max(0, items.findIndex((a) => a.index === index))
   const a = items[pos]
   const kind = a ? previewKind(a) : null
   const [data, setData] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [actual, setActual] = useState(false)
+  const loader = useRef(load)
+  loader.current = load
 
   useEffect(() => {
     if (!a) return
@@ -151,7 +156,7 @@ export default function AttachmentViewer({ folder, uid, items, index, onIndex, o
     setData(null)
     setError('')
     setActual(false)
-    loadAttachment(folder, uid, a.index).then((d) => { if (alive) setData(d) }).catch((e) => { if (alive) setError(errorText(e)) })
+    ;(loader.current ? loader.current(a) : loadAttachment(folder, uid, a.index)).then((d) => { if (alive) setData(d) }).catch((e) => { if (alive) setError(errorText(e)) })
     return () => { alive = false }
   }, [folder, uid, a])
 
@@ -173,7 +178,7 @@ export default function AttachmentViewer({ folder, uid, items, index, onIndex, o
         <span>{formatSize(a.size)}{items.length > 1 ? ` · ${pos + 1} из ${items.length}` : ''}</span>
         <div className="reader-toolbar-spacer" />
         {kind === 'image' && <button className="icon-button" aria-label={actual ? 'Вписать в окно' : 'Реальный размер'} title={actual ? 'Вписать в окно' : 'Реальный размер'} onClick={() => setActual(!actual)}>{actual ? <Minimize2 size={18} /> : <Maximize2 size={18} />}</button>}
-        <button className="icon-button" aria-label="Сохранить" title="Сохранить на компьютер" onClick={() => onSave(a.index)}><Download size={18} /></button>
+        <button className="icon-button" aria-label="Сохранить" title={saveTitle} onClick={() => onSave(a.index)}><Download size={18} /></button>
         <button className="icon-button" aria-label="Закрыть просмотр" title="Закрыть (Esc)" onClick={onClose}><X size={20} /></button>
       </div>
       <div className={`viewer-body ${kind}-view ${actual ? 'actual' : ''}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>

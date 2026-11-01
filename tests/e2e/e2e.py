@@ -508,15 +508,29 @@ try:
     # 19. Talk
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
     W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 2)
-    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.talk-msg')) == 2)
+    W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.talk-msg')) == 3)
     msgs = [m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')]
-    assert '@Тестовый Пользователь' in msgs[0] and 'План работ.xlsx' in msgs[1], msgs
+    assert '@Тестовый Пользователь' in msgs[0] and 'План работ.xlsx' in msgs[1] and 'Фото с объекта.png' in msgs[2], msgs
     assert [f.get_attribute('textContent') for f in d.find_elements(By.CSS_SELECTOR, '.talk-msg .talk-file span')] == ['План работ.xlsx']
     W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row .sender-avatar.has-image img')) == 2)
     W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-msg .sender-avatar.has-image img'))
     ok('talk: room and author avatars loaded from Nextcloud')
     assert not any('reaction' in m for m in msgs); ok('history: mentions and files rendered, reaction events hidden')
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.rail-badge')); ok('chat badge cleared after reading')
+
+    # Фото в чате: уменьшенная копия в ленте, просмотр во встроенном окне, сохранение на компьютер.
+    W(d, 15).until(lambda d: [i for i in d.find_elements(By.CSS_SELECTOR, '.talk-image img') if (i.get_attribute('src') or '').startswith('data:image/png') and d.execute_script('return arguments[0].naturalWidth', i) == 32])
+    assert nc_mock('GET', '/test/state')['previews'] >= 1
+    d.find_element(By.CSS_SELECTOR, '.talk-image-open').click()
+    W(d, 15).until(lambda d: [i for i in d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop img.viewer-image') if d.execute_script('return arguments[0].naturalWidth', i) == 64])
+    assert 'Фото с объекта.png' in d.find_element(By.CSS_SELECTOR, '.viewer-head').text
+    d.save_screenshot(f'{OUT}/11a-chat-photo.png')
+    d.find_element(By.CSS_SELECTOR, '.viewer-backdrop button[aria-label="Сохранить"]').click()
+    saved = os.path.join(os.environ['E2E_HOME'], 'saved', 'Фото с объекта.png')
+    W(d, 15).until(lambda d: os.path.exists(saved) and open(saved, 'rb').read(8) == b'\x89PNG\r\n\x1a\n')
+    d.find_element(By.CSS_SELECTOR, '.viewer-backdrop button[aria-label="Закрыть просмотр"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop'))
+    ok('chat photo: thumbnail in the feed, opens full-size in the viewer, saved to computer')
     box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
     box.send_keys('Добрый день, принято'); box.send_keys(Keys.ENTER)
     W(d, 20).until(lambda d: any('Добрый день, принято' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own')))
@@ -540,6 +554,11 @@ try:
     st = nc_mock('GET', '/test/state')
     assert st['files'].get('/Talk/отчёт-e2e.txt') == 'test file for talk\n', st['files']
     assert not d.find_elements(By.CSS_SELECTOR, '.talk-pending'); ok('file uploaded to /Talk and shared with caption')
+    [f for f in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own .talk-file') if 'отчёт-e2e.txt' in f.text][0].click()
+    W(d, 15).until(lambda d: 'test file for talk' in ''.join(e.text for e in d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop .viewer-text')))
+    d.find_element(By.CSS_SELECTOR, '.viewer-backdrop button[aria-label="Закрыть просмотр"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop'))
+    ok('text file from chat opens in the built-in viewer')
     # Второй раз то же имя → «отчёт-e2e (1).txt», без перезаписи.
     d.find_element(By.CSS_SELECTOR, '.talk-attach').click()
     wait(d, '.talk-pending')

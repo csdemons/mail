@@ -398,6 +398,16 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .talk-file:hover { border-color: var(--blue); }
 .talk-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .talk-file small { color: var(--muted); flex: 0 0 auto; }
+.talk-file-row { display: flex; align-items: center; gap: 4px; max-width: 100%; }
+.talk-file-row .talk-file { min-width: 0; }
+.talk-file-row .icon-button, .talk-image-bar .icon-button { width: 26px; height: 26px; flex: none; }
+.talk-image { display: flex; flex-direction: column; max-width: 320px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.talk-image-open { display: block; border: 0; padding: 0; margin: 0; background: var(--panel); cursor: zoom-in; line-height: 0; }
+.talk-image-open img { display: block; width: 100%; height: auto; max-height: 260px; object-fit: contain; }
+.talk-image-placeholder { display: flex; align-items: center; justify-content: center; height: 120px; width: 220px; max-width: 100%; color: var(--muted); font-size: 13px; line-height: 1.2; }
+.talk-image-bar { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 9px; font-size: 12px; min-width: 0; }
+.talk-image-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-image-bar small { color: var(--muted); flex: none; }
 .talk-pending { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .talk-pending .talk-file { cursor: default; }
 .talk-pending .talk-file button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; display: inline-flex; }

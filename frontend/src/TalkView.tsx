@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  CornerUpLeft, FileText, KanbanSquare, MessageCircle, MessageSquarePlus, Paperclip, Pencil, Phone, RefreshCw,
+  CornerUpLeft, Download, ExternalLink, FileText, KanbanSquare, MessageCircle, MessageSquarePlus, Paperclip, Pencil, Phone, RefreshCw,
   Search, Send, Smile, SmilePlus, Trash2, Users, X,
 } from 'lucide-react'
 
@@ -8,7 +8,46 @@ import { api, errorText, formatSize } from './api'
 import { EmojiPicker, QUICK_REACTIONS } from './Emoji'
 import TalkText from './TalkText'
 import Avatar from './Avatar'
-import type { DeckBoard, DeckStack, NcUser, PickedFile, TalkMention, TalkMessage, TalkRoom } from './types'
+import AttachmentViewer, { previewKind } from './AttachmentViewer'
+import type { AttachmentInfo, DeckBoard, DeckStack, NcUser, PickedFile, TalkFile, TalkMention, TalkMessage, TalkRoom } from './types'
+
+/** Файл чата открывается во встроенном просмотрщике (фото, PDF, текст), если известен его путь. */
+function viewable(f: TalkFile): boolean {
+  return !!f.path && previewKind({ name: f.name, contentType: f.mimetype }) !== null
+}
+
+function isImage(f: TalkFile): boolean {
+  return previewKind({ name: f.name, contentType: f.mimetype }) === 'image'
+}
+
+/** Кэши на время работы окна: уменьшенные копии и содержимое открытых файлов. */
+const previews = new Map<string, Promise<string | null>>()
+const contents = new Map<string, Promise<string>>()
+
+function cached<T>(map: Map<string, Promise<T>>, key: string, limit: number, make: () => Promise<T>): Promise<T> {
+  let p = map.get(key)
+  if (!p) {
+    p = make()
+    p.catch(() => map.delete(key))
+    map.set(key, p)
+    if (map.size > limit) map.delete(map.keys().next().value as string)
+  }
+  return p
+}
+
+function TalkThumb({ file }: { file: TalkFile }) {
+  const [src, setSrc] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    let alive = true
+    cached(previews, file.id, 200, () => api.talkFilePreview(file.id))
+      .then((d) => { if (alive) { if (d) setSrc(d); else setFailed(true) } })
+      .catch(() => { if (alive) setFailed(true) })
+    return () => { alive = false }
+  }, [file.id])
+  if (failed) return <span className="talk-image-placeholder"><FileText size={22} /></span>
+  return src ? <img src={src} alt={file.name} draggable={false} /> : <span className="talk-image-placeholder">Загрузка…</span>
+}
 
 function timeOf(ts: number) {
   const d = new Date(ts * 1000)
@@ -65,6 +104,32 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   })
 
   const notify = useCallback((t: string) => { if (onNotice) onNotice(t); else setError(t) }, [onNotice])
+
+  // Просмотр файлов беседы: стрелками листаются все фото и документы беседы по порядку.
+  const viewFiles = useMemo(() => messages.filter((m) => !m.deleted).flatMap((m) => m.files.filter(viewable)), [messages])
+  const viewItems = useMemo<AttachmentInfo[]>(() => viewFiles.map((f, i) => ({ index: i, name: f.name, contentType: f.mimetype, size: f.size })), [viewFiles])
+  const [viewing, setViewing] = useState<number | null>(null)
+  useEffect(() => setViewing(null), [token])
+  const viewLoad = useCallback((a: AttachmentInfo) => {
+    const f = viewFiles[a.index]
+    return f?.path ? cached(contents, f.path, 20, () => api.talkFileData(f.path as string)) : Promise.reject(new Error('Файл недоступен'))
+  }, [viewFiles])
+
+  function openFile(f: TalkFile) {
+    const i = viewFiles.indexOf(f)
+    if (i >= 0) setViewing(i)
+    else void api.ncOpen(`f/${f.id}`).catch((e) => notify(errorText(e)))
+  }
+
+  async function saveFile(f: TalkFile) {
+    if (!f.path) return
+    try {
+      const saved = await api.ncFilesDownload(f.path)
+      if (saved) notify(`Сохранено: ${saved}`)
+    } catch (e) {
+      notify(errorText(e))
+    }
+  }
 
   const loadRooms = useCallback(async () => {
     try {
@@ -352,10 +417,22 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                     {m.text && (m.deleted ? <div className="talk-text talk-deleted">{m.text}</div> : <TalkText text={m.text} />)}
                     {m.files.length > 0 && (
                       <div className="talk-files">
-                        {m.files.map((f) => (
-                          <button key={f.id || f.name} className="talk-file" title="Открыть в Nextcloud" onClick={() => void api.ncOpen(`f/${f.id}`)}>
-                            <FileText size={15} /><span>{f.name}</span>{f.size > 0 && <small>{formatSize(f.size)}</small>}
-                          </button>
+                        {m.files.map((f) => (isImage(f) && f.id && (f.preview || f.path)) ? (
+                          <div key={f.id} className="talk-image">
+                            <button className="talk-image-open" aria-label={`Открыть ${f.name}`} title="Открыть" onClick={() => openFile(f)}><TalkThumb file={f} /></button>
+                            <div className="talk-image-bar">
+                              <span title={f.name}>{f.name}</span>{f.size > 0 && <small>{formatSize(f.size)}</small>}
+                              {f.path && <button className="icon-button soft" aria-label={`Скачать ${f.name}`} title="Сохранить на компьютер" onClick={() => void saveFile(f)}><Download size={14} /></button>}
+                              <button className="icon-button soft" aria-label={`Открыть ${f.name} в Nextcloud`} title="Открыть в Nextcloud" onClick={() => void api.ncOpen(`f/${f.id}`)}><ExternalLink size={14} /></button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div key={f.id || f.name} className="talk-file-row">
+                            <button className="talk-file" title={viewable(f) ? 'Открыть' : 'Открыть в Nextcloud'} onClick={() => openFile(f)}>
+                              <FileText size={15} /><span>{f.name}</span>{f.size > 0 && <small>{formatSize(f.size)}</small>}
+                            </button>
+                            {f.path && <button className="icon-button soft" aria-label={`Скачать ${f.name}`} title="Сохранить на компьютер" onClick={() => void saveFile(f)}><Download size={14} /></button>}
+                          </div>
                         ))}
                       </div>
                     )}
@@ -445,6 +522,10 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
 
       {cardFrom && room && <CardFromMessage message={cardFrom} room={room} onClose={() => setCardFrom(null)} onDone={(t) => { setCardFrom(null); notify(t) }} />}
       {newChat && <NewChat onClose={() => setNewChat(false)} onCreated={(t) => { setNewChat(false); void loadRooms().then(() => setToken(t)) }} />}
+      {viewing !== null && viewItems[viewing] && (
+        <AttachmentViewer folder="" uid={0} items={viewItems} index={viewing} onIndex={setViewing} onClose={() => setViewing(null)}
+          load={viewLoad} onSave={(i) => { const f = viewFiles[i]; if (f) void saveFile(f) }} />
+      )}
     </div>
   )
 }

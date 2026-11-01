@@ -2429,6 +2429,20 @@ pub async fn nc_avatar(state: State<'_, AppState>, kind: String, id: String) -> 
     }
 }
 
+/// Уменьшенная копия файла из чата (data: URL) или None, если сервер её не дал.
+#[tauri::command]
+pub async fn talk_file_preview(state: State<'_, AppState>, file_id: String) -> Result<Option<String>> {
+    nc(&state).await?.file_preview(&file_id, 480).await
+}
+
+/// Содержимое файла из чата (base64) для встроенного просмотра: фото, PDF, текст.
+#[tauri::command]
+pub async fn talk_file_data(state: State<'_, AppState>, path: String) -> Result<String> {
+    use base64::Engine as _;
+    let bytes = nc(&state).await?.files_read(&path, 50 * 1024 * 1024).await?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// HTML письма с картинками из интернета. Картинки загружает программа (не страница),
 /// IMAP-соединение во время загрузки не занято.
 #[tauri::command]
@@ -3788,6 +3802,8 @@ macro_rules! app_commands {
             crate::commands::categories_get,
             crate::commands::discover_servers,
             crate::commands::attach_data,
+            crate::commands::talk_file_preview,
+            crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,
             crate::commands::account_switch,

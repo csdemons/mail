@@ -259,6 +259,14 @@ impl Nc {
         self.image(&path).await
     }
 
+    /// Уменьшенная копия файла (фото в чате) — `core/preview` по ID файла.
+    pub async fn file_preview(&self, file_id: &str, size: u32) -> Result<Option<String>> {
+        if file_id.is_empty() || !file_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(None);
+        }
+        self.image(&format!("index.php/core/preview?fileId={file_id}&x={size}&y={size}&a=1&forceIcon=0")).await
+    }
+
     pub async fn revoke(&self) {
         let _ = self.ocs(Method::DELETE, "ocs/v2.php/core/apppassword", &[], None, "Отзыв пароля").await;
     }
@@ -656,6 +664,11 @@ pub struct TalkFile {
     pub name: String,
     pub size: i64,
     pub mimetype: String,
+    /// Путь файла у текущего пользователя (обычно «Talk/имя»): по нему файл
+    /// скачивается и открывается в просмотрщике.
+    pub path: Option<String>,
+    /// Сервер умеет делать уменьшенную копию (фото, PDF…).
+    pub preview: bool,
 }
 
 /// Подставляет `{mention-user1}`, `{file}` и т.п. из messageParameters.
@@ -670,7 +683,9 @@ pub fn render_message(v: &Value) -> (String, Vec<TalkFile>) {
                 "user" | "guest" | "call" | "user-group" | "group" => format!("@{name}"),
                 "file" => {
                     // Файл показывается отдельной плашкой под текстом.
-                    files.push(TalkFile { id: text(&p["id"]).or_int(&p["id"]), name: name.to_string(), size: int(&p["size"]), mimetype: text(&p["mimetype"]) });
+                    let path = p["path"].as_str().map(|x| x.trim_start_matches('/').to_string()).filter(|x| !x.is_empty());
+                    let preview = p["preview-available"].as_str() == Some("yes");
+                    files.push(TalkFile { id: text(&p["id"]).or_int(&p["id"]), name: name.to_string(), size: int(&p["size"]), mimetype: text(&p["mimetype"]), path, preview });
                     String::new()
                 }
                 _ => name.to_string(),
@@ -1176,6 +1191,20 @@ impl Nc {
         Ok(total)
     }
 
+    /// Содержимое файла для просмотра; больше `max` байт — ошибка (загрузка прерывается).
+    pub async fn files_read(&self, path: &str, max: usize) -> Result<Vec<u8>> {
+        let resp = self.dav(Method::GET, self.files_url(&clean_path(path)?)?).send().await.map_err(net_error)?;
+        if !resp.status().is_success() {
+            return Err(status_error(resp.status(), "Открытие файла"));
+        }
+        if resp.content_length().is_some_and(|n| n > max as u64) {
+            return Err(AppError::Other(format!("Файл больше {} МБ — сохраните его на компьютер", max / (1024 * 1024))));
+        }
+        crate::netio::read_limited(resp, max)
+            .await
+            .map_err(|_| AppError::Other(format!("Файл больше {} МБ — сохраните его на компьютер", max / (1024 * 1024))))
+    }
+
     /// Удаление (в Nextcloud — в корзину).
     pub async fn files_delete(&self, path: &str) -> Result<()> {
         let path = clean_path(path)?;
@@ -1398,10 +1427,11 @@ mod tests {
         });
         let m = parse_message(&v, "yushkov_do@nrcki.ru");
         assert_eq!(m.text, "@Иванов Иван, посмотри");
-        assert_eq!(m.files, vec![TalkFile { id: "42".into(), name: "Отчёт.docx".into(), size: 0, mimetype: String::new() }]);
+        assert_eq!(m.files, vec![TalkFile { id: "42".into(), name: "Отчёт.docx".into(), size: 0, mimetype: String::new(), path: None, preview: false }]);
         // Сообщение «только файл»: текста нет, ID числом.
-        let (t, f) = render_message(&json!({"message": "{file}", "messageParameters": {"file": {"type": "file", "id": 9, "name": "a.png", "size": 5, "mimetype": "image/png"}}}));
+        let (t, f) = render_message(&json!({"message": "{file}", "messageParameters": {"file": {"type": "file", "id": 9, "name": "a.png", "size": 5, "mimetype": "image/png", "path": "/Talk/a.png", "preview-available": "yes"}}}));
         assert!(t.is_empty() && f[0].id == "9" && f[0].size == 5);
+        assert!(f[0].preview && f[0].path.as_deref() == Some("Talk/a.png"));
         assert!(m.own && !m.system);
         assert_eq!(m.parent_text.as_deref(), Some("Где отчёт?"));
         // Пустые параметры приходят как [] — не должно падать.

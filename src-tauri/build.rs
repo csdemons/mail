@@ -95,6 +95,8 @@ const COMMANDS: &[&str] = &[
         "update_event",
         "update_profile",
         "update_progress",
+            "talk_file_preview",
+            "talk_file_data",
         "accounts_list",
         "account_add",
         "account_switch",

@@ -150,6 +150,8 @@ export const api = {
     invoke<string>('nc_save_mail_attachment', { folder, uid, index, dir }),
   talkSendFile: (token: string, attachment: string, caption: string, replyTo: number | null = null) =>
     invoke<void>('talk_send_file', { token, attachment, caption, replyTo }),
+  talkFilePreview: (fileId: string) => invoke<string | null>('talk_file_preview', { fileId }),
+  talkFileData: (path: string) => invoke<string>('talk_file_data', { path }),
   forgetAttachment: (attachment: string) => invoke<void>('forget_attachment', { attachment }),
   talkSend: (token: string, message: string, replyTo: number | null = null) =>
     invoke<void>('talk_send', { token, message, replyTo }),
