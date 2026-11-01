@@ -5,7 +5,7 @@ import asyncio, ssl, sys, time, os
 from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import AuthResult, LoginPassword
 
-USERS = {'test@rrcki.ru': 'Secret-123'}
+USERS = {'test@rrcki.ru': 'Secret-123', 'second@rrcki.ru': 'Secret-456'}
 
 class Auth:
     def __call__(self, server, session, envelope, mechanism, auth_data):
@@ -22,6 +22,11 @@ class Store:
         with open(name, 'wb') as f:
             f.write(f'X-Envelope-From: {envelope.mail_from}\r\nX-Envelope-To: {",".join(envelope.rcpt_tos)}\r\n'.encode())
             f.write(envelope.original_content)
+        # Проверки надёжности: тема с меткой задаёт поведение сервера.
+        if b'[slow]' in envelope.original_content:
+            await asyncio.sleep(6)  # долгий ответ — за это время пользователь переключается
+        if b'[drop]' in envelope.original_content:
+            server.transport.abort()  # письмо принято, но связь оборвалась до ответа
         return '250 OK'
 
 cert, key, out = sys.argv[1:4]

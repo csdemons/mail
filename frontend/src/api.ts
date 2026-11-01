@@ -42,7 +42,7 @@ export const api = {
   sendCancel: (id: number) => invoke<boolean>('send_cancel', { id }),
   sendNow: (id: number) => invoke<void>('send_now', { id }),
   scheduledList: () => invoke<Scheduled[]>('scheduled_list'),
-  scheduledSendNow: (folder: string, uid: number) => invoke<SendResult>('scheduled_send_now', { folder, uid }),
+  scheduledSendNow: (folder: string, uid: number, resend = false) => invoke<SendResult>('scheduled_send_now', { folder, uid, resend }),
   scheduledCancel: (folder: string, uid: number) => invoke<void>('scheduled_cancel', { folder, uid }),
   mdnRespond: (folder: string, uid: number, send: boolean) => invoke<void>('mdn_respond', { folder, uid, send }),
   desktopPrefsGet: () => invoke<DesktopPrefs>('desktop_prefs_get'),

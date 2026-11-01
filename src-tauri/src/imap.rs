@@ -96,6 +96,11 @@ pub async fn connect(creds: &Credentials) -> Result<Connection> {
 }
 
 impl Connection {
+    /// Соединение открыто для этой учётной записи (тот же ящик на том же сервере).
+    pub fn is_account(&self, creds: &Credentials) -> bool {
+        self.creds.username.eq_ignore_ascii_case(&creds.username) && self.creds.host.eq_ignore_ascii_case(&creds.host) && self.creds.port == creds.port
+    }
+
     /// Список возможностей сервера (CAPABILITY) — для диагностики.
     pub async fn capabilities(&mut self) -> Result<Vec<String>> {
         let caps = self.session.capabilities().await?;
@@ -1286,6 +1291,51 @@ pub struct Scheduled {
     pub send_at: String,
     pub subject: String,
     pub to: Vec<String>,
+    /// `pending` — ждёт; `sending` — сейчас отправляется (другой копией программы);
+    /// `unknown` — неизвестно, принял ли SMTP-сервер письмо (автоматически не повторяется);
+    /// `sent` — отправлено, но ещё не убрано из «Черновиков».
+    pub status: &'static str,
+}
+
+/// Метка: SMTP-сервер принял письмо (повторно оно не отправляется).
+pub const SENT_MARK: &str = "atomsent";
+/// Метка: результат отправки неизвестен (обрыв связи после начала передачи).
+pub const UNKNOWN_MARK: &str = "atomunknown";
+/// Захват старше этого срока означает, что отправка оборвалась на полпути.
+const CLAIM_TTL_SECS: i64 = 600;
+
+/// Время захвата из метки `atomclaim<секунды>…`.
+fn claim_time(keyword: &str) -> Option<i64> {
+    keyword.get("atomclaim".len()..)?.chars().take(10).collect::<String>().parse().ok()
+}
+
+/// Состояние отложенного письма по его меткам (в нижнем регистре).
+pub fn send_status(keywords: &[String], now: i64) -> &'static str {
+    if keywords.iter().any(|k| k == SENT_MARK) {
+        return "sent";
+    }
+    if keywords.iter().any(|k| k == UNKNOWN_MARK) {
+        return "unknown";
+    }
+    let claims: Vec<i64> = keywords.iter().filter(|k| k.starts_with("atomclaim")).map(|k| claim_time(k).unwrap_or(0)).collect();
+    if claims.is_empty() {
+        "pending"
+    } else if claims.iter().any(|&t| t >= now - CLAIM_TTL_SECS) {
+        "sending"
+    } else {
+        // Захват остался, а письмо не отправлено и не освобождено: программа
+        // прервалась во время отправки — ушло ли письмо, неизвестно.
+        "unknown"
+    }
+}
+
+fn custom_keywords(f: &Fetch) -> Vec<String> {
+    f.flags()
+        .filter_map(|x| match x {
+            Flag::Custom(k) => Some(k.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Письма в «Черновиках», ожидающие отложенной отправки.
@@ -1298,11 +1348,12 @@ pub async fn scheduled(conn: &mut Connection) -> Result<Vec<Scheduled>> {
     }
     let fetches: Vec<Fetch> = conn
         .session
-        .uid_fetch(uid_set(&uids), format!("(UID BODY.PEEK[HEADER.FIELDS ({SEND_AT_HEADER} SUBJECT TO)])"))
+        .uid_fetch(uid_set(&uids), format!("(UID FLAGS BODY.PEEK[HEADER.FIELDS ({SEND_AT_HEADER} SUBJECT TO)])"))
         .await?
         .try_collect()
         .await?;
     let parser = MessageParser::default();
+    let now = chrono::Utc::now().timestamp();
     let mut out: Vec<Scheduled> = fetches
         .iter()
         .filter_map(|f| {
@@ -1316,6 +1367,7 @@ pub async fn scheduled(conn: &mut Connection) -> Result<Vec<Scheduled>> {
                 send_at,
                 subject: msg.subject().unwrap_or_default().to_string(),
                 to: addresses(msg.to()),
+                status: send_status(&custom_keywords(f), now),
             })
         })
         .collect();
@@ -1342,19 +1394,44 @@ pub async fn claim(conn: &mut Connection, folder: &str, uid: u32, token: &str) -
     if f.flags().any(|x| matches!(x, Flag::Deleted)) {
         return Ok(false);
     }
-    // Метка начинается со времени захвата: «зависшие» метки (копия программы
-    // упала во время отправки) старше 10 минут не учитываются.
-    let fresh_after = chrono::Utc::now().timestamp() - 600;
-    let mut claims: Vec<String> = f
+    let keywords = custom_keywords(f);
+    drop(fetches);
+    let own = format!("atomclaim{token}").to_ascii_lowercase();
+    // Уже отправлено или результат неизвестен — второй раз не отправляем. Метка
+    // начинается со времени захвата: чужой «зависший» захват (старше 10 минут)
+    // означает прерванную отправку — такое письмо тоже не отправляется заново
+    // автоматически (его состояние «неизвестно», решает пользователь).
+    let fresh_after = chrono::Utc::now().timestamp() - CLAIM_TTL_SECS;
+    let settled = keywords.iter().any(|k| k == SENT_MARK || k == UNKNOWN_MARK);
+    let interrupted = keywords.iter().any(|k| k.starts_with("atomclaim") && *k != own && claim_time(k).unwrap_or(0) < fresh_after);
+    if settled || interrupted {
+        let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("-FLAGS.SILENT (atomclaim{token})")).await?.try_collect().await?;
+        return Ok(false);
+    }
+    let mut claims: Vec<String> = keywords.into_iter().filter(|k| k.starts_with("atomclaim")).collect();
+    claims.sort();
+    Ok(claims.first().is_some_and(|c| *c == own))
+}
+
+/// Пользователь сам решил отправить письмо с неизвестным результатом ещё раз:
+/// снимаются метка «неизвестно» и все захваты.
+pub async fn clear_send_marks(conn: &mut Connection, folder: &str, uid: u32) -> Result<()> {
+    conn.ensure_selected(folder).await?;
+    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
+    let Some(f) = fetches.iter().find(|f| f.uid == Some(uid)) else { return Err(AppError::NotFound) };
+    let marks: Vec<String> = f
         .flags()
         .filter_map(|x| match x {
-            Flag::Custom(k) if k.to_ascii_lowercase().starts_with("atomclaim") => Some(k.to_ascii_lowercase()),
+            Flag::Custom(k) if k.eq_ignore_ascii_case(UNKNOWN_MARK) || k.to_ascii_lowercase().starts_with("atomclaim") => Some(k.to_string()),
             _ => None,
         })
-        .filter(|k| k["atomclaim".len()..].chars().take(10).collect::<String>().parse::<i64>().is_ok_and(|ts| ts >= fresh_after))
         .collect();
-    claims.sort();
-    Ok(claims.first().is_some_and(|c| *c == format!("atomclaim{token}").to_ascii_lowercase()))
+    drop(fetches);
+    if marks.is_empty() {
+        return Ok(());
+    }
+    let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("-FLAGS.SILENT ({})", marks.join(" "))).await?.try_collect().await?;
+    Ok(())
 }
 
 /// Удалить письмо из папки (после отправки отложенного) — только это письмо.
@@ -1976,6 +2053,23 @@ mod tests {
         assert_eq!(tree[11].role, FolderRole::Sent);
         assert!(tree[0].has_children && tree[4].has_children && !tree[2].has_children);
         assert_eq!(tree[1].parent.as_deref(), Some("INBOX"));
+    }
+
+    #[test]
+    fn scheduled_send_status_never_resends_unclear_mail() {
+        let now = 1_800_000_000;
+        let kw = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(send_status(&kw(&[]), now), "pending");
+        assert_eq!(send_status(&kw(&["$label1", "important"]), now), "pending");
+        // Свежий захват — отправляется прямо сейчас (другой копией программы).
+        assert_eq!(send_status(&kw(&[&format!("atomclaim{}auto1a2b3c4d", now - 30)]), now), "sending");
+        // Захват старше 10 минут: отправка прервалась — результат неизвестен, автоповтора нет.
+        assert_eq!(send_status(&kw(&[&format!("atomclaim{}auto1a2b3c4d", now - 3600)]), now), "unknown");
+        assert_eq!(send_status(&kw(&["atomclaimмусор"]), now), "unknown");
+        assert_eq!(send_status(&kw(&[UNKNOWN_MARK]), now), "unknown");
+        // «Отправлено» важнее всего остального: письмо больше не уходит.
+        assert_eq!(send_status(&kw(&[UNKNOWN_MARK, SENT_MARK, &format!("atomclaim{now}x")]), now), "sent");
+        assert!(valid_keyword(SENT_MARK) && valid_keyword(UNKNOWN_MARK));
     }
 
     #[test]

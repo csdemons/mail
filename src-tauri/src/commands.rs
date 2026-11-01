@@ -683,14 +683,24 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
     }
     // «Выйти и забыть пароль» забывает и подключение к Nextcloud: пароль приложения
     // отзывается на сервере и удаляется из системного хранилища.
+    // Отзывается Nextcloud именно этой учётной записи (из её настроек), а не то,
+    // что лежит в общем состоянии: оно могло остаться от другой учётной записи.
     *state.nc_flow.lock().await = None;
-    if let Some((creds, uid)) = state.nc.lock().await.take() {
-        if let Ok(client) = nextcloud::Nc::new(creds.clone(), &uid) {
-            client.revoke().await;
+    let current_nc = state.nc.lock().await.take();
+    let leaving = account
+        .as_deref()
+        .and_then(|k| settings::load_accounts(&app).into_iter().find(|a| settings::account_key(a) == k))
+        .or_else(|| settings::load(&app).filter(|s| account.as_deref().is_none_or(|k| settings::account_key(s) == k)));
+    if let Some(s) = &leaving {
+        let same = |c: &nextcloud::NcCreds| nextcloud::normalize_base(&s.nextcloud_url).is_ok_and(|b| b == c.base) && c.login == s.nextcloud_login;
+        if let Some((creds, uid)) = load_nc(s).or_else(|| current_nc.filter(|(c, _)| same(c))) {
+            if let Ok(client) = nextcloud::Nc::new(creds.clone(), &uid) {
+                client.revoke().await;
+            }
+            settings::nc_forget_password(creds.base.as_str(), &creds.login);
         }
-        settings::nc_forget_password(creds.base.as_str(), &creds.login);
     }
-    if let Some(mut s) = settings::load(&app) {
+    if let Some(mut s) = leaving {
         settings::forget_password(&s);
         if !s.nextcloud_login.is_empty() {
             if let Ok(base) = nextcloud::normalize_base(&s.nextcloud_url) {
@@ -1060,10 +1070,35 @@ async fn deliver(state: &AppState, profile: &Settings, creds: &Credentials, raw:
         Some(m) => smtp::send(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, m).await?,
         None => smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, raw).await?,
     }
-    match with_conn!(once state, c => imap::append_sent(c, raw)) {
+    match append_sent_as(state, creds, raw).await {
         Ok(folder) => Ok(SendResult { saved_to: Some(folder), warning: None }),
         Err(e) => Ok(SendResult { saved_to: None, warning: Some(format!("Письмо отправлено, но копия не сохранена в «Отправленные»: {e}")) }),
     }
+}
+
+/// Копия в «Отправленные» — строго в ящик той учётной записи, от которой ушло
+/// письмо. Общее соединение используется, только если оно открыто для неё же;
+/// если за время отправки пользователь переключился на другую учётную запись
+/// (или вышел), копия сохраняется через отдельное соединение отправителя.
+async fn append_sent_as(state: &AppState, creds: &Credentials, raw: &[u8]) -> Result<String> {
+    {
+        let mut guard = state.conn.lock().await;
+        if let Some(c) = guard.as_mut().filter(|c| c.is_account(creds)) {
+            match tokio::time::timeout(OP_TIMEOUT, imap::append_sent(c, raw)).await {
+                Ok(Err(e)) if e.is_connection() => *guard = None,
+                Ok(r) => return r,
+                // APPEND мог дойти до сервера — повтор дал бы вторую копию.
+                Err(_) => {
+                    *guard = None;
+                    return Err(AppError::Timeout);
+                }
+            }
+        }
+    }
+    let mut c = tokio::time::timeout(Duration::from_secs(20), imap::connect(creds)).await.map_err(|_| AppError::Timeout)??;
+    let result = tokio::time::timeout(OP_TIMEOUT, imap::append_sent(&mut c, raw)).await.unwrap_or(Err(AppError::Timeout));
+    c.logout().await;
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1249,8 +1284,15 @@ pub async fn scheduled_list(state: State<'_, AppState>) -> Result<Vec<imap::Sche
 
 /// Отправить запланированное письмо сейчас.
 #[tauri::command]
-pub async fn scheduled_send_now(state: State<'_, AppState>, folder: String, uid: u32) -> Result<SendResult> {
-    send_scheduled(&state, &folder, uid, "manual").await?.ok_or_else(|| AppError::Other("Письмо уже отправляется с другого компьютера".into()))
+pub async fn scheduled_send_now(state: State<'_, AppState>, folder: String, uid: u32, resend: Option<bool>) -> Result<SendResult> {
+    let generation = state.session.load(Ordering::SeqCst);
+    if resend == Some(true) {
+        // Пользователь проверил, что письмо не дошло, и отправляет его ещё раз.
+        with_conn!(state, c => imap::clear_send_marks(c, &folder, uid))?;
+    }
+    send_scheduled(&state, generation, &folder, uid, "manual")
+        .await?
+        .ok_or_else(|| AppError::Other("Письмо уже отправлено, отправляется с другого компьютера или его результат неизвестен — обновите список".into()))
 }
 
 /// Отменить отложенную отправку: письмо остаётся обычным черновиком.
@@ -1265,10 +1307,19 @@ pub async fn scheduled_cancel(state: State<'_, AppState>, folder: String, uid: u
 }
 
 /// Отправка одного запланированного письма (с захватом, чтобы не отправить дважды).
-/// `None` — письмо отправляет другая копия программы.
-async fn send_scheduled(state: &AppState, folder: &str, uid: u32, tag: &str) -> Result<Option<SendResult>> {
+/// `None` — письмо отправляет другая копия программы, оно уже отправлено или его
+/// результат неизвестен. Письмо отправляется от той учётной записи, сеанс которой
+/// был активен при запуске (`generation`): после переключения — не отправляется.
+///
+/// Состояния (метки IMAP): захват `atomclaim…` → SMTP принял → `atomsent` → удаление
+/// из «Черновиков». Обрыв связи во время передачи → `atomunknown`: такое письмо
+/// автоматически не повторяется — получатель мог его уже получить.
+async fn send_scheduled(state: &AppState, generation: u64, folder: &str, uid: u32, tag: &str) -> Result<Option<SendResult>> {
     let creds = state.creds.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
     let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
+    if state.session.load(Ordering::SeqCst) != generation {
+        return Ok(None);
+    }
     let token = format!("{}{}{}", chrono::Utc::now().timestamp(), tag.chars().take(4).collect::<String>(), &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let mut conn = imap::connect(&creds).await?;
     let result = async {
@@ -1278,12 +1329,27 @@ async fn send_scheduled(state: &AppState, folder: &str, uid: u32, tag: &str) -> 
         let raw = imap::raw_of(&mut conn, folder, uid).await?;
         let final_raw = smtp::finalize_scheduled(&raw, imap::SEND_AT_HEADER);
         match deliver(state, &profile, &creds, &final_raw, None).await {
-            Ok(r) => {
-                imap::remove_message(&mut conn, folder, uid).await?;
+            Ok(mut r) => {
+                // Сначала отметка «отправлено»: даже если удалить черновик не выйдет,
+                // письмо больше не уйдёт повторно.
+                let marked = imap::set_keyword(&mut conn, folder, &[uid], imap::SENT_MARK, true).await;
+                if let Err(e) = imap::remove_message(&mut conn, folder, uid).await {
+                    log::warn!("scheduled mail sent but draft not removed: {e}");
+                    if marked.is_err() {
+                        log::warn!("sent mark not set either; claim keeps it from being resent");
+                    }
+                    let note = "Письмо отправлено, но осталось в «Черновиках» — повторно оно не уйдёт, черновик уберётся позже.".to_string();
+                    r.warning = Some(r.warning.map_or(note.clone(), |w| format!("{w}\n{note}")));
+                }
                 Ok(Some(r))
             }
+            Err(e @ AppError::DeliveryUnknown(_)) => {
+                let _ = imap::set_keyword(&mut conn, folder, &[uid], imap::UNKNOWN_MARK, true).await;
+                Err(e)
+            }
             Err(e) => {
-                // Не ушло — снимаем свою метку захвата, попробуем в следующий раз.
+                // Сервер отказал или недоступен — письмо точно не ушло: снимаем
+                // свою метку захвата, попробуем в следующий раз.
                 let _ = imap::set_keyword(&mut conn, folder, &[uid], &format!("atomclaim{token}"), false).await;
                 Err(e)
             }
@@ -1292,6 +1358,11 @@ async fn send_scheduled(state: &AppState, folder: &str, uid: u32, tag: &str) -> 
     .await;
     conn.logout().await;
     result
+}
+
+/// Убрать из «Черновиков» уже отправленное письмо (если в прошлый раз не вышло).
+async fn cleanup_sent(state: &AppState, folder: &str, uid: u32) -> Result<()> {
+    with_conn!(state, c => imap::remove_message(c, folder, uid))
 }
 
 async fn scheduled_now(state: &AppState) -> Result<Vec<imap::Scheduled>> {
@@ -1324,15 +1395,29 @@ async fn run_scheduler(app: AppHandle, generation: u64) {
         };
         let now = chrono::Utc::now();
         for s in list {
-            let due = chrono::DateTime::parse_from_rfc3339(&s.send_at).is_ok_and(|t| t <= now);
-            if !due || state.session.load(Ordering::SeqCst) != generation {
+            if state.session.load(Ordering::SeqCst) != generation {
+                break;
+            }
+            if s.status == "sent" {
+                if let Err(e) = cleanup_sent(&state, &s.folder, s.uid).await {
+                    log::warn!("sent scheduled mail not removed from drafts: {e}");
+                }
                 continue;
             }
-            match send_scheduled(&state, &s.folder, s.uid, "auto").await {
+            let due = chrono::DateTime::parse_from_rfc3339(&s.send_at).is_ok_and(|t| t <= now);
+            // «Неизвестно» и «отправляется» — не трогаем: решает пользователь или другая копия.
+            if !due || s.status != "pending" {
+                continue;
+            }
+            match send_scheduled(&state, generation, &s.folder, s.uid, "auto").await {
                 Ok(Some(_)) => {
                     let _ = host::notify(&app, "Отложенное письмо отправлено", if s.subject.is_empty() { "(без темы)" } else { &s.subject });
                 }
                 Ok(None) => {}
+                Err(e @ AppError::DeliveryUnknown(_)) => {
+                    log::warn!("scheduled send outcome unknown: {e}");
+                    let _ = host::notify(&app, "Отложенное письмо: результат неизвестен", &format!("{}: проверьте в «Запланированных» — повторно автоматически не отправляется", s.subject));
+                }
                 Err(e) => {
                     log::warn!("scheduled send failed: {e}");
                     let _ = host::notify(&app, "Отложенное письмо не отправлено", &format!("{}: {e}", s.subject));
@@ -2370,13 +2455,24 @@ pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> 
     }
     let profile = state.profile.lock().await.clone().ok_or(AppError::NotLoggedIn)?;
     host::close_message_windows(&app);
-    close_store(&state).await;
-    state.session.fetch_add(1, Ordering::SeqCst);
-    state.jobs.cancel_all();
+    deactivate_session(&state).await;
     drop_others(&state).await;
     *state.pending.lock().await = Some(Pending { creds, profile, remember: None });
+    Ok(())
+}
+
+/// Отключить всё, что принадлежит текущему сеансу почты: хранилище, фоновые
+/// задачи, соединения IMAP и SOGo, Nextcloud, календари, выбранные файлы.
+/// Сохранённые пароли и список учётных записей не меняются. Используется при
+/// блокировке и переходе на учётную запись с защитой кодом — ничего от прежней
+/// учётной записи не остаётся в памяти до разблокировки следующей.
+async fn deactivate_session(state: &AppState) {
+    close_store(state).await;
+    state.session.fetch_add(1, Ordering::SeqCst);
+    state.jobs.cancel_all();
     *state.creds.lock().await = None;
     *state.nc.lock().await = None;
+    *state.nc_flow.lock().await = None;
     *state.calendars.lock().await = None;
     *state.books.lock().await = None;
     state.picked.lock().await.clear();
@@ -2386,7 +2482,6 @@ pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> 
     if let Some(conn) = state.conn.lock().await.take() {
         conn.logout().await;
     }
-    Ok(())
 }
 
 /// Разблокировать кодом TOTP (или резервным) и подключить почту.
@@ -3503,12 +3598,9 @@ pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: Str
     *state.totp_setup.lock().await = None;
     if totp::load(&key).is_some() {
         host::close_message_windows(&app);
-        close_store(&state).await;
-        state.session.fetch_add(1, Ordering::SeqCst);
-        *state.creds.lock().await = None;
-        if let Some(c) = state.conn.lock().await.take() {
-            c.logout().await;
-        }
+        deactivate_session(&state).await;
+        // Профиль — уже новой учётной записи (она ждёт кода), не прежней.
+        *state.profile.lock().await = Some(s.clone());
         settings::save(&app, &s)?;
         *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: None });
         return Ok(LoginResult { account: Account { locked: true, ..account_of(&s) }, warning: None });

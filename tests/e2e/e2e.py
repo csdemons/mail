@@ -1405,6 +1405,26 @@ try:
     W(d, 20).until(lambda d: 'E2E отложенное' not in subjects(drafts[0]))
     assert len(sent_with('E2E отложенное')) == 1
     ok('scheduled mail sent on time once, removed from Drafts, service header stripped')
+    # Связь оборвалась после передачи письма: результат неизвестен — повторно само не уходит.
+    compose('colleague@nrcki.ru', 'E2E отложенное обрыв [drop]', 'Связь оборвётся после передачи')
+    d.find_element(By.CSS_SELECTOR, '.send-more').click()
+    pop = wait(d, '.schedule-pop')
+    set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 100)))
+    [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Запланировать' in b.text][0].click()
+    W(d, 180).until(lambda d: sent_with('E2E отложенное обрыв [drop]'))
+    W(d, 30).until(lambda d: [x for x in inv('scheduled_list')['ok'] if 'обрыв' in x['subject'] and x['status'] == 'unknown'])
+    time.sleep(20)  # несколько проходов планировщика (раз в 5 с в тестах)
+    assert len(sent_with('E2E отложенное обрыв [drop]')) == 1, 'unknown-result mail was resent automatically'
+    d.find_element(By.CSS_SELECTOR, '.scheduled-link').click()
+    modal = wait(d, '.scheduled-modal')
+    item = [i for i in modal.find_elements(By.CSS_SELECTOR, '.scheduled-item') if 'обрыв' in i.get_attribute('textContent')][0]
+    assert 'Неизвестно, дошло ли письмо' in item.get_attribute('textContent'), item.get_attribute('textContent')
+    d.save_screenshot(f'{OUT}/46a-scheduled-unknown.png')
+    [b for b in item.find_elements(By.TAG_NAME, 'button') if b.text == 'Отменить'][0].click()
+    W(d, 15).until(lambda d: not [x for x in inv('scheduled_list')['ok'] if 'обрыв' in x['subject']])
+    d.find_element(By.CSS_SELECTOR, '.scheduled-modal button[aria-label="Закрыть"]').click()
+    assert len(sent_with('E2E отложенное обрыв [drop]')) == 1
+    ok('scheduled mail: connection dropped after sending -> «result unknown», never resent automatically')
 
     # Уведомление о прочтении: запрос во входящем письме.
     msg = EmailMessage(); msg['From'] = 'Начальник <boss@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = 'E2E MDN request'
@@ -1854,6 +1874,63 @@ try:
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
     W(d, 10).until(lambda d: not [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Все входящие' in f.get_attribute('textContent')])
     ok('second account removed: list, keyring password and unified inbox gone')
+
+    # Письмо учётной записи A уходит, а пользователь в это время переключается на B:
+    # копия должна попасть только в «Отправленные» A.
+    def find_subject(user, password, subj):
+        ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+        M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login(user, password)
+        hits = []
+        import re as _re
+        for line in M.list()[1]:
+            m = _re.search(r'\) (?:"."|NIL) (.*)$', line.decode())
+            if not m or '\\Noselect' in line.decode():
+                continue
+            name = m.group(1)
+            try:
+                typ = M.select(name, readonly=True)[0]
+            except imaplib.IMAP4.error:
+                continue
+            if typ == 'OK':
+                _, ids = M.search(None, 'SUBJECT', f'"{subj}"')
+                if ids[0].split():
+                    hits.append(_re.sub(r'&([^-]*)-', lambda g: '&' if not g.group(1) else ('+' + g.group(1).replace(',', '/') + '-').encode().decode('utf-7'), name.strip('"')))
+        M.logout(); return hits
+    r = inv('account_add', {'host': 'localhost', 'port': 10993, 'username': 'second@rrcki.ru', 'password': 'Secret-456', 'remember': True,
+                            'smtpHost': 'localhost', 'smtpPort': 465, 'davUrl': None})
+    assert 'ok' in r, r
+    d.execute_script("""window.__send = null; window.__TAURI_INTERNALS__.invoke('send_message', {to: 'colleague@nrcki.ru', cc: '', subject: 'E2E isolation [slow]',
+        body: 'from test', html: null, inReplyTo: null, references: null, attachments: [], readReceipt: null, delaySecs: 0, sendAt: null})
+        .then((r) => { window.__send = {ok: r} }, (e) => { window.__send = {err: JSON.stringify(e)} })""")
+    time.sleep(2.5)  # SMTP-сервер «думает» 6 секунд
+    assert 'ok' in inv('account_switch', {'key': 'second@rrcki.ru@localhost'})
+    res = W(d, 40).until(lambda d: d.execute_script('return window.__send'))
+    assert 'ok' in res, res
+    sent_a = find_subject('test@rrcki.ru', 'Secret-123', 'E2E isolation')
+    assert sent_a and all('sent' in x.lower() or 'отправ' in x.lower() for x in sent_a), sent_a
+    assert not find_subject('second@rrcki.ru', 'Secret-456', 'E2E isolation'), 'copy saved into the other account'
+    ok('sending from A while switching to B: copy goes only to Sent of A')
+
+    # B защищена кодом. Переход A (с Nextcloud) → B и выход с экрана блокировки B
+    # не трогает Nextcloud учётной записи A.
+    def code_now(secret):
+        key = _b64.b32decode(secret + '=' * (-len(secret) % 8))
+        h = _hmac.new(key, _struct.pack('>Q', int(time.time()) // 30), _hashlib.sha1).digest()
+        o = h[19] & 15
+        return '%06d' % ((_struct.unpack('>I', h[o:o + 4])[0] & 0x7fffffff) % 1000000)
+    setup = inv('totp_setup_begin')['ok']
+    assert len(inv('totp_setup_confirm', {'code': code_now(setup['secret'])})['ok']) == 8
+    assert 'ok' in inv('account_switch', {'key': 'test@rrcki.ru@localhost'})
+    assert inv('nc_status')['ok']['connected'], 'precondition: Nextcloud of A connected'
+    locked = inv('account_switch', {'key': 'second@rrcki.ru@localhost'})['ok']
+    assert locked['account']['locked'] and locked['account']['username'] == 'second@rrcki.ru', locked
+    assert not inv('nc_status')['ok']['connected'], 'Nextcloud of A still in memory while B is locked'
+    assert 'ok' in inv('logout', {'resetTotp': True})
+    assert nc_mock('GET', '/test/state')['revoked'] is False, 'Nextcloud app password of A revoked by logging out of B'
+    assert 'ok' in inv('account_switch', {'key': 'test@rrcki.ru@localhost'})
+    assert inv('nc_status')['ok']['connected']
+    assert [a['username'] for a in json.load(open(accounts_file))] == ['test@rrcki.ru']
+    ok('switch to a code-protected account clears A (Nextcloud too); logging out of B does not revoke A')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:

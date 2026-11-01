@@ -143,6 +143,8 @@ export interface Scheduled {
   sendAt: string
   subject: string
   to: string[]
+  /** pending — ждёт; sending — отправляется другой копией; unknown — неизвестно, ушло ли; sent — ушло, убирается из «Черновиков». */
+  status: 'pending' | 'sending' | 'unknown' | 'sent'
 }
 
 export interface Category {

@@ -223,11 +223,27 @@ pub async fn send_raw(host: &str, port: u16, user: &str, pass: &str, raw: &[u8])
         return Err(AppError::Other("В письме нет получателей".into()));
     }
     let envelope = lettre::address::Envelope::new(from, to).map_err(|e| AppError::Other(format!("Конверт письма: {e}")))?;
-    transport(host, port, user, pass)?
-        .send_raw(&envelope, raw)
-        .await
-        .map(|_| ())
-        .map_err(|e| smtp_error(host, port, e))
+    let transport = transport(host, port, user, pass)?;
+    // Сначала проверка связи и входа: если сервер недоступен, письмо точно не ушло
+    // и его можно отправить позже.
+    match transport.test_connection().await {
+        Ok(true) => {}
+        Ok(false) => return Err(AppError::Other(format!("SMTP-сервер {host}:{port} недоступен"))),
+        Err(e) => return Err(smtp_error(host, port, e)),
+    }
+    transport.send_raw(&envelope, raw).await.map(|_| ()).map_err(|e| {
+        if definitely_not_sent(&e) {
+            smtp_error(host, port, e)
+        } else {
+            AppError::DeliveryUnknown(e.to_string())
+        }
+    })
+}
+
+/// Сервер ответил отказом (код 4xx/5xx) — письмо точно не принято. Обрыв связи,
+/// таймаут и ошибки TLS во время передачи — результат неизвестен.
+fn definitely_not_sent(e: &lettre::transport::smtp::Error) -> bool {
+    e.is_permanent() || e.is_transient()
 }
 
 /// Убрать служебный заголовок и поставить текущую дату (отправка отложенного письма).
