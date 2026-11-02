@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-forward-attachments"
+description = "Enables the forward_attachments command without any pre-configured scope."
+commands.allow = ["forward_attachments"]
+
+[[permission]]
+identifier = "deny-forward-attachments"
+description = "Denies the forward_attachments command without any pre-configured scope."
+commands.deny = ["forward_attachments"]
