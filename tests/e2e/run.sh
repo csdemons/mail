@@ -3,12 +3,17 @@
 # npx tauri build --debug --no-bundle
 # dbus-run-session -- tests/e2e/run.sh tests/e2e/e2e.py /tmp/shots
 # Xvfb + D-Bus + разблокированный GNOME Keyring + tauri-driver
-export DISPLAY=:99
+# Свой свободный дисплей: Xvfb от прерванного прогона мог остаться на :99,
+# и тогда приложение открылось бы на чужом сервере и упало, когда тот закроется.
+N=99
+while [ -e "/tmp/.X$N-lock" ] || [ -e "/tmp/.X11-unix/X$N" ]; do N=$((N + 1)); done
+export DISPLAY=:$N
 # Приложение должно проверять сертификаты по системному хранилищу, как у пользователей.
 unset SSL_CERT_FILE SSL_CERT_DIR
-Xvfb :99 -screen 0 1600x1000x24 >/dev/null 2>&1 &
+Xvfb :$N -screen 0 1600x1000x24 >/dev/null 2>&1 &
 XV=$!
-sleep 1
+for _ in $(seq 50); do [ -e "/tmp/.X11-unix/X$N" ] && break; sleep 0.1; done
+kill -0 $XV || { echo "Xvfb не запустился на :$N"; exit 1; }
 # Изолированный профиль: тест не трогает настройки и связку ключей пользователя.
 E2E_HOME=$(mktemp -d)
 export XDG_CONFIG_HOME="$E2E_HOME/config" XDG_DATA_HOME="$E2E_HOME/data" XDG_CACHE_HOME="$E2E_HOME/cache"
