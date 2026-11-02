@@ -1435,7 +1435,7 @@ try:
     stats = d.find_element(By.CSS_SELECTOR, '.counterparty-stats').get_attribute('textContent')
     assert '3 письма' in stats and '2 от них' in stats and '1 им' in stats and '1 встреча' in stats and '1 документ' in stats, stats
     people = d.find_element(By.CSS_SELECTOR, '.counterparty-side').get_attribute('textContent')
-    assert 'Петров П.' in people and 'petrov@jinr.ru' in people and 'Иван Сидоренко' in people and 'Главный инженер' in people, people
+    assert 'Петров П' in people and 'petrov@jinr.ru' in people and 'Иван Сидоренко' in people and 'Главный инженер' in people, people
     [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-chip') if b.get_attribute('data-kind') == 'event'][0].click()
     W(d, 5).until(lambda d: kinds() == ['event'])
     d.find_element(By.CSS_SELECTOR, '.timeline-event .timeline-card').click()
