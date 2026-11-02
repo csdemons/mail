@@ -2618,6 +2618,40 @@ pub async fn attach_data(state: State<'_, AppState>, name: String, data: String)
     Ok(PickedFile { id, name: safe, size: bytes.len() as u64 })
 }
 
+/// Пересылка: вложения исходного письма становятся вложениями нового — как
+/// файлы, выбранные в диалоге (в личном временном каталоге, убираются после отправки).
+#[tauri::command]
+pub async fn forward_attachments(state: State<'_, AppState>, folder: String, uid: u32) -> Result<Vec<PickedFile>> {
+    let ctx = state.ctx().await?;
+    let raw = match local_raw(&ctx, &folder, uid).await {
+        Some(r) => r,
+        None => with_ctx!(ctx, c => imap::message_raw(c, &folder, uid))?,
+    };
+    let parts = tokio::task::spawn_blocking(move || imap::attachments_in(&raw)).await.map_err(|e| AppError::Other(e.to_string()))??;
+    let total: u64 = parts.iter().map(|(_, d)| d.len() as u64).sum();
+    if total > MAX_OUTGOING_MB * 1024 * 1024 {
+        return Err(AppError::Other(format!("Вложения письма больше {MAX_OUTGOING_MB} МБ — почтовый сервер их не примет; отправьте их ссылкой Nextcloud")));
+    }
+    let mut out = Vec::new();
+    for (name, data) in parts {
+        let safe = imap::sanitize_filename(&name);
+        let safe = if safe.is_empty() { "file".to_string() } else { safe };
+        // Свой каталог на каждый файл: одинаковые имена не мешают, после отправки
+        // каталог убирается вместе с файлом (`forget_picked`).
+        let dir = crate::updater::private_dir("drop")?;
+        let path = dir.join(&safe);
+        {
+            use std::io::Write as _;
+            let mut f = crate::updater::create_new_file(&path)?;
+            f.write_all(&data)?;
+        }
+        let id = state.next_pick.fetch_add(1, Ordering::Relaxed).to_string();
+        ctx.picked.lock().await.insert(id.clone(), path);
+        out.push(PickedFile { id, name: safe, size: data.len() as u64 });
+    }
+    Ok(out)
+}
+
 /// «Это спам» — в «Спам» с меткой $Junk; «Не спам» — во «Входящие» с меткой $NotJunk
 /// (метки понимают фильтры спама сервера и Thunderbird).
 #[tauri::command]
@@ -5045,6 +5079,7 @@ macro_rules! app_commands {
             crate::commands::offline_queue,
             crate::commands::offline_check,
             crate::commands::offline_resolve,
+            crate::commands::forward_attachments,
             crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,

@@ -11,7 +11,7 @@ import AddressLine from './AddressLine'
 import MdnBar from './MdnBar'
 import { useOutbox } from './sending'
 import { trashFor } from './FolderPicker'
-import { buildDraft, ensureArchive, initials, senderLabel, withSignature } from './mailActions'
+import { buildDraft, ensureArchive, forwardDraft, initials, senderLabel, withSignature } from './mailActions'
 import type { Contact, Draft, Folder, MessageDetail, Settings } from './types'
 
 declare global {
@@ -72,7 +72,11 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
   useEffect(() => { api.signatureGet().then(setSignature).catch(() => undefined) }, [])
   const startDraft = useCallback((mode: 'reply' | 'replyAll' | 'forward') => {
     if (!detail) return
-    setDraft(buildDraft(mode, detail, me, signature))
+    if (mode === 'forward') {
+      void forwardDraft(detail, me, signature).then(({ draft, error }) => { setDraft(draft); if (error) setNotice(error) })
+    } else {
+      setDraft(buildDraft(mode, detail, me, signature))
+    }
     if (contacts.length === 0) api.listContacts().then((r) => setContacts(r.contacts)).catch(() => undefined)
   }, [detail, me, contacts.length, signature])
   const composeTo = useCallback((to: string) => {

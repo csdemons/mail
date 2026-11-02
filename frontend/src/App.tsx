@@ -42,7 +42,7 @@ import { TransferSettings } from './Transfer'
 import { AccountMenu, NO_FILTERS, UNIFIED_ROLES, UnifiedColumn, useAccounts } from './Accounts'
 import { saveView, savedView, type ModuleName, type ViewContext } from './viewContext'
 import TotpSettings, { AUTOLOCK_KEY, loadAutolock } from './TotpSettings'
-import { buildDraft, ensureArchive, withSignature } from './mailActions'
+import { buildDraft, ensureArchive, forwardDraft, withSignature } from './mailActions'
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
 import { appInFront, loadPrefs, notify, savePrefs } from './notifications'
 import type { NotifyPrefs } from './notifications'
@@ -1191,6 +1191,10 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       startDraft({ mode: 'new', to: '', cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null })
       return
     }
+    if (mode === 'forward') {
+      void forwardDraft(detail, account.username, signature).then(({ draft, error }) => { startDraft(draft); if (error) setNotice(error) })
+      return
+    }
     startDraft(buildDraft(mode, detail, account.username, signature))
   }
 
@@ -1202,6 +1206,12 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   async function composeFor(m: MessageSummary, mode: 'reply' | 'replyAll' | 'forward') {
     try {
       const full = detail && messageKey(detail) === messageKey(m) ? detail : await api.getMessage(m.folder, m.uid)
+      if (mode === 'forward') {
+        const { draft, error } = await forwardDraft(full, account.username, signature)
+        startDraft(draft)
+        if (error) setNotice(error)
+        return
+      }
       startDraft(buildDraft(mode, full, account.username, signature))
     } catch (error) {
       setNotice(`Не удалось открыть письмо: ${errorText(error)}`)

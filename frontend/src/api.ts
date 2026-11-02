@@ -50,6 +50,7 @@ export const api = {
   setUnread: (count: number) => invoke<void>('set_unread', { count }),
   discoverServers: (email: string) => invoke<{ imapHost: string; imapPort: number; smtpHost: string; smtpPort: number; username: string; source: string; note: string | null }>('discover_servers', { email }),
   attachData: (name: string, data: string) => invoke<PickedFile>('attach_data', { name, data }),
+  forwardAttachments: (folder: string, uid: number) => invoke<PickedFile[]>('forward_attachments', { folder, uid }),
   markSpam: (folder: string, uids: number[], spam: boolean) => invoke<string>('mark_spam', { folder, uids, spam }),
   unsubscribe: (folder: string, uid: number) => invoke<{ done: boolean; openUrl: string | null; how: string }>('unsubscribe', { folder, uid }),
   snooze: (folder: string, uids: number[], until: string) => invoke<string>('snooze', { folder, uids, until }),

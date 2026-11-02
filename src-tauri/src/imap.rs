@@ -1087,6 +1087,17 @@ pub async fn get_attachment(
     attachment_in(&raw, index)
 }
 
+/// Все вложения исходника письма: имя и содержимое (для пересылки).
+pub fn attachments_in(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    let msg = MessageParser::default().parse(raw).ok_or(AppError::NotFound)?;
+    Ok(msg.attachments().enumerate().map(|(i, part)| (attachment_name(part, i), part.contents().to_vec())).collect())
+}
+
+/// Исходник письма с сервера (папка открывается при необходимости).
+pub async fn message_raw(conn: &mut Connection, folder: &str, uid: u32) -> Result<Vec<u8>> {
+    raw_message(conn, folder, uid).await
+}
+
 /// Вложение из исходника письма (в том числе из локального хранилища).
 pub fn attachment_in(raw: &[u8], index: usize) -> Result<(String, Vec<u8>)> {
     let msg = MessageParser::default().parse(raw).ok_or(AppError::NotFound)?;

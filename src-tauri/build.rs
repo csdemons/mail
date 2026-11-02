@@ -112,6 +112,7 @@ const COMMANDS: &[&str] = &[
             "offline_queue",
             "offline_check",
             "offline_resolve",
+            "forward_attachments",
             "talk_file_data",
         "accounts_list",
         "account_add",

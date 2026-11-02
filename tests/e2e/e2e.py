@@ -1741,6 +1741,26 @@ try:
     def inv(cmd, args=None):
         return d.execute_async_script("const cb = arguments[2]; window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1] || {}).then((r) => cb({ok: r}), (e) => cb({err: JSON.stringify(e)}))", cmd, args)
     rowt = lambda t: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if t in r.get_attribute('textContent')]
+    # пересылка письма с вложениями: вложения исходного письма уходят вместе с ним
+    M = imap()
+    fm = EmailMessage(); fm['From'] = 'Петрова Анна <petrova@nrcki.ru>'; fm['To'] = 'test@rrcki.ru'; fm['Subject'] = 'E2E пересылка'; fm.set_content('Смета во вложении')
+    fm.add_attachment(b'SMETA-DATA-2027', maintype='application', subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename='Смета 2027.xlsx')
+    fm.add_attachment(b'%PDF-1.4 plan', maintype='application', subtype='pdf', filename='plan.pdf')
+    M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), fm.as_bytes()); M.logout()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: rowt('E2E пересылка'))
+    rowt('E2E пересылка')[0].click()
+    W(d, 10).until(lambda d: 'Смета во вложении' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
+    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Переслать"]').click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.compose-files') and 'Смета 2027.xlsx' in d.find_element(By.CSS_SELECTOR, '.compose-files').get_attribute('textContent') and 'plan.pdf' in d.find_element(By.CSS_SELECTOR, '.compose-files').get_attribute('textContent'))
+    assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Fwd: E2E пересылка'
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@nrcki.ru')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    W(d, 20).until(lambda d: sent_with('Fwd: E2E пересылка'))
+    fwd = email.message_from_bytes(subject_of(sent_with('Fwd: E2E пересылка')[0])[1])
+    parts = {str(make_header(decode_header(p.get_filename()))): p.get_payload(decode=True) for p in fwd.walk() if p.get_filename()}
+    assert parts == {'Смета 2027.xlsx': b'SMETA-DATA-2027', 'plan.pdf': b'%PDF-1.4 plan'}, parts
+    ok('forward: attachments of the original mail are attached and sent')
     M = imap()
     for n, subj in enumerate(('E2E без сети флажок', 'E2E без сети удалить', 'E2E без сети конфликт')):
         m = EmailMessage(); m['From'] = 'Робот <robot@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj; m['Message-ID'] = f'<offline-{n}-{int(time.time())}@e2e>'; m.set_content(f'Текст: {subj}')

@@ -1,4 +1,4 @@
-import { api, formatFullDate } from './api'
+import { api, errorText, formatFullDate } from './api'
 import { sharedMailboxOf } from './FolderPicker'
 import type { Draft, Folder, MessageDetail, MessageSummary } from './types'
 
@@ -14,6 +14,18 @@ export function initials(value: string) {
 export function addressOf(entry: string): string {
   const m = entry.match(/<([^>]+)>/)
   return (m ? m[1] : entry).trim().toLowerCase()
+}
+
+/** Черновик пересылки вместе с вложениями исходного письма. Если вложения
+ *  приложить не удалось, черновик всё равно открывается — с объяснением в `error`. */
+export async function forwardDraft(m: MessageDetail, me: string, signature = ''): Promise<{ draft: Draft; error: string | null }> {
+  const draft = buildDraft('forward', m, me, signature)
+  if (!m.attachments || m.attachments.length === 0) return { draft, error: null }
+  try {
+    return { draft: { ...draft, files: await api.forwardAttachments(m.folder, m.uid) }, error: null }
+  } catch (e) {
+    return { draft, error: `Вложения исходного письма не приложены: ${errorText(e)}` }
+  }
 }
 
 const withPrefix = (prefix: string, subj: string) =>

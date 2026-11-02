@@ -20,6 +20,7 @@
     "allow-list-contacts",
     "allow-search-contacts",
     "allow-attachment-data",
+    "allow-forward-attachments",
     "allow-save-attachment",
     "allow-close-window",
     "allow-message-html-remote",
