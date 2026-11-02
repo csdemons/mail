@@ -1679,6 +1679,8 @@ try:
     ok('categories: set from reader and context menu ($label2/$label3 on server), filter by category')
 
     # Флажок со сроком: срок уже наступил — напоминание.
+    W(d, 10).until(lambda d: row('Отчёт с вложением'))
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'})", row('Отчёт с вложением')[0])
     row('Отчёт с вложением')[0].click()
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Срок"]').click()
     menu_click('Выбрать срок')
