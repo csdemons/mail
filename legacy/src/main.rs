@@ -43,6 +43,8 @@ mod netio;
 mod search;
 #[path = "../../src-tauri/src/rules.rs"]
 mod rules;
+#[path = "../../src-tauri/src/counterparty.rs"]
+mod counterparty;
 #[path = "../../src-tauri/src/totp.rs"]
 mod totp;
 #[path = "../../src-tauri/src/smtp.rs"]

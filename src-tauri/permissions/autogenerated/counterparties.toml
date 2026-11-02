@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-counterparties"
+description = "Enables the counterparties command without any pre-configured scope."
+commands.allow = ["counterparties"]
+
+[[permission]]
+identifier = "deny-counterparties"
+description = "Denies the counterparties command without any pre-configured scope."
+commands.deny = ["counterparties"]

@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, Layers, LogOut, Mail, Bookmark, BookmarkPlus, Zap,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen,
+  Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen, Handshake,
 } from 'lucide-react'
 
 import {
@@ -22,6 +22,7 @@ import NcConnect from './NcConnect'
 import FilesView from './FilesView'
 import type { NcStatus } from './types'
 import ContactsView from './ContactsView'
+import CounterpartyView from './CounterpartyView'
 import CalendarView from './CalendarView'
 import MailFilters from './MailFilters'
 import ContextMenu from './ContextMenu'
@@ -38,7 +39,7 @@ import { useOutbox } from './sending'
 import { CategoriesSettings, DesktopSettings, OfflineSettings, SendingSettings, SignatureSettings } from './MailSettings'
 import { TransferSettings } from './Transfer'
 import { AccountMenu, NO_FILTERS, UNIFIED_ROLES, UnifiedColumn, useAccounts } from './Accounts'
-import { saveView, savedView, type ViewContext } from './viewContext'
+import { saveView, savedView, type ModuleName, type ViewContext } from './viewContext'
 import TotpSettings, { AUTOLOCK_KEY, loadAutolock } from './TotpSettings'
 import { buildDraft, ensureArchive, withSignature } from './mailActions'
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
@@ -256,7 +257,10 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const [diagText, setDiagText] = useState<string | null>(null)
   const [diagBusy, setDiagBusy] = useState(false)
 
-  const [module, setModule] = useState<'mail' | 'calendar' | 'contacts' | 'deck' | 'chat' | 'files'>(saved?.module ?? 'mail')
+  const [module, setModule] = useState<ModuleName>(saved?.module ?? 'mail')
+  // История взаимодействия: открытая организация (домен адреса).
+  const [cpDomain, setCpDomain] = useState<string | null>(null)
+  const openHistory = useCallback((domain: string) => { setCpDomain(domain); setModule('counterparty') }, [])
   const [ncStatus, setNcStatus] = useState<NcStatus | null>(null)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -1334,6 +1338,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           <button className={`module ${module === 'mail' ? 'active' : ''}`} onClick={() => setModule('mail')}><Mail /><span>Почта</span></button>
           <button className={`module ${module === 'calendar' ? 'active' : ''}`} onClick={() => setModule('calendar')}><CalendarDays /><span>Календарь</span></button>
           <button className={`module ${module === 'contacts' ? 'active' : ''}`} onClick={() => setModule('contacts')}><ContactRound /><span>Контакты</span></button>
+          <button className={`module ${module === 'counterparty' ? 'active' : ''}`} onClick={() => setModule('counterparty')} title="История взаимодействия с организациями"><Handshake /><span>Контрагенты</span></button>
           <button className={`module ${module === 'deck' ? 'active' : ''}`} onClick={() => setModule('deck')}><FileText /><span>Задачи</span></button>
           <button className={`module ${module === 'chat' ? 'active' : ''}`} onClick={() => setModule('chat')}><MessageCircle /><span>Чат</span>{chatUnread > 0 && <b className="rail-badge">{chatUnread}</b>}</button>
           <button className={`module ${module === 'files' ? 'active' : ''}`} onClick={() => setModule('files')}><Cloud /><span>Файлы</span></button>
@@ -1341,6 +1346,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         </nav>
 
         {module === 'calendar' && <CalendarView onNotice={setNotice} />}
+        {module === 'counterparty' && <CounterpartyView domain={cpDomain} onDomain={setCpDomain} onCompose={composeTo} onNotice={setNotice} />}
         {(module === 'deck' || module === 'chat' || module === 'files') && ncStatus && !ncStatus.connected && (
           <div className="module-view nc-gate"><NcConnect status={ncStatus} onChange={setNcStatus} /></div>
         )}
@@ -1649,9 +1655,9 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <div className="sender-block">
               <div className="sender-avatar sender-avatar-large">{initials(senderLabel(detail))}</div>
               <div className="sender-details">
-                <span className="sender-line"><AddressLine strong entries={[detail.fromName ? `${detail.fromName} <${detail.fromAddress}>` : detail.fromAddress]} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>
-                {detail.to.length > 0 && <span>Кому: <AddressLine entries={detail.to} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>}
-                {detail.cc.length > 0 && <span>Копия: <AddressLine entries={detail.cc} onCompose={composeTo} onSearch={setQuery} onNotice={setNotice} /></span>}
+                <span className="sender-line"><AddressLine strong entries={[detail.fromName ? `${detail.fromName} <${detail.fromAddress}>` : detail.fromAddress]} onCompose={composeTo} onSearch={setQuery} onHistory={openHistory} onNotice={setNotice} /></span>
+                {detail.to.length > 0 && <span>Кому: <AddressLine entries={detail.to} onCompose={composeTo} onSearch={setQuery} onHistory={openHistory} onNotice={setNotice} /></span>}
+                {detail.cc.length > 0 && <span>Копия: <AddressLine entries={detail.cc} onCompose={composeTo} onSearch={setQuery} onHistory={openHistory} onNotice={setNotice} /></span>}
                 {detail.unsubscribe && <span className="unsub-bar">Это рассылка · <button className="text-button" onClick={() => void doUnsubscribe(detail)}>Отписаться</button></span>}
                 <small>{formatFullDate(detail.date)}</small>
               </div>

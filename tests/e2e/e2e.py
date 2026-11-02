@@ -1,4 +1,4 @@
-import faulthandler, json, imaplib, ssl, subprocess, sys, time, os, glob, email
+import faulthandler, json, imaplib, ssl, subprocess, sys, time, os, glob, email, email.utils
 from email.header import decode_header, make_header
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -1387,6 +1387,106 @@ try:
     W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.editor-modal'))
     W(d, 10).until(lambda d: any('yushkov_do@nrcki.ru' in c['emails'] for c in (inv('list_contacts').get('ok') or {}).get('contacts', [])))
     ok('sender address: copy and add to contacts (prefilled)')
+
+    # история взаимодействия с организацией (домен jinr.ru): письма, вложения, встречи, контакты, договорённости
+    import base64 as _b64m, datetime as _dt, urllib.request as _ur
+    M = imap()
+    for subj, frm, to, folder, files in (
+        ('ОИЯИ: проект договора', 'Петров П. <petrov@jinr.ru>', 'test@rrcki.ru', 'INBOX', ['Договор ОИЯИ.pdf']),
+        ('ОИЯИ: сроки поставки', 'petrov@jinr.ru', 'test@rrcki.ru', 'INBOX', []),
+        ('Re: ОИЯИ: проект договора', 'test@rrcki.ru', 'Петров П. <petrov@jinr.ru>', 'Sent', []),
+        ('ОИЯИ: удалённое', 'petrov@jinr.ru', 'test@rrcki.ru', 'Trash', []),
+    ):
+        m = EmailMessage(); m['From'] = frm; m['To'] = to; m['Subject'] = subj; m['Date'] = email.utils.formatdate(localtime=True); m.set_content('Текст про договор')
+        for f in files:
+            m.add_attachment(b'%PDF-1.4 test', maintype='application', subtype='pdf', filename=f)
+        M.append(folder, None, imaplib.Time2Internaldate(time.time()), m.as_bytes())
+    M.logout()
+    dav_auth = 'Basic ' + _b64m.b64encode(b'test@rrcki.ru:Secret-123').decode()
+    dav_ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    def dav_put(path, body, ctype):
+        r = _ur.Request('https://localhost:5232/test@rrcki.ru/' + path, data=body.encode(), method='PUT', headers={'Authorization': dav_auth, 'Content-Type': ctype})
+        assert _ur.urlopen(r, context=dav_ctx).status in (200, 201, 204)
+    meet = (_dt.date.today() - _dt.timedelta(days=10)).strftime('%Y%m%d')
+    dav_put('work/jinr-meet.ics', f'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:jinr-meet\r\nSUMMARY:Совещание с ОИЯИ\r\nLOCATION:Дубна\r\nDTSTART:{meet}T090000Z\r\nDTEND:{meet}T100000Z\r\nORGANIZER;CN=Юшков:mailto:test@rrcki.ru\r\nATTENDEE;CN=Петров:mailto:petrov@jinr.ru\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n', 'text/calendar; charset=utf-8')
+    dav_put('contacts/jinr-ivan.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:jinr-ivan\r\nFN:Иван Сидоренко\r\nEMAIL:ivan@jinr.ru\r\nORG:ОИЯИ\r\nTITLE:Главный инженер\r\nEND:VCARD\r\n', 'text/vcard; charset=utf-8')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    jinr = lambda: [c for c in (inv('counterparties').get('ok') or []) if c['domain'] == 'jinr.ru']
+    W(d, 90).until(lambda d: jinr() and jinr()[0]['messages'] == 3)
+    c = jinr()[0]
+    assert (c['incoming'], c['outgoing'], c['own']) == (2, 1, False), c
+    own = [x for x in inv('counterparties')['ok'] if x['own']]
+    assert own and own[0]['domain'] == 'rrcki.ru', own
+    ok('counterparties: organizations by address domain from local mail (trash skipped, own domain marked)')
+
+    W(d, 20).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'ОИЯИ: проект договора' in r.get_attribute('textContent') and 'Re:' not in r.get_attribute('textContent')])
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'ОИЯИ: проект договора' in r.get_attribute('textContent') and 'Re:' not in r.get_attribute('textContent')][0].click()
+    W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.sender-line .address-chip').get_attribute('data-address') == 'petrov@jinr.ru')
+    d.find_element(By.CSS_SELECTOR, '.sender-line .address-chip').click()
+    [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if 'История с организацией @jinr.ru' in b.text][0].click()
+    wait(d, '.counterparty-view')
+    W(d, 30).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.timeline-event'))
+    head = d.find_element(By.CSS_SELECTOR, '.counterparty-head').get_attribute('textContent')
+    assert 'ОИЯИ' in head and '@jinr.ru' in head, head
+    kinds = lambda: [li.get_attribute('data-kind') for li in d.find_elements(By.CSS_SELECTOR, '.timeline-item')]
+    assert sorted(kinds()) == ['document', 'event', 'mail', 'mail', 'mail'], kinds()
+    tl = d.find_element(By.CSS_SELECTOR, '.timeline').get_attribute('textContent')
+    assert 'Договор ОИЯИ.pdf' in tl and 'Совещание с ОИЯИ' in tl and 'Re: ОИЯИ: проект договора' in tl and 'удалённое' not in tl, tl
+    stats = d.find_element(By.CSS_SELECTOR, '.counterparty-stats').get_attribute('textContent')
+    assert '3 письма' in stats and '2 от них' in stats and '1 им' in stats and '1 встреча' in stats and '1 документ' in stats, stats
+    people = d.find_element(By.CSS_SELECTOR, '.counterparty-side').get_attribute('textContent')
+    assert 'Петров П.' in people and 'petrov@jinr.ru' in people and 'Иван Сидоренко' in people and 'Главный инженер' in people, people
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-chip') if b.get_attribute('data-kind') == 'event'][0].click()
+    W(d, 5).until(lambda d: kinds() == ['event'])
+    d.find_element(By.CSS_SELECTOR, '.timeline-event .timeline-card').click()
+    W(d, 5).until(lambda d: 'petrov@jinr.ru' in d.find_element(By.CSS_SELECTOR, '.timeline-details').get_attribute('textContent'))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-chip') if b.get_attribute('data-kind') == 'all'][0].click()
+    d.save_screenshot(f'{OUT}/44-counterparty.png')
+    ok('counterparty timeline: mail both ways, attachment as document, meeting with its participants, contacts and people')
+
+    # договорённость из письма: срок прошёл → просрочено; отметка в списке организаций; выполнено
+    mail_item = [li for li in d.find_elements(By.CSS_SELECTOR, '.timeline-item') if li.get_attribute('data-kind') == 'mail' and 'ОИЯИ: сроки поставки' in li.get_attribute('textContent')][0]
+    d.execute_script('arguments[0].scrollIntoView({block: "center"})', mail_item)
+    mail_item.find_element(By.CSS_SELECTOR, 'button[aria-label="Договорённость из письма"]').click()
+    form = wait(d, '.agreement-form')
+    assert 'ОИЯИ: сроки поставки' in form.get_attribute('textContent')
+    set_value(d, form.find_element(By.CSS_SELECTOR, 'textarea'), 'Поставка оборудования до 1 декабря')
+    set_value(d, form.find_element(By.CSS_SELECTOR, 'input[aria-label="Срок выполнения"]'), (_dt.date.today() - _dt.timedelta(days=1)).isoformat())
+    form.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.agreement-row.overdue'))
+    assert 'просрочено' in d.find_element(By.CSS_SELECTOR, '.agreement-row').get_attribute('textContent')
+    assert d.find_elements(By.CSS_SELECTOR, '.timeline-agreement')
+    cp_file = os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/counterparties.json'
+    cp_acc = lambda: [v for k, v in json.load(open(cp_file))['accounts'].items() if k.startswith('test@rrcki.ru')][0]
+    saved = cp_acc()['jinr.ru']['agreements'][0]
+    assert saved['text'] == 'Поставка оборудования до 1 декабря' and saved['subject'] == 'ОИЯИ: сроки поставки' and saved['uid'] and not saved['done'], saved
+    assert os.stat(cp_file).st_mode & 0o077 == 0
+    W(d, 10).until(lambda d: '1' in d.find_element(By.CSS_SELECTOR, '.counterparty-row[data-domain="jinr.ru"]').get_attribute('textContent') and d.find_elements(By.CSS_SELECTOR, '.counterparty-row[data-domain="jinr.ru"] .counterparty-badge'))
+    d.find_element(By.CSS_SELECTOR, '.agreement-row input[type=checkbox]').click()
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.agreement-row.done') and not d.find_elements(By.CSS_SELECTOR, '.counterparty-row[data-domain="jinr.ru"] .counterparty-badge'))
+    assert cp_acc()['jinr.ru']['agreements'][0]['done'] is True
+    ok('agreement from a mail: due date, overdue mark, open count in the list, done; stored privately per account')
+
+    # название и заметка; поиск и на сервере; другой домен вручную
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Изменить название"]').click()
+    set_value(d, wait(d, 'input[aria-label="Название организации"]'), 'Объединённый институт ядерных исследований')
+    d.find_element(By.CSS_SELECTOR, '.counterparty-name-form button[type=submit]').click()
+    W(d, 10).until(lambda d: 'Объединённый институт' in d.find_element(By.CSS_SELECTOR, '.counterparty-row[data-domain="jinr.ru"]').get_attribute('textContent'))
+    note = d.find_element(By.CSS_SELECTOR, 'textarea[aria-label="Заметка об организации"]')
+    set_value(d, note, 'Договор № 17/2026')
+    d.execute_script('arguments[0].dispatchEvent(new FocusEvent("blur")); arguments[0].dispatchEvent(new FocusEvent("focusout", {bubbles: true}))', note)
+    W(d, 10).until(lambda d: cp_acc()['jinr.ru'].get('note') == 'Договор № 17/2026')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.counterparty-actions button') if 'на сервере' in b.text][0].click()
+    W(d, 30).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.counterparty-actions button') if 'Обновить с сервера' in b.text])
+    assert sorted(kinds()).count('mail') == 3, kinds()
+    srch = d.find_element(By.CSS_SELECTOR, 'input[aria-label="Найти организацию"]')
+    set_value(d, srch, 'cern.ch')
+    wait(d, '.counterparty-new').click()
+    W(d, 20).until(lambda d: '@cern.ch' in d.find_element(By.CSS_SELECTOR, '.counterparty-head').get_attribute('textContent') and 'Здесь пока пусто' in d.find_element(By.CSS_SELECTOR, '.counterparty-timeline').get_attribute('textContent'))
+    assert 'err' in inv('counterparty_timeline', {'domain': '../etc', 'server': False}), 'bad domain accepted'
+    ok('counterparty: name and note saved, server search, open any domain by hand; invalid domain refused')
+    d.find_element(By.CSS_SELECTOR, '.module-rail button').click()
+    wait(d, '.message-row')
 
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise

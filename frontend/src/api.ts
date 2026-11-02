@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { DeckActivity, RuleSet,
+import type { Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
@@ -208,6 +208,10 @@ export const api = {
   mailFiltersSave: (filters: SieveFilter[]) => invoke<void>('mail_filters_save', { filters }),
   rulesGet: () => invoke<RuleSet>('rules_get'),
   rulesSave: (set: RuleSet) => invoke<void>('rules_save', { set }),
+  counterparties: () => invoke<Counterparty[]>('counterparties'),
+  counterpartyTimeline: (domain: string, server: boolean, years = 1) =>
+    invoke<CounterpartyTimeline>('counterparty_timeline', { domain, server, years }),
+  counterpartySave: (domain: string, dossier: Dossier) => invoke<void>('counterparty_save', { domain, dossier }),
   diagnostics: (folder: string | null) => invoke<string>('diagnostics', { folder }),
   getMessage: (folder: string, uid: number) =>
     invoke<MessageDetail>('get_message', { folder, uid }),

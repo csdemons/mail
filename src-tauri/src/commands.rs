@@ -877,6 +877,7 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
     if let Some(key) = account {
         if let Ok(dir) = host::config_dir(&app) {
             crate::rules::forget(&dir, &key);
+            crate::counterparty::forget(&dir, &key);
         }
         state.session_passwords.lock().await.remove(&key);
         if let Some(c) = state.others.lock().await.remove(&key) {
@@ -1754,6 +1755,160 @@ async fn rule_action(app: &AppHandle, ctx: &AccountCtx, rule: &str, a: &crate::r
     }
 }
 
+// ---------------------------------------------------------------- контрагенты
+
+/// Папки, письма которых не входят в историю: корзина, спам, черновики.
+fn history_skip(st: &store::Store) -> std::collections::HashSet<String> {
+    st.folders()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| matches!(f.role, imap::FolderRole::Trash | imap::FolderRole::Junk | imap::FolderRole::Drafts))
+        .map(|f| f.id)
+        .collect()
+}
+
+/// Организации, с которыми шла переписка (по письмам на компьютере), и те,
+/// для которых заведено досье.
+#[tauri::command]
+pub async fn counterparties(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<crate::counterparty::Counterparty>> {
+    let ctx = state.ctx().await?;
+    let own = ctx.profile.lock().await.email();
+    let dossiers = crate::counterparty::dossiers(&host::config_dir(&app)?, &ctx.key);
+    let Some(st) = local(&ctx).await else {
+        return Ok(crate::counterparty::list(&[], &own, &dossiers));
+    };
+    tokio::task::spawn_blocking(move || {
+        let skip = history_skip(&st);
+        let msgs = st.select(&skip, |_| true, usize::MAX);
+        crate::counterparty::list(&msgs, &own, &dossiers)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CounterpartyTimeline {
+    domain: String,
+    own: bool,
+    messages: Vec<imap::MessageSummary>,
+    events: Vec<dav::CalEvent>,
+    contacts: Vec<dav::Contact>,
+    people: Vec<crate::counterparty::Person>,
+    dossier: crate::counterparty::Dossier,
+    /// Письма искались и на сервере (в том числе старше хранимых на компьютере).
+    server: bool,
+    /// С какого дня искались встречи (ГГГГ-ММ-ДД).
+    events_from: String,
+    errors: Vec<String>,
+}
+
+/// История взаимодействия с организацией: письма (на компьютере; с `server` —
+/// и на сервере), встречи с её участниками, контакты из адресных книг и досье.
+/// Источник, который не ответил, не мешает остальным — его ошибка в `errors`.
+#[tauri::command]
+pub async fn counterparty_timeline(app: AppHandle, state: State<'_, AppState>, domain: String, server: bool, years: Option<u32>) -> Result<CounterpartyTimeline> {
+    use crate::counterparty as cp;
+    let ctx = state.ctx().await?;
+    let dom = cp::normalize(&domain).ok_or_else(|| AppError::Other(format!("«{domain}» — не домен почтового адреса")))?;
+    let own = cp::domain_of(&ctx.profile.lock().await.email()).is_some_and(|d| d == dom);
+    let dossier = cp::dossier(&host::config_dir(&app)?, &ctx.key, &dom);
+    let mut errors = Vec::new();
+
+    let st = local(&ctx).await;
+    let mut messages = match st.clone() {
+        Some(st) => {
+            let d = dom.clone();
+            tokio::task::spawn_blocking(move || {
+                let skip = history_skip(&st);
+                st.select(&skip, |m| cp::concerns(m, &d), 2000)
+            })
+            .await
+            .map_err(|e| AppError::Other(e.to_string()))?
+        }
+        None => Vec::new(),
+    };
+    // Без хранилища на компьютере письма ищутся только на сервере.
+    let server = server || st.is_none();
+    if server {
+        let q = crate::search::Query { domain: Some(dom.clone()), ..Default::default() };
+        match server_search(&ctx.creds, &q).await {
+            Ok(found) => {
+                let skip = st.as_ref().map(|s| history_skip(s)).unwrap_or_default();
+                for m in found {
+                    if skip.contains(&m.folder) || !cp::concerns(&m, &dom) {
+                        continue;
+                    }
+                    if !messages.iter().any(|x| x.folder == m.folder && x.uid == m.uid) {
+                        messages.push(m);
+                    }
+                }
+            }
+            Err(e) => errors.push(format!("Поиск писем на сервере: {e}")),
+        }
+    }
+    let ts = |m: &imap::MessageSummary| m.date.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map_or(0, |d| d.timestamp());
+    messages.sort_by_key(|m| std::cmp::Reverse(ts(m)));
+
+    // Встречи: за выбранное число лет назад и на 6 месяцев вперёд.
+    let now = chrono::Utc::now();
+    let from = now - chrono::Duration::days(365 * i64::from(years.unwrap_or(1).clamp(1, 10)));
+    let to = now + chrono::Duration::days(183);
+    let events = match tokio::time::timeout(Duration::from_secs(60), fetch_events(&ctx, from, to)).await {
+        Ok(Ok(r)) => {
+            errors.extend(r.errors.into_iter().map(|e| format!("Календарь {e}")));
+            let mut seen = std::collections::HashSet::new();
+            r.events
+                .into_iter()
+                .filter(|e| e.participants.iter().any(|p| cp::in_domain(p, &dom)))
+                .filter(|e| seen.insert(e.id.clone()))
+                .collect()
+        }
+        Ok(Err(e)) => {
+            errors.push(format!("Календарь: {e}"));
+            Vec::new()
+        }
+        Err(_) => {
+            errors.push("Календарь: сервер не ответил за минуту".into());
+            Vec::new()
+        }
+    };
+
+    let contacts = match tokio::time::timeout(Duration::from_secs(30), find_contacts(&ctx, &format!("@{dom}"))).await {
+        Ok(Ok(list)) => list.into_iter().filter(|c| c.emails.iter().any(|e| cp::in_domain(e, &dom))).collect(),
+        Ok(Err(e)) => {
+            errors.push(format!("Контакты: {e}"));
+            Vec::new()
+        }
+        Err(_) => {
+            errors.push("Контакты: сервер не ответил за 30 секунд".into());
+            Vec::new()
+        }
+    };
+
+    let people = cp::people(&messages, &dom);
+    Ok(CounterpartyTimeline {
+        domain: dom,
+        own,
+        messages,
+        events,
+        contacts,
+        people,
+        dossier,
+        server,
+        events_from: from.date_naive().to_string(),
+        errors,
+    })
+}
+
+/// Досье организации: название, заметка, договорённости.
+#[tauri::command]
+pub async fn counterparty_save(app: AppHandle, state: State<'_, AppState>, domain: String, dossier: crate::counterparty::Dossier) -> Result<()> {
+    let ctx = state.ctx().await?;
+    let dom = crate::counterparty::normalize(&domain).ok_or_else(|| AppError::Other(format!("«{domain}» — не домен почтового адреса")))?;
+    crate::counterparty::save(&host::config_dir(&app)?, &ctx.key, &dom, dossier)
+}
+
 /// Правила программы и дополнения к серверным правилам (активная учётная запись).
 #[tauri::command]
 pub async fn rules_get(app: AppHandle, state: State<'_, AppState>) -> Result<crate::rules::RuleSet> {
@@ -2217,11 +2372,15 @@ pub async fn list_contacts(state: State<'_, AppState>) -> Result<ContactsResult>
 #[tauri::command]
 pub async fn search_contacts(state: State<'_, AppState>, query: String) -> Result<Vec<dav::Contact>> {
     let ctx = state.ctx().await?;
+    find_contacts(&ctx, &query).await
+}
+
+async fn find_contacts(ctx: &AccountCtx, query: &str) -> Result<Vec<dav::Contact>> {
     let query = query.trim().to_string();
     if query.chars().count() < 2 {
         return Ok(Vec::new());
     }
-    let (mut client, base) = dav_client(&ctx).await?;
+    let (mut client, base) = dav_client(ctx).await?;
     let cached = ctx.books.lock().await.clone();
     let books = match cached {
         Some(b) => b,
@@ -2255,7 +2414,7 @@ pub async fn search_contacts(state: State<'_, AppState>, query: String) -> Resul
     }
     let is_sogo = books.iter().any(|b| b.url.contains("/SOGo/"));
     if gal_empty && is_sogo {
-        match sogo_search(&ctx, &base, &query).await {
+        match sogo_search(ctx, &base, &query).await {
             Ok(list) => {
                 for mut c in list {
                     let dup = out.iter().any(|o| o.emails.iter().any(|e| c.emails.iter().any(|x| x.eq_ignore_ascii_case(e))));
@@ -2522,7 +2681,11 @@ pub async fn list_events(state: State<'_, AppState>, start: String, end: String)
             .map_err(|e| AppError::Other(format!("Некорректная дата {s}: {e}")))
     };
     let (start, end) = (parse(&start)?, parse(&end)?);
-    let (mut client, base) = dav_client(&ctx).await?;
+    fetch_events(&ctx, start, end).await
+}
+
+async fn fetch_events(ctx: &AccountCtx, start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>) -> Result<EventsResult> {
+    let (mut client, base) = dav_client(ctx).await?;
     let cached = ctx.calendars.lock().await.clone();
     let calendars = match cached {
         Some(c) => c,
@@ -4067,6 +4230,7 @@ pub async fn account_remove(app: AppHandle, state: State<'_, AppState>, key: Str
     state.others_last.lock().await.remove(&key);
     if let Ok(dir) = host::config_dir(&app) {
         crate::rules::forget(&dir, &key);
+        crate::counterparty::forget(&dir, &key);
     }
     if let Some(c) = state.others.lock().await.remove(&key) {
         c.logout().await;
@@ -4358,6 +4522,9 @@ macro_rules! app_commands {
             crate::commands::deck_activity,
             crate::commands::rules_get,
             crate::commands::rules_save,
+            crate::commands::counterparties,
+            crate::commands::counterparty_timeline,
+            crate::commands::counterparty_save,
             crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,

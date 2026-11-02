@@ -529,6 +529,22 @@ impl Store {
         hits.into_iter().take(limit).map(|(_, e)| e.s.clone()).collect()
     }
 
+    /// Письма всех папок, кроме `skip`, подходящие под `keep`; новые сверху.
+    pub fn select(&self, skip: &HashSet<String>, keep: impl Fn(&MessageSummary) -> bool, limit: usize) -> Vec<MessageSummary> {
+        let mut inner = self.lock();
+        self.load_all(&mut inner);
+        let mut hits: Vec<(i64, &Entry)> = inner
+            .index
+            .values()
+            .filter(|i| !skip.contains(&i.folder))
+            .flat_map(|i| i.items.values())
+            .filter(|e| keep(&e.s))
+            .map(|e| (e.timestamp(), e))
+            .collect();
+        hits.sort_by_key(|h| std::cmp::Reverse(h.0));
+        hits.into_iter().take(limit).map(|(_, e)| e.s.clone()).collect()
+    }
+
     pub fn status(&self) -> StoreStatus {
         let mut inner = self.lock();
         self.load_all(&mut inner);

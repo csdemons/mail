@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-counterparty-save"
+description = "Enables the counterparty_save command without any pre-configured scope."
+commands.allow = ["counterparty_save"]
+
+[[permission]]
+identifier = "deny-counterparty-save"
+description = "Denies the counterparty_save command without any pre-configured scope."
+commands.deny = ["counterparty_save"]

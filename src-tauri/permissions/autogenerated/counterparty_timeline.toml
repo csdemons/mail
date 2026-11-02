@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-counterparty-timeline"
+description = "Enables the counterparty_timeline command without any pre-configured scope."
+commands.allow = ["counterparty_timeline"]
+
+[[permission]]
+identifier = "deny-counterparty-timeline"
+description = "Denies the counterparty_timeline command without any pre-configured scope."
+commands.deny = ["counterparty_timeline"]

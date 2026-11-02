@@ -1,6 +1,6 @@
 import type { MailFilter, MessageSummary, UnifiedFilters, UnifiedRole } from './types'
 
-export type ModuleName = 'mail' | 'calendar' | 'contacts' | 'deck' | 'chat' | 'files'
+export type ModuleName = 'mail' | 'calendar' | 'contacts' | 'counterparty' | 'deck' | 'chat' | 'files'
 
 /** Где пользователь был в учётной записи: модуль, папка, письмо, фильтры, прокрутка. */
 export interface ViewContext {

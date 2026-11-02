@@ -598,6 +598,9 @@ pub struct CalEvent {
     pub location: Option<String>,
     pub description: Option<String>,
     pub organizer: Option<String>,
+    /// Адреса организатора и участников (нижний регистр) — для истории контрагента.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participants: Vec<String>,
     /// RFC 3339 (UTC) для событий со временем, YYYY-MM-DD для «весь день».
     pub start: String,
     pub end: String,
@@ -712,6 +715,7 @@ struct RawEvent {
     location: Option<String>,
     description: Option<String>,
     organizer: Option<String>,
+    participants: Vec<String>,
     start: When,
     start_prop: ical::property::Property,
     duration: chrono::Duration,
@@ -774,6 +778,23 @@ fn raw_event(ev: &ical::parser::ical::component::IcalEvent) -> Option<RawEvent> 
                         .to_string()
                 })
         }),
+        participants: ev
+            .properties
+            .iter()
+            .filter(|p| p.name.eq_ignore_ascii_case("ORGANIZER") || p.name.eq_ignore_ascii_case("ATTENDEE"))
+            .filter_map(|p| p.value.as_deref())
+            .map(|v| {
+                let v = v.trim();
+                let v = match v.get(..7) { Some(p) if p.eq_ignore_ascii_case("mailto:") => &v[7..], _ => v };
+                v.trim().to_lowercase()
+            })
+            .filter(|v| v.contains('@'))
+            .fold(Vec::new(), |mut acc, v| {
+                if !acc.contains(&v) {
+                    acc.push(v);
+                }
+                acc
+            }),
         start,
         start_prop,
         duration,
@@ -817,6 +838,7 @@ fn occurrence(
         location: ev.location.clone(),
         description: ev.description.clone(),
         organizer: ev.organizer.clone(),
+        participants: ev.participants.clone(),
         start,
         end,
         all_day,
@@ -1348,6 +1370,11 @@ mod tests {
 
         // Серия с напоминанием и переносом: меняем только текст, время и VALARM не трогаем.
         let series = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:s\r\nSUMMARY:Старое\r\nDTSTART:20261005T070000Z\r\nRRULE:FREQ=WEEKLY\r\nSEQUENCE:3\r\nATTENDEE;CN=Иванов:mailto:ivanov@nrcki.ru\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Напоминание\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:s\r\nRECURRENCE-ID:20261012T070000Z\r\nSUMMARY:Перенос\r\nDTSTART:20261012T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        // Участники встречи — для истории контрагента (адреса без mailto:, без повторов).
+        let with_people = series.replace("SEQUENCE:3\r\n", "SEQUENCE:3\r\nORGANIZER;CN=Петров:MAILTO:Petrov@IHEP.ru\r\nATTENDEE:mailto:petrov@ihep.ru\r\n");
+        let occ = parse_events(&with_people, &cal(), Utc.with_ymd_and_hms(2026, 10, 4, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 10, 6, 0, 0, 0).unwrap(), &Origin::default());
+        assert_eq!(occ[0].participants, ["petrov@ihep.ru", "ivanov@nrcki.ru"]);
         let upd = update_event_ics(series, &EventInput { title: "Новое".into(), location: None, description: None,
             start: "2030-01-01T00:00:00Z".into(), end: "2030-01-01T01:00:00Z".into(), all_day: false }, false).unwrap();
         assert!(upd.contains("SUMMARY:Новое") && upd.contains("SUMMARY:Перенос"));

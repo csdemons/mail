@@ -208,6 +208,8 @@ export interface CalEvent {
   location: string | null
   description: string | null
   organizer: string | null
+  /** Адреса организатора и участников (для истории контрагента) */
+  participants?: string[]
   /** ISO 8601 (UTC) или YYYY-MM-DD для событий на весь день */
   start: string
   end: string
@@ -511,3 +513,40 @@ export type UnifiedRole = 'inbox' | 'sent' | 'drafts' | 'archive' | 'junk' | 'tr
 export type UnifiedMark = 'all' | 'unread' | 'important' | 'flagged' | 'attachments'
 /** Фильтры общей папки: ящик, подразделение (домен адреса), отправитель/получатель, важность. */
 export interface UnifiedFilters { account: string; domain: string; person: string; mark: UnifiedMark }
+
+/** Организация-контрагент (по домену адреса), см. counterparty.rs. */
+export interface Counterparty {
+  domain: string
+  name: string | null
+  messages: number
+  incoming: number
+  outgoing: number
+  last: string | null
+  own: boolean
+  openAgreements: number
+}
+export interface Agreement {
+  id: string
+  /** ГГГГ-ММ-ДД */
+  date: string
+  text: string
+  due?: string
+  done: boolean
+  folder?: string
+  uid?: number
+  subject?: string
+}
+export interface Dossier { name?: string | null; note?: string; agreements?: Agreement[] }
+export interface CounterpartyPerson { address: string; name: string; messages: number; last: string | null }
+export interface CounterpartyTimeline {
+  domain: string
+  own: boolean
+  messages: MessageSummary[]
+  events: CalEvent[]
+  contacts: Contact[]
+  people: CounterpartyPerson[]
+  dossier: Dossier
+  server: boolean
+  eventsFrom: string
+  errors: string[]
+}

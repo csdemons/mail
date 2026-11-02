@@ -13,6 +13,7 @@ mod desktop;
 mod store;
 mod search;
 mod rules;
+mod counterparty;
 mod totp;
 mod netio;
 mod winacl;

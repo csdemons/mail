@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Copy, Search, SquarePen, UserPlus } from 'lucide-react'
+import { Copy, Handshake, Search, SquarePen, UserPlus } from 'lucide-react'
 
 import { api, errorText } from './api'
 import ContactEditor from './ContactEditor'
@@ -11,6 +11,12 @@ export function parseAddress(entry: string): { name: string; address: string } {
   const m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(entry)
   if (m) return { name: m[1].trim(), address: m[2].trim() }
   return { name: '', address: entry.trim() }
+}
+
+/** Домен адреса (организация) или null. */
+export function domainOfAddress(entry: string): string | null {
+  const d = parseAddress(entry).address.split('@')[1]?.trim().toLowerCase()
+  return d && d.includes('.') ? d : null
 }
 
 /** Копирование в буфер: Clipboard API, а где он недоступен (WebKitGTK) — через выделение. */
@@ -30,12 +36,14 @@ export async function copyText(text: string): Promise<void> {
 }
 
 /** Адреса письма: выделяются и копируются как текст; щелчок — меню, как в Outlook:
- *  скопировать, написать, добавить в контакты, найти письма. */
-export default function AddressLine({ entries, strong, onCompose, onSearch, onNotice }: {
+ *  скопировать, написать, добавить в контакты, найти письма, история с организацией. */
+export default function AddressLine({ entries, strong, onCompose, onSearch, onHistory, onNotice }: {
   entries: string[]
   strong?: boolean
   onCompose?: (to: string) => void
   onSearch?: (address: string) => void
+  /** История взаимодействия с организацией (домен адреса). */
+  onHistory?: (domain: string) => void
   onNotice: (text: string) => void
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number; entry: string } | null>(null)
@@ -100,6 +108,7 @@ export default function AddressLine({ entries, strong, onCompose, onSearch, onNo
         ...(onCompose ? [{ label: 'Написать письмо', icon: <SquarePen size={15} />, onSelect: () => onCompose(menu.entry) }] : []),
         { label: 'Добавить в контакты…', icon: <UserPlus size={15} />, onSelect: () => void addContact(menu.entry) },
         ...(onSearch ? [{ label: 'Найти письма с этим адресом', icon: <Search size={15} />, onSelect: () => onSearch(parseAddress(menu.entry).address) }] : []),
+        ...(onHistory && domainOfAddress(menu.entry) ? [{ label: `История с организацией @${domainOfAddress(menu.entry)}`, icon: <Handshake size={15} />, onSelect: () => onHistory(domainOfAddress(menu.entry)!) }] : []),
       ]}
     />}
     {adding && <ContactEditor
