@@ -60,7 +60,7 @@ const FLAGS: [string, string][] = [
   ['seen', 'прочитанным'], ['flagged', 'важным (звёздочка)'], ['answered', 'отвеченным'],
   ['junk', 'спамом'], ['not_junk', 'не спамом'], ['deleted', 'удалённым'],
 ]
-const NO_ARG = new Set(['keep', 'discard', 'stop'])
+const NO_ARG = new Set(['keep', 'discard', 'stop', 'notify'])
 
 const isActive = (f: SieveFilter) => f.active === true || f.active === 1 || f.active === '1'
 
