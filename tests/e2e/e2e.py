@@ -1,4 +1,4 @@
-import json, imaplib, ssl, subprocess, sys, time, os, glob, email
+import faulthandler, json, imaplib, ssl, subprocess, sys, time, os, glob, email
 from email.header import decode_header, make_header
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -13,7 +13,10 @@ def clear(el):
 
 APP = os.environ.get('RRCKI_MAIL_BIN', os.path.join(os.path.dirname(__file__), '../../src-tauri/target/debug/rrcki-mail'))
 OUT = sys.argv[1]
-ok = lambda msg: print('PASS', msg, flush=True)
+T0 = time.time()
+ok = lambda msg: print('PASS', msg, f'[{time.time() - T0:.0f}s]', flush=True)
+# Если прогон завис, через заданное время в журнал попадёт стек, где именно.
+faulthandler.dump_traceback_later(int(os.environ.get('E2E_STACK_AFTER', '6000')), repeat=True)
 
 def session():
     opts = ArgOptions()
