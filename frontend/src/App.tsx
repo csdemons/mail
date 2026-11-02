@@ -1237,7 +1237,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       { label: 'В архив', icon: <Archive size={15} />, onSelect: () => void archive(items) },
       { label: 'Переместить в папку…', icon: <FolderInput size={15} />, onSelect: () => setMovePicker(items) },
     )
-    if (one) list.push({ label: 'Создать фильтр по отправителю…', icon: <ListFilter size={15} />, onSelect: () => { setFilterSeed(one); setShowFilters(true) } })
+    if (one) list.push({ label: 'Создать правило по отправителю…', icon: <ListFilter size={15} />, onSelect: () => { setFilterSeed(one); setShowFilters(true) } })
     const inJunk = folders.find((f) => f.id === items[0]?.folder)?.role === 'junk'
     list.push(inJunk
       ? { label: 'Не спам', icon: <ShieldCheck size={15} />, onSelect: () => void markSpam(items, false) }
@@ -1471,7 +1471,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             >
               <RefreshCw size={17} className={loading ? 'spin' : ''} />
             </button>
-            <button className="icon-button soft" aria-label="Фильтры почты" title="Фильтры почты (правила сортировки)" onClick={() => { setFilterSeed(null); setShowFilters(true) }}>
+            <button className="icon-button soft" aria-label="Правила обработки почты" title="Правила обработки почты: сортировка, пометки, уведомления, задачи" onClick={() => { setFilterSeed(null); setShowFilters(true) }}>
               <ListFilter size={17} />
             </button>
           </div>
@@ -1629,7 +1629,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               <button className="icon-button" aria-label="Переместить в папку" title="Переместить в папку…" onClick={() => setMovePicker([selected])}>
                 <FolderInput size={18} />
               </button>
-              <button className="icon-button" aria-label="Создать фильтр" title="Создать фильтр по этому письму" onClick={() => { setFilterSeed(selected); setShowFilters(true) }}>
+              <button className="icon-button" aria-label="Создать правило" title="Создать правило по этому письму" onClick={() => { setFilterSeed(selected); setShowFilters(true) }}>
                 <ListFilter size={18} />
               </button>
               <button className="icon-button danger-icon" aria-label="Удалить письмо" title="Удалить (Del)" onClick={() => requestDelete([selected])}>
@@ -1733,7 +1733,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           </div>
         </div>
       </div>}
-      {showFilters && <MailFilters folders={folders} seed={filterSeed} onClose={() => setShowFilters(false)} onNotice={setNotice} label={folderLabel} />}
+      {showFilters && <MailFilters folders={folders} seed={filterSeed} categories={userCategories(categories)} onClose={() => setShowFilters(false)} onNotice={setNotice} label={folderLabel} />}
       {showSettings && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowSettings(false) }}>
         <div className="settings-modal">
           <div className="compose-header"><div><strong>Учётная запись</strong><small>Параметры подключения</small></div><button className="icon-button" onClick={() => setShowSettings(false)} aria-label="Закрыть"><X size={18} /></button></div>
@@ -1771,7 +1771,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           <TotpSettings onChange={setTotpOn} onLock={() => { setShowSettings(false); onLock() }} autolock={autolock} onAutolock={updateAutolock} />
           <div className="settings-note"><ShieldCheck size={18} /><span>Пароль хранится только в системном хранилище (Windows Credential Manager, GNOME Keyring, Связка ключей macOS) и не записывается в файлы настроек. Для SMTP, календаря и контактов используются те же логин и пароль.</span></div>
           <div className="settings-actions">
-            <button className="secondary-button" onClick={() => { setShowSettings(false); setFilterSeed(null); setShowFilters(true) }}><ListFilter size={16} /> Фильтры почты</button>
+            <button className="secondary-button" onClick={() => { setShowSettings(false); setFilterSeed(null); setShowFilters(true) }}><ListFilter size={16} /> Правила обработки почты</button>
             <button className="secondary-button" disabled={diagBusy} onClick={() => void runDiagnostics()}><Stethoscope size={16} /> Диагностика</button>
             <button className="secondary-button" onClick={() => window.dispatchEvent(new Event(CHECK_UPDATE_EVENT))}><Download size={16} /> Проверить обновления</button>
             <button className="secondary-button" onClick={() => { setShowSettings(false); onLogout() }}><LogOut size={16} /> Выйти и забыть пароль</button>

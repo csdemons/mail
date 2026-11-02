@@ -313,6 +313,10 @@ pub fn validate_filters(filters: &Value) -> Result<()> {
             return Err(AppError::Other("Фильтр: условие «все/любое/все письма»".into()));
         }
         for r in o.get("rules").and_then(Value::as_array).into_iter().flatten() {
+            // Условия, которые проверяет только программа, на сервер не уходят.
+            if matches!(r.get("field").and_then(Value::as_str), Some("attachment" | "has_attachment" | "domain")) {
+                return Err(AppError::Other(format!("Фильтр «{}»: такое условие сервер не проверяет", o["name"].as_str().unwrap_or_default())));
+            }
             for k in ["field", "operator", "value"] {
                 if !r.get(k).is_some_and(|v| ok_str(v) || v.is_number()) {
                     return Err(AppError::Other(format!("Фильтр «{}»: неполное условие", o["name"].as_str().unwrap_or_default())));
@@ -324,6 +328,9 @@ pub fn validate_filters(filters: &Value) -> Result<()> {
             return Err(AppError::Other(format!("Фильтр «{}»: нужно хотя бы одно действие", o["name"].as_str().unwrap_or_default())));
         }
         for a in actions {
+            if matches!(a.get("method").and_then(Value::as_str), Some("notify" | "task" | "category")) {
+                return Err(AppError::Other("Фильтр: это действие выполняет программа, а не сервер".into()));
+            }
             if !a.get("method").is_some_and(ok_str) || a.get("argument").is_some_and(|v| !(v.is_null() || ok_str(v))) {
                 return Err(AppError::Other("Фильтр: некорректное действие".into()));
             }

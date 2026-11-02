@@ -105,6 +105,8 @@
     "allow-deck-attachment-delete",
     "allow-deck-archive",
     "allow-deck-activity",
+    "allow-rules-get",
+    "allow-rules-save",
     "allow-talk-file-data",
     "allow-update-contact",
     "allow-update-event",

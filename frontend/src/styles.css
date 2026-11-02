@@ -952,6 +952,11 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .view-item { cursor: pointer; }
 .view-item .view-remove { margin-left: auto; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 2px; display: none; }
 .view-item:hover .view-remove, .view-item:focus-within .view-remove { display: inline-flex; }
+.rule-where { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 1px 6px; border-radius: 9px; font-size: 10px; font-weight: 500; vertical-align: middle; }
+.rule-where.server { background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); }
+.rule-where.program { background: color-mix(in srgb, #d97706 14%, transparent); color: #b45309; }
+.rule-placement { display: flex; align-items: flex-start; gap: 6px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.4; background: var(--panel); border: 1px solid var(--line); }
+.rule-placement svg { flex: none; margin-top: 1px; }
 .unified-separator { height: 1px; background: var(--line); margin: 6px 8px; }
 .unified-group { font-weight: 600; }
 .unified-title { display: flex; align-items: center; gap: 6px; margin-right: auto; }

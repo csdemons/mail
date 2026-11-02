@@ -452,6 +452,8 @@ export interface UploadedLink {
 /** Правило фильтра почты в формате SOGo (SOGoSieveFilters). */
 export interface SieveRule { field: string; operator: string; value: string; custom_header?: string }
 export interface SieveAction { method: string; argument?: string }
+/** Правила, которые хранит и выполняет программа (см. rules.rs). */
+export interface RuleSet { program: SieveFilter[]; ext: Record<string, SieveAction[]> }
 export interface SieveFilter {
   name: string
   active: number | boolean | string

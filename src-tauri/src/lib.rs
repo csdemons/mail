@@ -12,6 +12,7 @@ mod discover;
 mod desktop;
 mod store;
 mod search;
+mod rules;
 mod totp;
 mod netio;
 mod winacl;

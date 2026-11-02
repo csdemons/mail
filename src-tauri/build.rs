@@ -104,6 +104,8 @@ const COMMANDS: &[&str] = &[
             "deck_attachment_delete",
             "deck_archive",
             "deck_activity",
+            "rules_get",
+            "rules_save",
             "talk_file_data",
         "accounts_list",
         "account_add",

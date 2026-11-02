@@ -1140,12 +1140,12 @@ try:
     W(d, 10).until(lambda d: any('только https' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
     set_value(d, dav, 'https://localhost:8444/')
     ok('http address for calendar/contacts refused')
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if 'Фильтры почты' in b.text][0].click()
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if 'Правила обработки почты' in b.text][0].click()
     W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.filter-item'))
     t = d.find_element(By.CSS_SELECTOR, '.filter-item').get_attribute('textContent')
     assert 'Рассылка' in t and '[noc]' in t, t; ok('filters: existing SOGo filter listed')
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.filters-modal button') if 'Новый фильтр' in b.text][0].click()
-    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Название фильтра"]'), 'От Иванова')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filters-modal button') if 'Новое правило' in b.text][0].click()
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Название правила"]'), 'От Иванова')
     from selenium.webdriver.support.ui import Select
     Select(d.find_element(By.CSS_SELECTOR, '.filter-row select[aria-label="Поле"]')).select_by_visible_text('От')
     set_value(d, d.find_element(By.CSS_SELECTOR, '.filter-row input[aria-label="Значение"]'), 'ivanov@nrcki.ru')
@@ -1154,7 +1154,7 @@ try:
     W(d, 5).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.folder-picker-list .folder-item')) == 1)
     d.find_element(By.CSS_SELECTOR, '.folder-picker-list .folder-item').click()
     d.save_screenshot(f'{OUT}/18-filter-edit.png')
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-editor button') if 'Сохранить фильтр' in b.text][0].click()
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-editor button') if 'Сохранить правило' in b.text][0].click()
     W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.filter-item')) == 2)
     import json as _j, urllib.request as _u
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
@@ -1168,7 +1168,78 @@ try:
     W(d, 10).until(lambda d: _j.loads(_u.urlopen('https://localhost:8444/__defaults', context=ctx).read())['SOGoSieveFilters'][0]['active'] == 0)
     ok('filters: toggle off saved')
     d.save_screenshot(f'{OUT}/19-filters.png')
+
+    # Конструктор правил. Серверное правило «Рассылка» + уведомление от программы:
+    # в SOGo уходит только серверная часть, уведомление хранит программа.
+    def inv(cmd, args=None):
+        return d.execute_async_script("const cb = arguments[2]; window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1] || {}).then((r) => cb({ok: r}), (e) => cb({err: JSON.stringify(e)}))", cmd, args)
+    sogo_filters = lambda: _j.loads(_u.urlopen('https://localhost:8444/__defaults', context=ctx).read())['SOGoSieveFilters']
+    d.find_element(By.CSS_SELECTOR, '.filter-item .switch input').click()
+    W(d, 10).until(lambda d: sogo_filters()[0]['active'] == 1)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Изменить Рассылка"]').click()
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-editor .text-button') if 'Действие' in b.text][0].click()
+    Select(d.find_elements(By.CSS_SELECTOR, '.filter-editor select[aria-label="Действие"]')[-1]).select_by_value('notify')
+    assert 'программа' in d.find_element(By.CSS_SELECTOR, '.rule-placement.server').get_attribute('textContent')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-editor button') if 'Сохранить правило' in b.text][0].click()
+    W(d, 10).until(lambda d: inv('rules_get')['ok']['ext'].get('Рассылка') == [{'method': 'notify'}])
+    assert sogo_filters()[0]['actions'] == [{'method': 'fileinto', 'argument': 'INBOX/Рассылки'}], sogo_filters()[0]
+    assert 'сервер + программа' in [i for i in d.find_elements(By.CSS_SELECTOR, '.filter-item') if 'Рассылка' in i.get_attribute('textContent')][0].get_attribute('textContent')
+    ok('rules: server rule kept in SOGo, its notification added by the program')
+    # Правило программы: условие по вложению → категория, уведомление, задача в Deck.
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filters-modal button') if 'Новое правило' in b.text][0].click()
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Название правила"]'), 'Отчёты')
+    Select(d.find_element(By.CSS_SELECTOR, '.filter-row select[aria-label="Поле"]')).select_by_value('attachment')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.filter-row input[aria-label="Значение"]'), 'отчёт')
+    Select(d.find_element(By.CSS_SELECTOR, '.filter-editor select[aria-label="Действие"]')).select_by_value('category')
+    Select(d.find_element(By.CSS_SELECTOR, '.filter-editor select[aria-label="Категория"]')).select_by_value('$label2')
+    for method in ('notify', 'task'):
+        [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-editor .text-button') if 'Действие' in b.text][0].click()
+        Select(d.find_elements(By.CSS_SELECTOR, '.filter-editor select[aria-label="Действие"]')[-1]).select_by_value(method)
+    W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.filter-editor select[aria-label="Доска"] option')) >= 2)
+    Select(d.find_element(By.CSS_SELECTOR, '.filter-editor select[aria-label="Доска"]')).select_by_value('1')
+    W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.filter-editor select[aria-label="Колонка"] option')) >= 2)
+    Select(d.find_element(By.CSS_SELECTOR, '.filter-editor select[aria-label="Колонка"]')).select_by_value('10')
+    assert d.find_elements(By.CSS_SELECTOR, '.rule-placement.program')
+    d.save_screenshot(f'{OUT}/19a-rule-editor.png')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-editor button') if 'Сохранить правило' in b.text][0].click()
+    W(d, 10).until(lambda d: [i for i in d.find_elements(By.CSS_SELECTOR, '.filter-item[data-where=program]') if 'Отчёты' in i.get_attribute('textContent')])
+    prog = inv('rules_get')['ok']['program']
+    assert prog[0]['rules'] == [{'field': 'attachment', 'operator': 'contains', 'value': 'отчёт'}], prog
+    assert [a['method'] for a in prog[0]['actions']] == ['category', 'notify', 'task'] and prog[0]['actions'][2]['argument'] == '1:10', prog
+    assert len(sogo_filters()) == 2, 'program rule must not reach the server'
+    d.save_screenshot(f'{OUT}/19b-rules.png')
+    ok('rules: attachment condition makes a program rule (category, notification, Deck task); not sent to the server')
     d.find_element(By.CSS_SELECTOR, '.filters-modal button[aria-label="Закрыть"]').click()
+    # Новые письма после сохранения правил: обработчик сначала запоминает папки (один проход), потом применяет.
+    time.sleep(12)
+    rm = EmailMessage(); rm['From'] = 'Плановый отдел <plan@ihep.ru>'; rm['To'] = 'test@rrcki.ru'; rm['Subject'] = 'E2E правило отчёт'
+    rm.set_content('см. вложение'); rm.add_attachment('цифры'.encode(), maintype='text', subtype='plain', filename='Отчёт за ноябрь.txt')
+    M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), rm.as_bytes()); M.logout()
+    W(d, 60).until(lambda d: 'Правило «Отчёты»\tПлановый отдел: E2E правило отчёт' in notified())
+    W(d, 30).until(lambda d: any(c['title'] == 'E2E правило отчёт' and c['stackId'] == 10 and 'plan@ihep.ru' in c['description'] for c in nc_mock('GET', '/test/state')['cards']))
+    M = imap(); M.select('INBOX'); _, ids = M.search(None, 'KEYWORD', '$label2', 'SUBJECT', '"E2E"'); M.logout()
+    assert ids[0].split(), 'category $label2 set by the rule'
+    ok('program rule applied to new mail: category set, notification shown, Deck card created')
+    # Дополнение к серверному правилу: письмо, которое сервер положил в «INBOX/Рассылки».
+    def mutf7(text):
+        out, run = [], []
+        def flush():
+            if run:
+                out.append('&' + __import__('base64').b64encode(''.join(run).encode('utf-16-be')).decode().rstrip('=').replace('/', ',') + '-'); run.clear()
+        for ch in text:
+            if 0x20 <= ord(ch) <= 0x7e:
+                flush(); out.append('&-' if ch == '&' else ch)
+            else:
+                run.append(ch)
+        flush()
+        return ''.join(out)
+    fid = mutf7('INBOX/Рассылки')
+    assert 'ok' in inv('create_folder', {'name': fid})
+    time.sleep(12)
+    nm = EmailMessage(); nm['From'] = 'NOC <noc@nrcki.ru>'; nm['To'] = 'test@rrcki.ru'; nm['Subject'] = '[noc] плановые работы'; nm.set_content('x')
+    M = imap(); M.append(f'"{fid}"', None, imaplib.Time2Internaldate(time.time()), nm.as_bytes()); M.logout()
+    W(d, 60).until(lambda d: 'Правило «Рассылка»\tNOC: [noc] плановые работы' in notified())
+    ok('server rule extension: notification for mail the server sorted into its folder')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:

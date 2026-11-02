@@ -1705,6 +1705,20 @@ pub async fn clear_snooze(conn: &mut Connection, folder: &str, uids: &[u32]) -> 
     Ok(())
 }
 
+/// UIDNEXT папки (STATUS, без открытия): по нему видно, пришли ли новые письма.
+pub async fn uid_next(conn: &mut Connection, folder: &str) -> Result<u32> {
+    let mb = conn.session.status(folder, "(UIDNEXT UIDVALIDITY)").await?;
+    Ok(mb.uid_next.unwrap_or(0))
+}
+
+/// UID писем папки начиная с `from` (новые письма).
+pub async fn uids_from(conn: &mut Connection, folder: &str, from: u32) -> Result<Vec<u32>> {
+    conn.ensure_selected(folder).await?;
+    let mut uids: Vec<u32> = conn.session.uid_search(format!("UID {from}:*")).await?.into_iter().filter(|u| *u >= from).collect();
+    uids.sort_unstable();
+    Ok(uids)
+}
+
 /// Поставить или снять ключевое слово (категория, $MDNSent) у писем.
 pub async fn set_keyword(conn: &mut Connection, folder: &str, uids: &[u32], keyword: &str, value: bool) -> Result<()> {
     if !valid_keyword(keyword) {

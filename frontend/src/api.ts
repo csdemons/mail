@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { DeckActivity,
+import type { DeckActivity, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
@@ -206,6 +206,8 @@ export const api = {
   deleteMessages: (folder: string, uids: number[], trash: string | null) => invoke<boolean>('delete_messages', { folder, uids, trash }),
   mailFiltersGet: () => invoke<{ filters: SieveFilter[] }>('mail_filters_get'),
   mailFiltersSave: (filters: SieveFilter[]) => invoke<void>('mail_filters_save', { filters }),
+  rulesGet: () => invoke<RuleSet>('rules_get'),
+  rulesSave: (set: RuleSet) => invoke<void>('rules_save', { set }),
   diagnostics: (folder: string | null) => invoke<string>('diagnostics', { folder }),
   getMessage: (folder: string, uid: number) =>
     invoke<MessageDetail>('get_message', { folder, uid }),

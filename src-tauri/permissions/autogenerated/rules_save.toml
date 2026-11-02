@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rules-save"
+description = "Enables the rules_save command without any pre-configured scope."
+commands.allow = ["rules_save"]
+
+[[permission]]
+identifier = "deny-rules-save"
+description = "Denies the rules_save command without any pre-configured scope."
+commands.deny = ["rules_save"]
