@@ -1191,7 +1191,7 @@ try:
     Select(d.find_element(By.CSS_SELECTOR, '.filter-row select[aria-label="Поле"]')).select_by_value('attachment')
     set_value(d, d.find_element(By.CSS_SELECTOR, '.filter-row input[aria-label="Значение"]'), 'отчёт')
     Select(d.find_element(By.CSS_SELECTOR, '.filter-editor select[aria-label="Действие"]')).select_by_value('category')
-    Select(d.find_element(By.CSS_SELECTOR, '.filter-editor select[aria-label="Категория"]')).select_by_value('$label2')
+    Select(d.find_element(By.CSS_SELECTOR, '.filter-editor select[aria-label="Категория"]')).select_by_value('$label4')
     for method in ('notify', 'task'):
         [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-editor .text-button') if 'Действие' in b.text][0].click()
         Select(d.find_elements(By.CSS_SELECTOR, '.filter-editor select[aria-label="Действие"]')[-1]).select_by_value(method)
@@ -1217,8 +1217,8 @@ try:
     M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), rm.as_bytes()); M.logout()
     W(d, 60).until(lambda d: 'Правило «Отчёты»\tПлановый отдел: E2E правило отчёт' in notified())
     W(d, 30).until(lambda d: any(c['title'] == 'E2E правило отчёт' and c['stackId'] == 10 and 'plan@ihep.ru' in c['description'] for c in nc_mock('GET', '/test/state')['cards']))
-    M = imap(); M.select('INBOX'); _, ids = M.search(None, 'KEYWORD', '$label2', 'SUBJECT', '"E2E"'); M.logout()
-    assert ids[0].split(), 'category $label2 set by the rule'
+    M = imap(); M.select('INBOX'); _, ids = M.search(None, 'KEYWORD', '$label4', 'SUBJECT', '"E2E"'); M.logout()
+    assert ids[0].split(), 'category $label4 set by the rule'
     ok('program rule applied to new mail: category set, notification shown, Deck card created')
     # Дополнение к серверному правилу: письмо, которое сервер положил в «INBOX/Рассылки».
     def mutf7(text):
