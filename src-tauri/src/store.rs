@@ -88,6 +88,8 @@ pub struct Store {
     inner: Mutex<Inner>,
     closed: AtomicBool,
     syncing: AtomicBool,
+    /// Разбудить фоновую синхронизацию (связь появилась после работы без сети).
+    wake: tokio::sync::Notify,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -243,6 +245,7 @@ impl Store {
             inner: Mutex::new(Inner::default()),
             closed: AtomicBool::new(false),
             syncing: AtomicBool::new(false),
+            wake: tokio::sync::Notify::new(),
         })
     }
 
@@ -274,6 +277,20 @@ impl Store {
         let mut out = nonce.to_vec();
         out.extend_from_slice(&ct);
         std::fs::write(&tmp, out).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| AppError::Other(e.to_string()))
+    }
+
+    /// Служебный файл (очередь действий без сети) — шифруется, как и письма.
+    pub fn load_blob(&self, name: &str) -> Option<Vec<u8>> {
+        self.read_file(name)
+    }
+
+    pub fn save_blob(&self, name: &str, data: &[u8]) -> Result<()> {
+        self.write_file(name, data)
+    }
+
+    /// Начать синхронизацию сейчас, не дожидаясь очередного цикла.
+    pub fn wake(&self) {
+        self.wake.notify_one();
     }
 
     fn read_file(&self, name: &str) -> Option<Vec<u8>> {
@@ -580,7 +597,10 @@ fn dir_size(dir: &Path) -> u64 {
 pub async fn run_sync(store: Arc<Store>, creds: Credentials) {
     let mut delay = std::time::Duration::from_secs(2);
     loop {
-        tokio::time::sleep(delay).await;
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            _ = store.wake.notified() => {}
+        }
         if store.is_closed() {
             return;
         }
@@ -753,6 +773,7 @@ mod tests {
             inner: Mutex::new(Inner::default()),
             closed: AtomicBool::new(false),
             syncing: AtomicBool::new(false),
+            wake: tokio::sync::Notify::new(),
         }
     }
 

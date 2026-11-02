@@ -90,6 +90,16 @@ pub struct AccountCtx {
     /// Почему хранилище не открылось (показывается в настройках).
     store_error: Mutex<Option<String>>,
     closed: std::sync::atomic::AtomicBool,
+    /// Есть связь с почтовым сервером. Без неё команды не пытаются подключиться
+    /// (переподключается планировщик) — сразу работают с письмами на компьютере.
+    online: std::sync::atomic::AtomicBool,
+    /// С какого момента нет связи и почему.
+    offline_info: std::sync::Mutex<Option<(String, String)>>,
+    /// Очередь действий без сети (из хранилища — при первом обращении).
+    queue: Mutex<Option<crate::offline::Queue>>,
+    /// Очередь выполняется на сервере (одна попытка за раз).
+    replaying: Mutex<()>,
+    replay_active: std::sync::atomic::AtomicBool,
 }
 
 impl AccountCtx {
@@ -108,7 +118,33 @@ impl AccountCtx {
             store: Mutex::new(None),
             store_error: Mutex::new(None),
             closed: std::sync::atomic::AtomicBool::new(false),
+            online: std::sync::atomic::AtomicBool::new(true),
+            offline_info: std::sync::Mutex::new(None),
+            queue: Mutex::new(None),
+            replaying: Mutex::new(()),
+            replay_active: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    fn online(&self) -> bool {
+        self.online.load(Ordering::SeqCst)
+    }
+
+    /// Связи нет: дальше команды работают без сервера, пока планировщик не подключится.
+    fn went_offline(&self, e: &AppError) {
+        if self.online.swap(false, Ordering::SeqCst) {
+            log::warn!("mail server unreachable, working offline: {e}");
+        }
+        let mut info = self.offline_info.lock().unwrap_or_else(|p| p.into_inner());
+        let since = info.as_ref().map(|(s, _)| s.clone()).unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        *info = Some((since, e.to_string()));
+    }
+
+    fn came_online(&self) {
+        if !self.online.swap(true, Ordering::SeqCst) {
+            log::info!("mail server reachable again");
+        }
+        *self.offline_info.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     async fn profile(&self) -> Settings {
@@ -262,7 +298,19 @@ macro_rules! with_ctx {
         let mut attempt = 0;
         loop {
             if guard.is_none() {
-                *guard = Some(imap::connect(&$ctx.creds).await?);
+                // Без связи не ждём таймаута на каждом действии — переподключается планировщик.
+                if !$ctx.online() {
+                    break Err(AppError::ConnectionLost);
+                }
+                match imap::connect(&$ctx.creds).await {
+                    Ok(c) => *guard = Some(c),
+                    Err(e) => {
+                        if e.is_offline() {
+                            $ctx.went_offline(&e);
+                        }
+                        break Err(e);
+                    }
+                }
             }
             let $c = guard.as_mut().expect("connection present");
             let result = match tokio::time::timeout(OP_TIMEOUT, $body).await {
@@ -293,6 +341,9 @@ pub struct Account {
     port: u16,
     /// Программа заблокирована: нужен код TOTP (почта ещё не подключена).
     locked: bool,
+    /// Сервер недоступен — сеанс открыт без сети, с письмами на компьютере.
+    #[serde(default)]
+    offline: bool,
 }
 
 #[derive(Serialize)]
@@ -304,17 +355,37 @@ pub struct LoginResult {
 }
 
 /// Начать сеанс учётной записи: прежний контекст закрывается, создаётся новый.
-async fn start_session(app: &AppHandle, state: &AppState, creds: Credentials, profile: Settings) -> Result<()> {
-    let conn = imap::connect(&creds).await?;
+/// `allow_offline`: пароль уже проверен раньше (сохранён, блокировка) — если
+/// сервер недоступен, а письма есть на компьютере, сеанс открывается без сети.
+/// Возвращает `true`, если есть связь.
+async fn start_session(app: &AppHandle, state: &AppState, creds: Credentials, profile: Settings, allow_offline: bool) -> Result<bool> {
+    let conn = match imap::connect(&creds).await {
+        Ok(c) => Some(c),
+        Err(e) if allow_offline && e.is_offline() && offline_possible(app, &account_key(&creds.username, &creds.host)) => {
+            log::warn!("mail server unreachable at start, opening offline: {e}");
+            None
+        }
+        Err(e) => return Err(e),
+    };
     state.session.fetch_add(1, Ordering::SeqCst);
     let ctx = Arc::new(AccountCtx::new(creds, profile));
-    *ctx.conn.lock().await = Some(conn);
+    let online = conn.is_some();
+    match conn {
+        Some(c) => *ctx.conn.lock().await = Some(c),
+        None => ctx.went_offline(&AppError::Unreachable(ctx.creds.host.clone(), "нет связи".into())),
+    }
     open_store(app, &ctx).await;
     if let Some(old) = state.active.lock().await.replace(ctx.clone()) {
         old.close().await;
     }
     tauri::async_runtime::spawn(run_scheduler(app.clone(), ctx));
-    Ok(())
+    Ok(online)
+}
+
+/// Можно ли открыть сеанс без сети: хранить почту на компьютере разрешено, и
+/// хранилище учётной записи уже есть (список папок сохранён).
+fn offline_possible(app: &AppHandle, key: &str) -> bool {
+    crate::policy::load().local_store() && host::data_dir(app).is_ok_and(|root| store::account_dir(&root, key).join("folders.bin").exists())
 }
 
 /// Закрыть сеанс активной учётной записи (контекст убирается из состояния).
@@ -580,6 +651,12 @@ pub async fn set_offline_days(app: AppHandle, state: State<'_, AppState>, days: 
 #[tauri::command]
 pub async fn clear_offline(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
     let ctx = state.ctx().await?;
+    if local(&ctx).await.is_some() {
+        let n = with_queue(&ctx, |q| q.items.len()).await.unwrap_or(0);
+        if n > 0 {
+            return Err(AppError::Other(format!("В очереди без сети {n} действий или писем — дождитесь подключения или уберите их из очереди, затем очистите хранилище")));
+        }
+    }
     close_store(&ctx).await;
     let root = host::data_dir(&app)?;
     let account = ctx.key.clone();
@@ -665,6 +742,7 @@ fn account_of(s: &Settings) -> Account {
         host: s.host.clone(),
         port: s.port,
         locked: false,
+        offline: false,
     }
 }
 
@@ -753,7 +831,7 @@ pub async fn login(
         *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: Some(remember) });
         return Ok(LoginResult { account: Account { locked: true, ..account_of(&s) }, warning: None });
     }
-    start_session(&app, &state, creds, s.clone()).await?;
+    start_session(&app, &state, creds, s.clone(), false).await?;
 
     // Вход уже выполнен: ошибки сохранения настроек/пароля не отменяют его,
     // а показываются пользователю предупреждением.
@@ -800,8 +878,8 @@ pub async fn auto_login(app: AppHandle, state: State<'_, AppState>) -> Result<Op
         *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: None });
         return Ok(Some(Account { locked: true, ..account_of(&s) }));
     }
-    match start_session(&app, &state, creds, s.clone()).await {
-        Ok(()) => Ok(Some(account_of(&s))),
+    match start_session(&app, &state, creds, s.clone(), true).await {
+        Ok(online) => Ok(Some(Account { offline: !online, ..account_of(&s) })),
         Err(AppError::AuthFailed) => {
             // Пароль сменили — сохранённый больше не годится.
             settings::forget_password(&s);
@@ -899,7 +977,15 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
 #[tauri::command]
 pub async fn list_folders(state: State<'_, AppState>) -> Result<Vec<Folder>> {
     let ctx = state.ctx().await?;
-    let folders = with_conn!(state, c => imap::list_folders(c))?;
+    let folders = match with_ctx!(ctx, c => imap::list_folders(c)) {
+        Ok(f) => f,
+        // Без связи — список папок с компьютера.
+        Err(e) if e.is_offline() => match local(&ctx).await.and_then(|st| st.folders()) {
+            Some(f) => return Ok(f),
+            None => return Err(e),
+        },
+        Err(e) => return Err(e),
+    };
     if let Some(st) = local(&ctx).await {
         st.set_folders(&folders);
     }
@@ -914,7 +1000,15 @@ pub async fn list_messages(
     limit: u32,
 ) -> Result<MessagePage> {
     let ctx = state.ctx().await?;
-    let page = with_conn!(state, c => imap::list_messages(c, &folder, before_uid, limit))?;
+    let page = match with_ctx!(ctx, c => imap::list_messages(c, &folder, before_uid, limit)) {
+        Ok(p) => p,
+        // Без связи — письма из индекса на компьютере.
+        Err(e) if e.is_offline() => match local(&ctx).await.and_then(|st| st.page(&folder, before_uid, limit.clamp(1, 200) as usize)) {
+            Some(p) => return Ok(p),
+            None => return Err(e),
+        },
+        Err(e) => return Err(e),
+    };
     if let Some(st) = local(&ctx).await {
         st.merge_page(&folder, before_uid, &page);
     }
@@ -1156,6 +1250,9 @@ pub struct SendResult {
     /// Папка, куда сохранена копия, или `None`.
     saved_to: Option<String>,
     warning: Option<String>,
+    /// Нет связи — письмо в очереди исходящих.
+    #[serde(default)]
+    queued: bool,
 }
 
 // ---------------------------------------------------------------- исходящие: отмена и отложенная отправка
@@ -1225,13 +1322,14 @@ pub struct SendTicket {
 async fn deliver(ctx: &AccountCtx, raw: &[u8], built: Option<&lettre::Message>) -> Result<SendResult> {
     let profile = ctx.profile().await;
     let creds = &ctx.creds;
-    match built {
-        Some(m) => smtp::send(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, m).await?,
-        None => smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, raw).await?,
-    }
+    // Исходник с проверкой связи перед передачей: если сервер недоступен, письмо
+    // точно не ушло (его можно поставить в очередь), обрыв во время передачи —
+    // «результат неизвестен».
+    let _ = built;
+    smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, raw).await?;
     match append_sent_as(ctx, raw).await {
-        Ok(folder) => Ok(SendResult { saved_to: Some(folder), warning: None }),
-        Err(e) => Ok(SendResult { saved_to: None, warning: Some(format!("Письмо отправлено, но копия не сохранена в «Отправленные»: {e}")) }),
+        Ok(folder) => Ok(SendResult { saved_to: Some(folder), warning: None, queued: false }),
+        Err(e) => Ok(SendResult { saved_to: None, warning: Some(format!("Письмо отправлено, но копия не сохранена в «Отправленные»: {e}")), queued: false }),
     }
 }
 
@@ -1322,14 +1420,26 @@ pub async fn send_message(
     // Отложенная отправка: письмо ждёт в «Черновиках» (видно и в веб-почте) и
     // уходит в срок, пока программа запущена, — или при следующем запуске.
     if let Some(at) = send_at {
-        with_ctx!(once ctx, c => imap::append_draft(c, &raw))?;
+        let queued = if queue_first(&ctx).await && local(&ctx).await.is_some() {
+            true
+        } else {
+            match with_ctx!(once ctx, c => imap::append_draft(c, &raw)) {
+                Ok(_) => false,
+                Err(e) if queue_on(&ctx, &e).await => true,
+                Err(e) => return Err(e),
+            }
+        };
+        if queued {
+            let (subject, _) = outgoing_meta(&raw);
+            enqueue(&ctx, Op::Schedule { raw: offline::encode(&raw), subject, send_at: at.clone() }).await?;
+        }
         forget_picked(&ctx, &attachments).await;
         return Ok(SendTicket { id: None, result: None, scheduled_at: Some(at) });
     }
 
     let delay = delay_secs.unwrap_or(0).min(60);
     if delay == 0 {
-        let result = deliver(&ctx, &raw, Some(&message)).await?;
+        let result = deliver_or_queue(&ctx, &raw).await?;
         forget_picked(&ctx, &attachments).await;
         return Ok(SendTicket { id: None, result: Some(result), scheduled_at: None });
     }
@@ -1371,7 +1481,7 @@ pub async fn send_message(
                 None => return,
             }
         }
-        let result = deliver(&ctx, &raw, Some(&message)).await;
+        let result = deliver_or_queue(&ctx, &raw).await;
         if result.is_ok() {
             forget_picked(&ctx, &attachments).await;
         }
@@ -1517,12 +1627,21 @@ async fn scheduled_now(ctx: &AccountCtx) -> Result<Vec<imap::Scheduled>> {
 /// Фоновая отправка запланированных писем и возврат отложенных — пока сеанс
 /// учётной записи `ctx` открыт (только её «Черновики» и её ящик).
 async fn run_scheduler(app: AppHandle, ctx: Arc<AccountCtx>) {
-    let every = if cfg!(debug_assertions) && std::env::var_os("RRCKI_E2E_POLL_SECS").is_some() { 5 } else { 60 };
+    let e2e = cfg!(debug_assertions) && std::env::var_os("RRCKI_E2E_POLL_SECS").is_some();
+    let every = if e2e { 5 } else { 60 };
+    // Без связи — проверять чаще, чтобы очередь ушла вскоре после подключения.
+    let every_offline = if e2e { 3 } else { 15 };
     let mut tracker = RuleTracker::default();
     loop {
-        tokio::time::sleep(Duration::from_secs(every)).await;
+        tokio::time::sleep(Duration::from_secs(if ctx.online() { every } else { every_offline })).await;
         if ctx.is_closed() {
             return;
+        }
+        if !ctx.online() && !try_reconnect(&ctx).await {
+            continue;
+        }
+        if queue_busy(&ctx).await {
+            replay(ctx.clone()).await;
         }
         if let Err(e) = process_rules(&app, &ctx, &mut tracker).await {
             log::warn!("mail rules: {e}");
@@ -1573,6 +1692,346 @@ async fn run_scheduler(app: AppHandle, ctx: Arc<AccountCtx>) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------- работа без сети
+
+use crate::offline::{self, Op, Target};
+
+/// Текст, который видит пользователь, когда письмо ушло в очередь исходящих.
+const QUEUED_SEND: &str = "Нет связи с почтовым сервером — письмо в очереди исходящих и уйдёт, как только связь появится.";
+
+/// Очередь учётной записи: из хранилища на компьютере при первом обращении.
+/// Без хранилища (выключено администратором) очереди нет.
+async fn with_queue<R>(ctx: &AccountCtx, f: impl FnOnce(&mut offline::Queue) -> R) -> Result<R> {
+    let st = local(ctx).await.ok_or_else(|| AppError::Other("Нет связи с почтовым сервером, а хранение писем на компьютере выключено — действие не выполнено".into()))?;
+    let mut guard = ctx.queue.lock().await;
+    if guard.is_none() {
+        let st2 = st.clone();
+        let raw = tokio::task::spawn_blocking(move || st2.load_blob(offline::BLOB)).await.map_err(|e| AppError::Other(e.to_string()))?;
+        *guard = Some(offline::Queue::from_bytes(raw));
+    }
+    let q = guard.as_mut().expect("loaded above");
+    let before = q.clone();
+    let out = f(q);
+    if *q != before {
+        let bytes = q.to_bytes();
+        tokio::task::spawn_blocking(move || st.save_blob(offline::BLOB, &bytes)).await.map_err(|e| AppError::Other(e.to_string()))??;
+    }
+    Ok(out)
+}
+
+/// В очереди есть невыполненные действия (новые тогда тоже идут в очередь — по порядку).
+async fn queue_busy(ctx: &AccountCtx) -> bool {
+    if local(ctx).await.is_none() {
+        return false;
+    }
+    with_queue(ctx, |q| !q.items.is_empty()).await.unwrap_or(false)
+}
+
+/// Действие сразу в очередь (без связи или пока очередь не выполнена).
+async fn queue_first(ctx: &AccountCtx) -> bool {
+    !ctx.online() || queue_busy(ctx).await
+}
+
+/// Ошибка, после которой действие ставится в очередь, а не показывается.
+async fn queue_on(ctx: &AccountCtx, e: &AppError) -> bool {
+    if e.is_offline() {
+        if !matches!(e, AppError::Timeout) {
+            ctx.went_offline(e);
+        }
+        return local(ctx).await.is_some();
+    }
+    false
+}
+
+async fn enqueue(ctx: &Arc<AccountCtx>, op: Op) -> Result<()> {
+    with_queue(ctx, |q| q.push(op)).await??;
+    if ctx.online() {
+        tauri::async_runtime::spawn(replay(ctx.clone()));
+    }
+    Ok(())
+}
+
+/// Письма для очереди: UID и Message-ID из индекса на компьютере.
+async fn targets(ctx: &AccountCtx, folder: &str, uids: &[u32]) -> Vec<Target> {
+    let st = local(ctx).await;
+    uids.iter()
+        .map(|u| Target { uid: *u, msg_id: st.as_ref().and_then(|s| s.summary(folder, *u)).and_then(|m| m.message_id) })
+        .collect()
+}
+
+fn flag_name(flag: FlagKind) -> &'static str {
+    match flag {
+        FlagKind::Seen => "seen",
+        FlagKind::Flagged => "flagged",
+        FlagKind::Important => "important",
+    }
+}
+
+fn flag_kind(name: &str) -> Option<FlagKind> {
+    Some(match name {
+        "seen" => FlagKind::Seen,
+        "flagged" => FlagKind::Flagged,
+        "important" => FlagKind::Important,
+        _ => return None,
+    })
+}
+
+/// Тема и адресаты исходящего письма — для списка очереди.
+fn outgoing_meta(raw: &[u8]) -> (String, Vec<String>) {
+    let msg = mail_parser::MessageParser::default().parse_headers(raw);
+    let subject = msg.as_ref().and_then(|m| m.subject()).unwrap_or_default().to_string();
+    let to = msg
+        .as_ref()
+        .map(|m| [m.to(), m.cc()].into_iter().flatten().flat_map(|l| l.iter().filter_map(|a| a.address().map(str::to_string))).collect())
+        .unwrap_or_default();
+    (subject, to)
+}
+
+/// Отправить письмо, а без связи — поставить в очередь исходящих.
+async fn deliver_or_queue(ctx: &Arc<AccountCtx>, raw: &[u8]) -> Result<SendResult> {
+    let queue = |ctx: Arc<AccountCtx>, raw: Vec<u8>| async move {
+        let (subject, to) = outgoing_meta(&raw);
+        enqueue(&ctx, Op::Send { raw: offline::encode(&raw), subject, to }).await?;
+        Ok(SendResult { saved_to: None, warning: Some(QUEUED_SEND.to_string()), queued: true })
+    };
+    if queue_first(ctx).await && local(ctx).await.is_some() {
+        return queue(ctx.clone(), raw.to_vec()).await;
+    }
+    match deliver(ctx, raw, None).await {
+        Err(e) if queue_on(ctx, &e).await => queue(ctx.clone(), raw.to_vec()).await,
+        other => other,
+    }
+}
+
+/// Выполнить одно действие из очереди. `Ok(Some(причина))` — конфликт: действие
+/// не выполнено (письма уже нет и т. п.), но и повторять его незачем.
+async fn run_op(ctx: &Arc<AccountCtx>, op: &Op) -> Result<Option<String>> {
+    let gone = |n: usize, folder: &str| {
+        let f = utf7_imap::decode_utf7_imap(folder.to_string());
+        if n == 1 {
+            format!("письма уже нет в «{f}» на сервере (его переместили или удалили в другом месте)")
+        } else {
+            format!("{n} писем уже нет в «{f}» на сервере (их переместили или удалили в другом месте)")
+        }
+    };
+    match op {
+        Op::Flag { folder, targets, flag, value } => {
+            let flag = flag_kind(flag).ok_or_else(|| AppError::Other("неизвестная отметка".into()))?;
+            let (folder, value) = (folder.clone(), *value);
+            let found = with_ctx!(ctx, c => imap::locate(c, &folder, targets))?;
+            let uids: Vec<u32> = found.iter().flatten().copied().collect();
+            if !uids.is_empty() {
+                with_ctx!(ctx, c => imap::set_flag_many(c, &folder, &uids, flag, value))?;
+            }
+            Ok((uids.len() < targets.len()).then(|| gone(targets.len() - uids.len(), &folder)))
+        }
+        Op::Keyword { folder, targets, keyword, value } => {
+            let found = with_ctx!(ctx, c => imap::locate(c, folder, targets))?;
+            let uids: Vec<u32> = found.iter().flatten().copied().collect();
+            if !uids.is_empty() {
+                with_ctx!(ctx, c => imap::set_keyword(c, folder, &uids, keyword, *value))?;
+            }
+            Ok((uids.len() < targets.len()).then(|| gone(targets.len() - uids.len(), folder)))
+        }
+        Op::Due { folder, target, due } => {
+            let due = due.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map(|d| d.with_timezone(&chrono::Utc));
+            let found = with_ctx!(ctx, c => imap::locate(c, folder, std::slice::from_ref(target)))?;
+            match found.first().copied().flatten() {
+                Some(uid) => {
+                    with_ctx!(ctx, c => imap::set_due(c, folder, uid, due))?;
+                    Ok(None)
+                }
+                None => Ok(Some(gone(1, folder))),
+            }
+        }
+        Op::Move { folder, targets, target } => {
+            let found = with_ctx!(ctx, c => imap::locate(c, folder, targets))?;
+            let uids: Vec<u32> = found.iter().flatten().copied().collect();
+            if !uids.is_empty() {
+                with_ctx!(ctx, c => imap::move_messages(c, folder, &uids, target))?;
+            }
+            // Чего нет на месте — уже в нужной папке? Тогда перемещать нечего.
+            let missing: Vec<Target> = targets.iter().zip(&found).filter(|(_, f)| f.is_none()).map(|(t, _)| Target { uid: 0, msg_id: t.msg_id.clone() }).collect();
+            if missing.is_empty() {
+                return Ok(None);
+            }
+            let there = with_ctx!(ctx, c => imap::locate(c, target, &missing))?;
+            let lost = there.iter().filter(|f| f.is_none()).count();
+            Ok((lost > 0).then(|| gone(lost, folder)))
+        }
+        Op::Delete { folder, targets, trash } => {
+            let found = with_ctx!(ctx, c => imap::locate(c, folder, targets))?;
+            let uids: Vec<u32> = found.iter().flatten().copied().collect();
+            if !uids.is_empty() {
+                with_ctx!(ctx, c => imap::delete_messages(c, folder, &uids, trash.as_deref()))?;
+            }
+            // Письма уже нет — удалять нечего.
+            Ok(None)
+        }
+        Op::Send { raw, .. } => {
+            let raw = offline::decode(raw)?;
+            match deliver(ctx, &raw, None).await {
+                Ok(r) => {
+                    if let Some(w) = r.warning {
+                        log::warn!("queued mail: {w}");
+                    }
+                    Ok(None)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Op::Schedule { raw, .. } => {
+            let raw = offline::decode(raw)?;
+            with_ctx!(once ctx, c => imap::append_draft(c, &raw))?;
+            Ok(None)
+        }
+    }
+}
+
+/// Выполнить очередь на сервере по порядку. Без связи останавливается — продолжит
+/// планировщик после подключения.
+async fn replay(ctx: Arc<AccountCtx>) {
+    let Ok(_one) = ctx.replaying.try_lock() else { return };
+    ctx.replay_active.store(true, Ordering::SeqCst);
+    loop {
+        if ctx.is_closed() || !ctx.online() {
+            break;
+        }
+        let Ok(Some(item)) = with_queue(&ctx, |q| q.items.first().cloned()).await else { break };
+        let what = item.op.describe();
+        let result = run_op(&ctx, &item.op).await;
+        let stop = match result {
+            Ok(conflict) => {
+                let _ = with_queue(&ctx, |q| {
+                    q.items.retain(|i| i.id != item.id);
+                    if let Some(reason) = conflict {
+                        q.conflict(what.clone(), reason, None);
+                    }
+                })
+                .await;
+                false
+            }
+            Err(e) if e.is_offline() && !matches!(e, AppError::Timeout) => {
+                ctx.went_offline(&e);
+                true
+            }
+            // Письмо могло уйти: само не повторяем — решает пользователь.
+            Err(AppError::DeliveryUnknown(m)) => {
+                let _ = with_queue(&ctx, |q| {
+                    q.items.retain(|i| i.id != item.id);
+                    q.conflict(what.clone(), format!("связь оборвалась во время отправки — неизвестно, ушло ли письмо ({m})"), Some(item.op.clone()));
+                })
+                .await;
+                false
+            }
+            Err(e) => {
+                // Сервер ответил ошибкой: несколько попыток, затем — в конфликты.
+                let text = e.to_string();
+                let gave_up = with_queue(&ctx, |q| {
+                    let Some(i) = q.items.iter_mut().find(|i| i.id == item.id) else { return false };
+                    i.attempts += 1;
+                    i.error = Some(text.clone());
+                    if i.attempts < offline::MAX_ATTEMPTS {
+                        return false;
+                    }
+                    let op = i.op.clone();
+                    q.items.retain(|x| x.id != item.id);
+                    let retry = op.is_send().then_some(op);
+                    q.conflict(what.clone(), format!("сервер не выполнил: {text}"), retry);
+                    true
+                })
+                .await
+                .unwrap_or(false);
+                !gave_up
+            }
+        };
+        if stop {
+            break;
+        }
+    }
+    ctx.replay_active.store(false, Ordering::SeqCst);
+}
+
+/// Подключиться снова (планировщик без связи, кнопка «Проверить связь»).
+async fn try_reconnect(ctx: &Arc<AccountCtx>) -> bool {
+    match tokio::time::timeout(Duration::from_secs(20), imap::connect(&ctx.creds)).await {
+        Ok(Ok(conn)) => {
+            let old = ctx.conn.lock().await.replace(conn);
+            if let Some(old) = old {
+                old.logout().await;
+            }
+            ctx.came_online();
+            if let Some(st) = local(ctx).await {
+                st.wake();
+            }
+            tauri::async_runtime::spawn(replay(ctx.clone()));
+            true
+        }
+        Ok(Err(e)) => {
+            ctx.went_offline(&e);
+            false
+        }
+        Err(_) => {
+            ctx.went_offline(&AppError::Timeout);
+            false
+        }
+    }
+}
+
+async fn offline_status_of(ctx: &AccountCtx) -> offline::Status {
+    let available = local(ctx).await.is_some();
+    let (items, conflicts) = if available { with_queue(ctx, |q| q.views()).await.unwrap_or_default() } else { Default::default() };
+    let info = ctx.offline_info.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    offline::Status {
+        online: ctx.online(),
+        syncing: ctx.replay_active.load(Ordering::SeqCst),
+        available,
+        offline_since: info.as_ref().map(|(s, _)| s.clone()),
+        last_error: info.map(|(_, e)| e),
+        items,
+        conflicts,
+    }
+}
+
+/// Связь с сервером и очередь действий без сети.
+#[tauri::command]
+pub async fn offline_queue(state: State<'_, AppState>) -> Result<offline::Status> {
+    let ctx = state.ctx().await?;
+    Ok(offline_status_of(&ctx).await)
+}
+
+/// Проверить связь сейчас (не дожидаясь планировщика) и выполнить очередь.
+#[tauri::command]
+pub async fn offline_check(state: State<'_, AppState>) -> Result<offline::Status> {
+    let ctx = state.ctx().await?;
+    if ctx.online() {
+        tauri::async_runtime::spawn(replay(ctx.clone()));
+    } else {
+        try_reconnect(&ctx).await;
+    }
+    Ok(offline_status_of(&ctx).await)
+}
+
+/// Убрать действие из очереди (`item`) или конфликт из списка; `retry` — письмо
+/// с неизвестным результатом отправки снова поставить в очередь.
+#[tauri::command]
+pub async fn offline_resolve(state: State<'_, AppState>, id: u64, retry: Option<bool>) -> Result<offline::Status> {
+    let ctx = state.ctx().await?;
+    let again = with_queue(&ctx, |q| {
+        if let Some(pos) = q.conflicts.iter().position(|c| c.id == id) {
+            let c = q.conflicts.remove(pos);
+            return if retry == Some(true) { c.retry } else { None };
+        }
+        q.items.retain(|i| i.id != id);
+        None
+    })
+    .await?;
+    if let Some(op) = again {
+        enqueue(&ctx, op).await?;
+    }
+    Ok(offline_status_of(&ctx).await)
 }
 
 // ---------------------------------------------------------------- правила обработки почты
@@ -2022,7 +2481,18 @@ pub async fn categories_save(app: AppHandle, state: State<'_, AppState>, categor
 #[tauri::command]
 pub async fn set_keywords(state: State<'_, AppState>, folder: String, uids: Vec<u32>, keyword: String, value: bool) -> Result<()> {
     let ctx = state.ctx().await?;
-    with_conn!(state, c => imap::set_keyword(c, &folder, &uids, &keyword, value))?;
+    if !imap::valid_keyword(&keyword) {
+        return Err(AppError::Other("Недопустимое имя метки".into()));
+    }
+    let queued = queue_first(&ctx).await || match with_ctx!(ctx, c => imap::set_keyword(c, &folder, &uids, &keyword, value)) {
+        Ok(()) => false,
+        Err(e) if queue_on(&ctx, &e).await => true,
+        Err(e) => return Err(e),
+    };
+    if queued {
+        let targets = targets(&ctx, &folder, &uids).await;
+        enqueue(&ctx, Op::Keyword { folder: folder.clone(), targets, keyword: keyword.clone(), value }).await?;
+    }
     if let Some(st) = local(&ctx).await {
         for uid in &uids {
             st.patch(&folder, *uid, |m| {
@@ -2045,7 +2515,15 @@ pub async fn set_due(state: State<'_, AppState>, folder: String, uid: u32, due: 
         Some(d) => Some(chrono::DateTime::parse_from_rfc3339(&d).map_err(|_| AppError::Other("Некорректная дата".into()))?.with_timezone(&chrono::Utc)),
         None => None,
     };
-    with_conn!(state, c => imap::set_due(c, &folder, uid, due))?;
+    let queued = queue_first(&ctx).await || match with_ctx!(ctx, c => imap::set_due(c, &folder, uid, due)) {
+        Ok(()) => false,
+        Err(e) if queue_on(&ctx, &e).await => true,
+        Err(e) => return Err(e),
+    };
+    if queued {
+        let target = targets(&ctx, &folder, &[uid]).await.remove(0);
+        enqueue(&ctx, Op::Due { folder: folder.clone(), target, due: due.map(|d| d.to_rfc3339()) }).await?;
+    }
     if let Some(st) = local(&ctx).await {
         st.patch(&folder, uid, |m| {
             m.flagged = true;
@@ -2723,13 +3201,17 @@ pub async fn get_message(state: State<'_, AppState>, folder: String, uid: u32) -
             return Ok(detail);
         }
     }
-    with_conn!(state, c => async {
+    let result = with_ctx!(ctx, c => async {
         let detail = imap::get_message(c, &folder, uid).await?;
         if let (Some(st), Some(raw)) = (&st, c.last_raw(&folder, uid)) {
             st.put_raw(&folder, uid, raw);
         }
         Ok(detail)
-    })
+    });
+    match result {
+        Err(e) if e.is_offline() && st.is_some() => Err(AppError::Other("Нет связи с сервером, а текст этого письма не сохранён на компьютере — оно откроется, когда связь появится.".into())),
+        other => other,
+    }
 }
 
 #[tauri::command]
@@ -2741,7 +3223,15 @@ pub async fn set_flag(
     value: bool,
 ) -> Result<()> {
     let ctx = state.ctx().await?;
-    with_conn!(state, c => imap::set_flag(c, &folder, uid, flag, value))?;
+    let queued = queue_first(&ctx).await || match with_ctx!(ctx, c => imap::set_flag(c, &folder, uid, flag, value)) {
+        Ok(()) => false,
+        Err(e) if queue_on(&ctx, &e).await => true,
+        Err(e) => return Err(e),
+    };
+    if queued {
+        let targets = targets(&ctx, &folder, &[uid]).await;
+        enqueue(&ctx, Op::Flag { folder: folder.clone(), targets, flag: flag_name(flag).into(), value }).await?;
+    }
     if let Some(st) = local(&ctx).await {
         st.patch(&folder, uid, |m| match flag {
             FlagKind::Seen => m.unread = !value,
@@ -3008,12 +3498,15 @@ pub async fn totp_unlock(app: AppHandle, state: State<'_, AppState>, code: Strin
     check_totp(&state, &account, &code).await?;
     let p = state.pending.lock().await.take().ok_or(AppError::NotLoggedIn)?;
     let mut warning = None;
-    if let Err(e) = start_session(&app, &state, p.creds.clone(), p.profile.clone()).await {
-        if matches!(e, AppError::AuthFailed) && p.remember.is_none() {
-            settings::forget_password(&p.profile);
+    let online = match start_session(&app, &state, p.creds.clone(), p.profile.clone(), true).await {
+        Ok(online) => online,
+        Err(e) => {
+            if matches!(e, AppError::AuthFailed) && p.remember.is_none() {
+                settings::forget_password(&p.profile);
+            }
+            return Err(e);
         }
-        return Err(e);
-    }
+    };
     match p.remember {
         Some(true) => {
             if settings::store_password(&p.profile, &p.creds.password).is_err() {
@@ -3023,7 +3516,7 @@ pub async fn totp_unlock(app: AppHandle, state: State<'_, AppState>, code: Strin
         Some(false) => settings::forget_password(&p.profile),
         None => {}
     }
-    Ok(LoginResult { account: account_of(&p.profile), warning })
+    Ok(LoginResult { account: Account { offline: !online, ..account_of(&p.profile) }, warning })
 }
 
 /// Аватар Nextcloud: `kind` = "user" (ID пользователя) или "room" (токен беседы Talk).
@@ -3717,7 +4210,15 @@ pub async fn open_message_window(app: AppHandle, folder: String, uid: u32, title
 #[tauri::command]
 pub async fn move_messages(state: State<'_, AppState>, folder: String, uids: Vec<u32>, target: String) -> Result<()> {
     let ctx = state.ctx().await?;
-    with_conn!(state, c => imap::move_messages(c, &folder, &uids, &target))?;
+    let queued = queue_first(&ctx).await || match with_ctx!(ctx, c => imap::move_messages(c, &folder, &uids, &target)) {
+        Ok(()) => false,
+        Err(e) if queue_on(&ctx, &e).await => true,
+        Err(e) => return Err(e),
+    };
+    if queued {
+        let targets = targets(&ctx, &folder, &uids).await;
+        enqueue(&ctx, Op::Move { folder: folder.clone(), targets, target: target.clone() }).await?;
+    }
     if let Some(st) = local(&ctx).await {
         st.remove(&folder, &uids);
     }
@@ -3728,7 +4229,23 @@ pub async fn move_messages(state: State<'_, AppState>, folder: String, uids: Vec
 #[tauri::command]
 pub async fn delete_messages(state: State<'_, AppState>, folder: String, uids: Vec<u32>, trash: Option<String>) -> Result<bool> {
     let ctx = state.ctx().await?;
-    let permanent = with_conn!(state, c => imap::delete_messages(c, &folder, &uids, trash.as_deref()))?;
+    let direct = if queue_first(&ctx).await {
+        None
+    } else {
+        match with_ctx!(ctx, c => imap::delete_messages(c, &folder, &uids, trash.as_deref())) {
+            Ok(p) => Some(p),
+            Err(e) if queue_on(&ctx, &e).await => None,
+            Err(e) => return Err(e),
+        }
+    };
+    let permanent = match direct {
+        Some(p) => p,
+        None => {
+            let targets = targets(&ctx, &folder, &uids).await;
+            enqueue(&ctx, Op::Delete { folder: folder.clone(), targets, trash: trash.clone() }).await?;
+            trash.as_deref().is_none_or(|t| t == folder)
+        }
+    };
     if let Some(st) = local(&ctx).await {
         st.remove(&folder, &uids);
     }
@@ -4206,7 +4723,7 @@ pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: Str
         *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: None });
         return Ok(LoginResult { account: Account { locked: true, ..account_of(&s) }, warning: None });
     }
-    start_session(&app, &state, creds, s.clone()).await?;
+    start_session(&app, &state, creds, s.clone(), false).await?;
     let warning = settings::save(&app, &s).err().map(|e| format!("Не удалось сохранить настройки: {e}"));
     Ok(LoginResult { account: account_of(&s), warning })
 }
@@ -4525,6 +5042,9 @@ macro_rules! app_commands {
             crate::commands::counterparties,
             crate::commands::counterparty_timeline,
             crate::commands::counterparty_save,
+            crate::commands::offline_queue,
+            crate::commands::offline_check,
+            crate::commands::offline_resolve,
             crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,

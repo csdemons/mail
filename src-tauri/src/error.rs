@@ -24,6 +24,9 @@ pub enum AppError {
     /// Связь оборвалась после начала передачи письма: принял ли его SMTP-сервер, неизвестно.
     #[error("Неизвестно, принял ли почтовый сервер письмо (обрыв связи во время отправки): {0}")]
     DeliveryUnknown(String),
+    /// Сервер недоступен (не удалось подключиться) — запрос точно не выполнен.
+    #[error("Сервер {0} недоступен: {1}")]
+    Unreachable(String, String),
     #[error("{0}")]
     Other(String),
 }
@@ -32,6 +35,12 @@ impl AppError {
     /// Ошибки, после которых имеет смысл переподключиться и повторить запрос.
     pub fn is_connection(&self) -> bool {
         matches!(self, AppError::ConnectionLost | AppError::Timeout)
+    }
+
+    /// Нет связи с сервером (а не отказ сервера или ошибка TLS): можно работать
+    /// с письмами на компьютере и выполнить действие позже.
+    pub fn is_offline(&self) -> bool {
+        matches!(self, AppError::ConnectionLost | AppError::Timeout | AppError::Connect(..) | AppError::Unreachable(..))
     }
 }
 

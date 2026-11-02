@@ -1705,6 +1705,49 @@ pub async fn clear_snooze(conn: &mut Connection, folder: &str, uids: &[u32]) -> 
     Ok(())
 }
 
+/// Где теперь письма из очереди действий без сети: для каждого — UID в папке
+/// `folder` (проверка по Message-ID, а если UID уже другой — поиск по Message-ID)
+/// или `None`, если письма в папке нет. Папки нет — все `None`.
+pub async fn locate(conn: &mut Connection, folder: &str, targets: &[crate::offline::Target]) -> Result<Vec<Option<u32>>> {
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    match conn.ensure_selected(folder).await {
+        Ok(()) => {}
+        Err(AppError::NotFound) => return Ok(vec![None; targets.len()]),
+        Err(e) => return Err(e),
+    }
+    let uids: Vec<u32> = targets.iter().map(|t| t.uid).filter(|u| *u > 0).collect();
+    let fetches: Vec<Fetch> = if uids.is_empty() {
+        Vec::new()
+    } else {
+        conn.session.uid_fetch(uid_set(&uids), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?.try_collect().await?
+    };
+    let parser = MessageParser::default();
+    let found: Vec<(u32, Option<String>)> = fetches
+        .iter()
+        .filter_map(|f| {
+            let id = f.header().and_then(|h| parser.parse_headers(h)).and_then(|m| m.message_id().map(str::to_string));
+            f.uid.map(|u| (u, id))
+        })
+        .collect();
+    let mut out = Vec::with_capacity(targets.len());
+    for t in targets {
+        let direct = crate::offline::resolve(t, &found, None);
+        if direct.is_some() {
+            out.push(direct);
+            continue;
+        }
+        let id = t.msg_id.as_deref().map(crate::offline::norm_id).filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\'));
+        let searched = match id {
+            Some(id) => conn.session.uid_search(format!("HEADER Message-ID \"{id}\"")).await?.into_iter().max(),
+            None => None,
+        };
+        out.push(searched);
+    }
+    Ok(out)
+}
+
 /// UIDNEXT папки (STATUS, без открытия): по нему видно, пришли ли новые письма.
 pub async fn uid_next(conn: &mut Connection, folder: &str) -> Result<u32> {
     let mb = conn.session.status(folder, "(UIDNEXT UIDVALIDITY)").await?;

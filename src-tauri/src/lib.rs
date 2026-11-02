@@ -14,6 +14,7 @@ mod store;
 mod search;
 mod rules;
 mod counterparty;
+mod offline;
 mod totp;
 mod netio;
 mod winacl;

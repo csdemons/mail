@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
+import type { ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
@@ -180,6 +180,9 @@ export const api = {
   offlineStatus: () => invoke<OfflineStatus>('offline_status'),
   setOfflineDays: (days: number) => invoke<void>('set_offline_days', { days }),
   clearOffline: () => invoke<void>('clear_offline'),
+  offlineQueue: () => invoke<ConnectionStatus>('offline_queue'),
+  offlineCheck: () => invoke<ConnectionStatus>('offline_check'),
+  offlineResolve: (id: number, retry = false) => invoke<ConnectionStatus>('offline_resolve', { id, retry }),
   signatureGet: () => invoke<string>('signature_get'),
   signatureSave: (text: string) => invoke<string | null>('signature_save', { text }),
   listFolders: () => invoke<Folder[]>('list_folders'),

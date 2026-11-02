@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-offline-queue"
+description = "Enables the offline_queue command without any pre-configured scope."
+commands.allow = ["offline_queue"]
+
+[[permission]]
+identifier = "deny-offline-queue"
+description = "Denies the offline_queue command without any pre-configured scope."
+commands.deny = ["offline_queue"]

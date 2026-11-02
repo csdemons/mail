@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-offline-resolve"
+description = "Enables the offline_resolve command without any pre-configured scope."
+commands.allow = ["offline_resolve"]
+
+[[permission]]
+identifier = "deny-offline-resolve"
+description = "Denies the offline_resolve command without any pre-configured scope."
+commands.deny = ["offline_resolve"]

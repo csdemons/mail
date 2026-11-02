@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, Layers, LogOut, Mail, Bookmark, BookmarkPlus, Zap,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen, Handshake,
+  Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen, Handshake, CloudOff,
 } from 'lucide-react'
 
 import {
@@ -23,6 +23,7 @@ import FilesView from './FilesView'
 import type { NcStatus } from './types'
 import ContactsView from './ContactsView'
 import CounterpartyView from './CounterpartyView'
+import { OfflineBanner, QueuePanel, useConnection } from './OfflineQueue'
 import CalendarView from './CalendarView'
 import MailFilters from './MailFilters'
 import ContextMenu from './ContextMenu'
@@ -557,6 +558,28 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     timer = setTimeout(tick, 3000)
     return () => { stopped = true; if (timer) clearTimeout(timer) }
   }, [loadFirstPage])
+
+  // Связь с сервером и очередь действий без сети; связь вернулась — обновить списки.
+  const conn = useConnection(() => {
+    void loadFolders()
+    void loadFirstPage(folderIdRef.current, true)
+    setNotice('Связь с почтовым сервером восстановлена.')
+  })
+  const [showQueue, setShowQueue] = useState(false)
+  const [checkingConn, setCheckingConn] = useState(false)
+  async function checkConnection() {
+    setCheckingConn(true)
+    try {
+      const s = await api.offlineCheck()
+      conn.setStatus(s)
+      if (!s.online) setNotice('Связи с сервером пока нет.')
+    } catch (error) {
+      setNotice(errorText(error))
+    } finally {
+      setCheckingConn(false)
+    }
+  }
+  const offline = conn.status ? !conn.status.online : Boolean(account.offline)
 
   // Действия в окне письма (ответ, флажок, архив, удаление) видны в списке после возврата.
   useEffect(() => {
@@ -1437,7 +1460,9 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <CalendarClock size={16} /> Запланировано: {scheduled.length}
           </button>}
           <div className="sidebar-footer">
-            <div className="secure-label"><ShieldCheck size={15} /> Подключено по TLS</div>
+            {offline
+              ? <button className="secure-label offline text-button" onClick={() => setShowQueue(true)}><CloudOff size={15} /> Без сети{conn.status && conn.status.items.length > 0 ? ` · в очереди ${conn.status.items.length}` : ''}</button>
+              : <div className="secure-label"><ShieldCheck size={15} /> Подключено по TLS</div>}
             <span>{account.host}</span>
           </div>
         </aside>}
@@ -1516,6 +1541,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             {otherErrors.length > 0 && <div className="unified-errors" role="alert">Не ответили: {otherErrors.join('; ')}</div>}
             </>
             : <div className="message-list-header"><span>{listTitle}</span><span>{total} {pluralLetters(total)}</span></div>}
+          <OfflineBanner status={conn.status} onOpen={() => setShowQueue(true)} onCheck={() => void checkConnection()} checking={checkingConn} />
           {checked.size > 0 && <div className="bulk-bar">
             <span>Отмечено: {checked.size}</span>
             <button className="text-button" onClick={() => void archive(actionTargets())}><Archive size={15} /> В архив</button>
@@ -1603,8 +1629,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           <div className="list-footer">
             <span>{searching ? `${visibleMessages.length} найдено` : `${visibleMessages.length} из ${messages.length} загруженных`}</span>
             <span>
-              <Circle size={7} fill={listError ? '#ef4444' : '#22c55e'} />
-              {listError ? 'Ошибка' : loading ? 'Синхронизация' : 'Онлайн'}
+              <Circle size={7} fill={listError ? '#ef4444' : offline ? '#f59e0b' : '#22c55e'} />
+              {listError ? 'Ошибка' : offline ? 'Без сети' : loading ? 'Синхронизация' : 'Онлайн'}
             </span>
           </div>
         </main>}
@@ -1716,6 +1742,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       {popMenu && <ContextMenu x={popMenu.x} y={popMenu.y} items={popMenu.items} onClose={() => setPopMenu(null)} />}
       {snoozePick && <DuePicker title="Отложить письмо" hint="В это время письмо вернётся во «Входящие» непрочитанным" action="Отложить" onClose={() => setSnoozePick(null)} onPick={(d) => { const items = snoozePick; setSnoozePick(null); void snoozeItems(items, d) }} />}
       {duePick && <DuePicker onClose={() => setDuePick(null)} onPick={(d) => { const items = duePick; setDuePick(null); void setDueFor(items, d) }} />}
+      {showQueue && conn.status && <QueuePanel status={conn.status} onStatus={conn.setStatus} onClose={() => setShowQueue(false)} onNotice={setNotice} />}
       {showScheduled && <ScheduledMail items={scheduled} onClose={() => setShowScheduled(false)} onChanged={loadScheduled} onNotice={setNotice} />}
       {rowMenu && <ContextMenu x={rowMenu.x} y={rowMenu.y} items={rowMenuItems(rowMenu.items)} onClose={() => setRowMenu(null)} />}
       {dragInfo && <div className="mail-drag-ghost" style={{ left: dragInfo.x + 12, top: dragInfo.y + 8 }}>

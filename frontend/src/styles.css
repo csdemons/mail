@@ -1050,3 +1050,27 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
   .counterparty-timeline { overflow: visible; border-right: 0; }
   .counterparty-side { width: auto; flex: none; overflow: visible; border-top: 1px solid var(--line); }
 }
+
+/* --- работа без сети --- */
+.offline-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 0 10px 8px; padding: 8px 11px; border-radius: 9px; font-size: 12px; background: #fff7e6; border: 1px solid #ffd591; color: #8a5300; }
+.offline-banner > span { flex: 1; min-width: 160px; }
+.offline-banner .text-button { display: inline-flex; align-items: center; gap: 4px; color: inherit; font-weight: 600; }
+.offline-banner.syncing { background: color-mix(in srgb, var(--blue) 9%, transparent); border-color: color-mix(in srgb, var(--blue) 35%, transparent); color: var(--blue); }
+.offline-banner.conflicts { background: #fff1f0; border-color: #ffa39e; color: #a8071a; }
+.theme-dark .offline-banner { background: #3a2c12; border-color: #6b4f1d; color: #f5c46b; }
+.theme-dark .offline-banner.syncing { background: #1d2c48; border-color: #34507f; color: #9bc0ff; }
+.theme-dark .offline-banner.conflicts { background: #3b1b1b; border-color: #7a2f2f; color: #ffb3b3; }
+.queue-modal h3 { font-size: 13px; margin: 14px 0 6px; }
+.queue-state { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.queue-state .secondary-button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; }
+.queue-offline { display: inline-flex; align-items: center; gap: 6px; color: #b45309; }
+.queue-online { color: #15803d; }
+.queue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.queue-item { display: flex; align-items: flex-start; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.queue-item > svg { margin-top: 2px; color: var(--muted); flex: 0 0 auto; }
+.queue-item.conflict > svg { color: #d4380d; }
+.queue-item .secondary-button { padding: 4px 9px; font-size: 11px; white-space: nowrap; }
+.queue-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.queue-empty, .queue-help { font-size: 12px; }
+.queue-help { margin-top: 14px; line-height: 1.5; }
+.secure-label.offline { color: #b45309; }

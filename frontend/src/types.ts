@@ -8,6 +8,8 @@ export interface Account {
   port: number
   /** Программа заблокирована: нужен код TOTP. */
   locked?: boolean
+  /** Сеанс открыт без связи с сервером (письма с компьютера). */
+  offline?: boolean
 }
 
 export interface OfflineStatus {
@@ -127,6 +129,8 @@ export interface PickedFile {
 export interface SendResult {
   savedTo: string | null
   warning: string | null
+  /** Нет связи — письмо в очереди исходящих. */
+  queued?: boolean
 }
 
 export interface SendTicket {
@@ -549,4 +553,17 @@ export interface CounterpartyTimeline {
   server: boolean
   eventsFrom: string
   errors: string[]
+}
+
+/** Работа без сети: связь и очередь действий (см. offline.rs). */
+export interface QueueItem { id: number; created: string; what: string; send: boolean; error: string | null }
+export interface QueueConflict { id: number; when: string; what: string; reason: string; canRetry: boolean }
+export interface ConnectionStatus {
+  online: boolean
+  syncing: boolean
+  available: boolean
+  offlineSince: string | null
+  lastError: string | null
+  items: QueueItem[]
+  conflicts: QueueConflict[]
 }

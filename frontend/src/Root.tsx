@@ -53,6 +53,13 @@ function MainRoot() {
   }
 
   async function logout(resetTotp = false) {
+    // Несделанное без сети пропадёт вместе с письмами на компьютере — спросить.
+    const q = await api.offlineQueue().catch(() => null)
+    if (q && q.items.length > 0) {
+      const mails = q.items.filter((i) => i.send).length
+      const what = mails > 0 ? `${q.items.length} действий в очереди без сети, из них писем к отправке: ${mails}` : `${q.items.length} действий в очереди без сети`
+      if (!window.confirm(`Есть ${what}. При выходе они будут потеряны. Выйти?`)) return
+    }
     if (state.kind === 'ready' || state.kind === 'locked') forgetView(`${state.account.username}@${state.account.host}`.toLowerCase())
     await api.logout(resetTotp).catch(() => undefined)
     resetSession()

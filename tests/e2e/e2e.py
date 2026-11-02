@@ -1728,6 +1728,118 @@ except Exception:
 finally:
     d.quit()
 
+# 14d2. работа без сети: письма с компьютера, очередь действий и исходящих, конфликты, запуск без сети
+def block_servers(on):
+    # Сервер «пропадает»: IMAP и SMTP отвечают сбросом соединения.
+    for cmd in ('iptables', 'ip6tables'):
+        for port in (10993, 465):
+            subprocess.run([cmd, '-I' if on else '-D', 'INPUT', '-p', 'tcp', '--dport', str(port), '-j', 'REJECT', '--reject-with', 'tcp-reset'],
+                           check=on and cmd == 'iptables', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    def inv(cmd, args=None):
+        return d.execute_async_script("const cb = arguments[2]; window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1] || {}).then((r) => cb({ok: r}), (e) => cb({err: JSON.stringify(e)}))", cmd, args)
+    rowt = lambda t: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if t in r.get_attribute('textContent')]
+    M = imap()
+    for n, subj in enumerate(('E2E без сети флажок', 'E2E без сети удалить', 'E2E без сети конфликт')):
+        m = EmailMessage(); m['From'] = 'Робот <robot@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj; m['Message-ID'] = f'<offline-{n}-{int(time.time())}@e2e>'; m.set_content(f'Текст: {subj}')
+        M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), m.as_bytes())
+    M.logout()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: rowt('E2E без сети флажок') and rowt('E2E без сети конфликт'))
+    rowt('E2E без сети флажок')[0].click()
+    W(d, 10).until(lambda d: 'Текст: E2E без сети флажок' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
+    uid_of = lambda subj: [m['uid'] for m in inv('cached_messages', {'folder': 'INBOX', 'beforeUid': None, 'limit': 100})['ok']['items'] if m['subject'] == subj][0]
+    u_del, u_conf = uid_of('E2E без сети удалить'), uid_of('E2E без сети конфликт')
+    block_servers(True)
+    try:
+        d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+        banner = W(d, 40).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.offline-banner') if 'Нет связи' in b.get_attribute('textContent')])
+        assert rowt('E2E без сети флажок') and rowt('E2E без сети удалить'), 'cached list gone'
+        assert 'Без сети' in d.find_element(By.CSS_SELECTOR, '.list-footer').get_attribute('textContent')
+        ok('offline: no connection detected, folders and mail shown from the computer')
+        # отметка из интерфейса, прочтение и удаление — без ошибок, в очередь
+        flag = d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Флажок"]')
+        flag.click()
+        W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Флажок"]').get_attribute('aria-pressed') == 'true')
+        assert 'ok' in inv('set_flag', {'folder': 'INBOX', 'uid': u_conf, 'flag': 'seen', 'value': True})
+        r = inv('delete_messages', {'folder': 'INBOX', 'uids': [u_del], 'trash': 'Trash'})
+        assert r.get('ok') is False, r
+        # письмо без сети — в очередь исходящих
+        compose('petrov@jinr.ru', 'E2E без сети письмо', 'Отправлено без сети')
+        d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+        W(d, 20).until(lambda d: any('очереди исходящих' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+        q = inv('offline_queue')['ok']
+        assert not q['online'] and q['available'], q
+        whats = [i['what'] for i in q['items']]
+        assert any('Поставить флажок' in w for w in whats) and any('Отметить прочитанным' in w for w in whats) and any('Удалить' in w for w in whats), whats
+        assert any(i['send'] and 'E2E без сети письмо' in i['what'] for i in q['items']), whats
+        W(d, 10).until(lambda d: 'В очереди' in d.find_element(By.CSS_SELECTOR, '.offline-banner').get_attribute('textContent'))
+        qfiles = glob.glob(os.environ['XDG_DATA_HOME'] + '/**/mailstore/*/queue.bin', recursive=True)
+        assert len(qfiles) == 1, qfiles
+        qraw = open(qfiles[0], 'rb').read()
+        for secret in ('E2E без сети письмо'.encode(), b'petrov@jinr.ru', 'Отправлено без сети'.encode()):
+            assert secret not in qraw, secret
+        [b for b in d.find_elements(By.CSS_SELECTOR, '.offline-banner button') if 'В очереди' in b.text][0].click()
+        panel = wait(d, '.queue-modal')
+        assert 'Отправить «E2E без сети письмо»' in panel.get_attribute('textContent'), panel.get_attribute('textContent')
+        d.save_screenshot(f'{OUT}/46-offline-queue.png')
+        panel.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
+        ok('offline actions and outgoing mail queued (encrypted on disk), listed in the queue')
+        # пока связи нет, письмо удалили в другом месте (веб-почта) — будет конфликт
+        subprocess.run(['doveadm', '-c', '/srv/imaptest/dovecot.conf', 'expunge', '-u', 'test@rrcki.ru', 'mailbox', 'INBOX', 'header', 'Subject', 'E2E без сети конфликт'], check=True)
+    finally:
+        block_servers(False)
+    W(d, 60).until(lambda d: (lambda q: q['online'] and not q['items'])(inv('offline_queue')['ok']))
+    W(d, 15).until(lambda d: sent_with('E2E без сети письмо'))
+    assert 'E2E без сети письмо' in subjects('Sent')
+    assert 'E2E без сети удалить' in subjects('Trash') and 'E2E без сети удалить' not in subjects('INBOX')
+    M = imap(); M.select('INBOX')
+    _, ids = M.uid('SEARCH', None, 'ALL')
+    flagged = False
+    for u in ids[0].split():
+        _, data = M.uid('FETCH', u, '(FLAGS BODY.PEEK[HEADER.FIELDS (SUBJECT)])')
+        hdr = data[0][1] if isinstance(data[0], tuple) else b''
+        if 'E2E без сети флажок' in str(make_header(decode_header(email.message_from_bytes(hdr)['Subject'] or ''))):
+            flagged = b'\\Flagged' in data[0][0]
+    M.logout()
+    assert flagged, 'flag not applied on server'
+    q = inv('offline_queue')['ok']
+    assert len(q['conflicts']) == 1 and 'уже нет' in q['conflicts'][0]['reason'] and 'прочитанным' in q['conflicts'][0]['what'], q['conflicts']
+    ok('back online: queue replayed in order (flag, read, delete to Trash), queued mail sent with a copy in Sent')
+    banner = W(d, 15).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.offline-banner') if 'удалось' in b.get_attribute('textContent')])
+    banner[0].find_element(By.TAG_NAME, 'button').click()
+    panel = wait(d, '.queue-modal')
+    assert 'уже нет' in panel.get_attribute('textContent')
+    panel.find_element(By.CSS_SELECTOR, 'button[aria-label="Скрыть конфликт"]').click()
+    W(d, 10).until(lambda d: not inv('offline_queue')['ok']['conflicts'])
+    panel.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.offline-banner'))
+    ok('conflict: mail deleted elsewhere while offline is reported, not retried; dismissed')
+
+    # запуск без сети: сохранённый пароль, письма с компьютера; связь появилась — работа продолжается
+    block_servers(True)
+    try:
+        d.quit()
+        d = session()
+        wait(d, '.message-row', 60)
+        W(d, 20).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.offline-banner') if 'Нет связи' in b.get_attribute('textContent')])
+        assert rowt('E2E без сети флажок')
+        assert 'Без сети' in d.find_element(By.CSS_SELECTOR, '.sidebar-footer').get_attribute('textContent')
+        d.save_screenshot(f'{OUT}/47-offline-start.png')
+    finally:
+        block_servers(False)
+    W(d, 60).until(lambda d: inv('offline_queue')['ok']['online'])
+    W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.offline-banner'))
+    assert 'Подключено по TLS' in d.find_element(By.CSS_SELECTOR, '.sidebar-footer').get_attribute('textContent')
+    ok('offline start with the saved password: mail from the computer; reconnects on its own')
+except Exception:
+    block_servers(False)
+    d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
+finally:
+    d.quit()
+
 # 14e. категории, флажок со сроком и напоминание, цепочки, шаблоны
 d = session()
 try:

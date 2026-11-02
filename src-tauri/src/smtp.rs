@@ -228,8 +228,10 @@ pub async fn send_raw(host: &str, port: u16, user: &str, pass: &str, raw: &[u8])
     // и его можно отправить позже.
     match transport.test_connection().await {
         Ok(true) => {}
-        Ok(false) => return Err(AppError::Other(format!("SMTP-сервер {host}:{port} недоступен"))),
-        Err(e) => return Err(smtp_error(host, port, e)),
+        Ok(false) => return Err(AppError::Unreachable(format!("SMTP {host}:{port}"), "не ответил".into())),
+        // Сервер ответил отказом (например, на вход) — это не «нет сети».
+        Err(e) if e.is_permanent() || e.is_transient() => return Err(smtp_error(host, port, e)),
+        Err(e) => return Err(AppError::Unreachable(format!("SMTP {host}:{port}"), e.to_string())),
     }
     transport.send_raw(&envelope, raw).await.map(|_| ()).map_err(|e| {
         if definitely_not_sent(&e) {
