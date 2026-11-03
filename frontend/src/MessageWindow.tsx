@@ -184,7 +184,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
             <small>{formatFullDate(detail.date)}</small>
           </div>
         </div>
-        {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} onEdit={ncConnected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(folder, uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined} />}
+        {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} onNotice={setNotice} onEdit={ncConnected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(folder, uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined} />}
         <MdnBar detail={detail} me={me} onNotice={setNotice} onDone={() => setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] })} />
         <MessageBody detail={detail} scale={font / 15} dark={dark} onNotice={setNotice} />
       </div> : <div className="empty-reader">

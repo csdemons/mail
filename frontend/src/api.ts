@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
+import type { CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
@@ -51,6 +51,9 @@ export const api = {
   discoverServers: (email: string) => invoke<{ imapHost: string; imapPort: number; smtpHost: string; smtpPort: number; username: string; source: string; note: string | null }>('discover_servers', { email }),
   attachData: (name: string, data: string) => invoke<PickedFile>('attach_data', { name, data }),
   forwardAttachments: (folder: string, uid: number) => invoke<PickedFile[]>('forward_attachments', { folder, uid }),
+  calendarFilePreview: (folder: string, uid: number, index: number) => invoke<CalendarFile>('calendar_file_preview', { folder, uid, index }),
+  calendarFileImport: (folder: string, uid: number, index: number, calendarUrl: string, uids: string[]) =>
+    invoke<CalendarImport>('calendar_file_import', { folder, uid, index, calendarUrl, uids }),
   markSpam: (folder: string, uids: number[], spam: boolean) => invoke<string>('mark_spam', { folder, uids, spam }),
   unsubscribe: (folder: string, uid: number) => invoke<{ done: boolean; openUrl: string | null; how: string }>('unsubscribe', { folder, uid }),
   snooze: (folder: string, uids: number[], until: string) => invoke<string>('snooze', { folder, uids, until }),

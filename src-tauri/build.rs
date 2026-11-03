@@ -113,6 +113,8 @@ const COMMANDS: &[&str] = &[
             "offline_check",
             "offline_resolve",
             "forward_attachments",
+            "calendar_file_preview",
+            "calendar_file_import",
             "talk_file_data",
         "accounts_list",
         "account_add",

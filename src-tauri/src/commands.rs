@@ -3196,6 +3196,90 @@ pub async fn list_events(state: State<'_, AppState>, start: String, end: String)
     fetch_events(&ctx, start, end).await
 }
 
+/// Календари учётной записи (обнаруживаются один раз за сеанс).
+async fn calendars_of(ctx: &AccountCtx, client: &mut dav::DavClient, base: &url::Url) -> Result<Vec<dav::Collection>> {
+    let cached = ctx.calendars.lock().await.clone();
+    match cached {
+        Some(c) => Ok(c),
+        None => {
+            let found = client.discover(base, dav::Kind::Calendar).await?;
+            *ctx.calendars.lock().await = Some(found.clone());
+            Ok(found)
+        }
+    }
+}
+
+/// Файл календаря (.ics) из письма: события и календари, куда их можно добавить.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarFile {
+    events: Vec<dav::IcsEvent>,
+    /// Только те, куда можно записывать.
+    calendars: Vec<dav::Collection>,
+}
+
+/// Вложение — файл календаря: не больше 5 МБ, текст UTF-8.
+async fn ics_attachment(ctx: &AccountCtx, folder: &str, uid: u32, index: usize) -> Result<Vec<dav::IcsEvent>> {
+    let (_, data) = attachment(ctx, folder, uid, index).await?;
+    if data.len() > 5 * 1024 * 1024 {
+        return Err(AppError::Other("Файл календаря больше 5 МБ".into()));
+    }
+    let text = String::from_utf8_lossy(&data).to_string();
+    tokio::task::spawn_blocking(move || dav::split_ics(&text)).await.map_err(|e| AppError::Other(e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn calendar_file_preview(state: State<'_, AppState>, folder: String, uid: u32, index: usize) -> Result<CalendarFile> {
+    let ctx = state.ctx().await?;
+    let events = ics_attachment(&ctx, &folder, uid, index).await?;
+    let (mut client, base) = dav_client(&ctx).await?;
+    let calendars = calendars_of(&ctx, &mut client, &base).await?.into_iter().filter(|c| c.writable).collect();
+    Ok(CalendarFile { events, calendars })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarImport {
+    added: u32,
+    updated: u32,
+    errors: Vec<String>,
+}
+
+/// Добавить события файла календаря из письма в календарь. Событие, которое уже
+/// есть в этом календаре (тот же UID — например, обновлённое расписание), заменяется.
+#[tauri::command]
+pub async fn calendar_file_import(state: State<'_, AppState>, folder: String, uid: u32, index: usize, calendar_url: String, uids: Option<Vec<String>>) -> Result<CalendarImport> {
+    let ctx = state.ctx().await?;
+    let events = ics_attachment(&ctx, &folder, uid, index).await?;
+    let (mut client, base) = dav_client(&ctx).await?;
+    let cal = calendars_of(&ctx, &mut client, &base)
+        .await?
+        .into_iter()
+        .find(|c| c.url == calendar_url)
+        .ok_or_else(|| AppError::Other("Календарь не найден".into()))?;
+    require_writable(&cal)?;
+    let mut result = CalendarImport { added: 0, updated: 0, errors: Vec::new() };
+    for e in events.iter().filter(|e| uids.as_ref().is_none_or(|u| u.contains(&e.uid))) {
+        let done = match client.find_uid(&cal, &e.uid).await {
+            Ok(Some((href, etag))) => client.put(&href, "text/calendar; charset=utf-8", &e.ics, Some(etag.as_deref().unwrap_or("*"))).await.map(|_| false),
+            Ok(None) => match collection_child(&cal.url, &dav::resource_name(&e.uid), "ics") {
+                Ok(href) => client.put(&href, "text/calendar; charset=utf-8", &e.ics, None).await.map(|_| true),
+                Err(err) => Err(err),
+            },
+            Err(err) => Err(err),
+        };
+        match done {
+            Ok(true) => result.added += 1,
+            Ok(false) => result.updated += 1,
+            Err(err) => result.errors.push(format!("«{}»: {err}", e.title)),
+        }
+    }
+    if result.added + result.updated == 0 && !result.errors.is_empty() {
+        return Err(AppError::Other(result.errors.join("; ")));
+    }
+    Ok(result)
+}
+
 async fn fetch_events(ctx: &AccountCtx, start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>) -> Result<EventsResult> {
     let (mut client, base) = dav_client(ctx).await?;
     let cached = ctx.calendars.lock().await.clone();
@@ -5080,6 +5164,8 @@ macro_rules! app_commands {
             crate::commands::offline_check,
             crate::commands::offline_resolve,
             crate::commands::forward_attachments,
+            crate::commands::calendar_file_preview,
+            crate::commands::calendar_file_import,
             crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,

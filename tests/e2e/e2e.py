@@ -1761,6 +1761,42 @@ try:
     parts = {str(make_header(decode_header(p.get_filename()))): p.get_payload(decode=True) for p in fwd.walk() if p.get_filename()}
     assert parts == {'Смета 2027.xlsx': b'SMETA-DATA-2027', 'plan.pdf': b'%PDF-1.4 plan'}, parts
     ok('forward: attachments of the original mail are attached and sent')
+    # файл с расписанием совещаний во вложении — сразу в свой календарь
+    import datetime as _dtc
+    d1 = _dtc.date.today() + _dtc.timedelta(days=7)
+    ics = ('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//RU\r\nMETHOD:PUBLISH\r\n'
+           f'BEGIN:VEVENT\r\nUID:e2e-sched-1\r\nSUMMARY:Планёрка по проекту\r\nDTSTART;TZID=Europe/Moscow:{d1:%Y%m%d}T100000\r\nDTEND;TZID=Europe/Moscow:{d1:%Y%m%d}T110000\r\nRRULE:FREQ=WEEKLY;COUNT=3\r\nLOCATION:Переговорная 214\r\nEND:VEVENT\r\n'
+           f'BEGIN:VEVENT\r\nUID:e2e-sched-2\r\nSUMMARY:Выездное совещание\r\nDTSTART;VALUE=DATE:{d1 + _dtc.timedelta(days=2):%Y%m%d}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n')
+    im = EmailMessage(); im['From'] = 'Секретарь <secretary@nrcki.ru>'; im['To'] = 'test@rrcki.ru'; im['Subject'] = 'E2E расписание совещаний'; im.set_content('Расписание во вложении')
+    im.add_attachment(ics.encode(), maintype='text', subtype='calendar', filename='Расписание.ics')
+    M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), im.as_bytes()); M.logout()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: rowt('E2E расписание совещаний'))
+    rowt('E2E расписание совещаний')[0].click()
+    wait(d, 'button[aria-label="Добавить Расписание.ics в календарь"]', 15).click()
+    dlg = wait(d, '.ics-modal')
+    W(d, 30).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.ics-events li')) == 2)
+    txt = dlg.get_attribute('textContent')
+    assert 'Планёрка по проекту' in txt and 'повторяется' in txt and 'Переговорная 214' in txt and 'Выездное совещание' in txt and 'весь день' in txt, txt
+    cal_opts = [o.get_attribute('textContent') for o in dlg.find_elements(By.CSS_SELECTOR, 'select[aria-label="Календарь"] option')]
+    assert 'Рабочий' in cal_opts, cal_opts
+    from selenium.webdriver.support.ui import Select as _Sel
+    _Sel(dlg.find_element(By.CSS_SELECTOR, 'select[aria-label="Календарь"]')).select_by_visible_text('Рабочий')
+    d.save_screenshot(f'{OUT}/48-ics-import.png')
+    [b for b in dlg.find_elements(By.CSS_SELECTOR, '.ics-buttons button') if 'Добавить' in b.text][0].click()
+    W(d, 20).until(lambda d: any('добавлено: 2' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    rng = {'start': f'{d1 - _dtc.timedelta(days=1)}T00:00:00Z', 'end': f'{d1 + _dtc.timedelta(days=30)}T00:00:00Z'}
+    titles = lambda: [e['title'] for e in inv('list_events', rng)['ok']['events']]
+    assert titles().count('Планёрка по проекту') == 3 and titles().count('Выездное совещание') == 1, titles()
+    # повторно (обновлённое расписание) — заменяется, не задваивается
+    wait(d, 'button[aria-label="Добавить Расписание.ics в календарь"]').click()
+    dlg = wait(d, '.ics-modal')
+    W(d, 30).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.ics-events li')) == 2)
+    _Sel(dlg.find_element(By.CSS_SELECTOR, 'select[aria-label="Календарь"]')).select_by_visible_text('Рабочий')
+    [b for b in dlg.find_elements(By.CSS_SELECTOR, '.ics-buttons button') if 'Добавить' in b.text][0].click()
+    W(d, 20).until(lambda d: any('обновлено: 2' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    assert titles().count('Планёрка по проекту') == 3 and titles().count('Выездное совещание') == 1, titles()
+    ok('calendar file in a mail: events previewed and added to the chosen calendar; re-import updates, no duplicates')
     M = imap()
     for n, subj in enumerate(('E2E без сети флажок', 'E2E без сети удалить', 'E2E без сети конфликт')):
         m = EmailMessage(); m['From'] = 'Робот <robot@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj; m['Message-ID'] = f'<offline-{n}-{int(time.time())}@e2e>'; m.set_content(f'Текст: {subj}')

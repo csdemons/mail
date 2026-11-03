@@ -21,6 +21,8 @@
     "allow-search-contacts",
     "allow-attachment-data",
     "allow-forward-attachments",
+    "allow-calendar-file-preview",
+    "allow-calendar-file-import",
     "allow-save-attachment",
     "allow-close-window",
     "allow-message-html-remote",

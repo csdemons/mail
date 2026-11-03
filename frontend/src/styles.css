@@ -1074,3 +1074,20 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .queue-empty, .queue-help { font-size: 12px; }
 .queue-help { margin-top: 14px; line-height: 1.5; }
 .secure-label.offline { color: #b45309; }
+
+/* --- файл календаря во вложениях --- */
+.calendar-file .attachment-icon { color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, transparent); }
+.attachment-calendar { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; font-size: 12px; white-space: nowrap; color: var(--blue); }
+.ics-modal { gap: 10px; }
+.ics-calendar { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.ics-calendar select { flex: 1; border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; background: var(--surface); color: inherit; }
+.ics-all { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+.ics-events { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 9px; }
+.ics-events li + li { border-top: 1px solid var(--line); }
+.ics-events label { display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; cursor: pointer; }
+.ics-events input { margin-top: 3px; }
+.ics-event { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.ics-event small { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ics-help { font-size: 12px; margin: 0; }
+.ics-buttons { display: flex; gap: 8px; }
+.ics-buttons button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; }

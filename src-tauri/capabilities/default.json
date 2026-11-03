@@ -113,6 +113,8 @@
     "allow-offline-check",
     "allow-offline-resolve",
     "allow-forward-attachments",
+    "allow-calendar-file-preview",
+    "allow-calendar-file-import",
     "allow-rules-save",
     "allow-talk-file-data",
     "allow-update-contact",

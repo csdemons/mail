@@ -1706,6 +1706,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               onSave={(i) => void saveAttachment(i)}
               onCloud={ncStatus?.connected ? (i, name) => void saveToNextcloud(i, name) : undefined}
               cloudTitle={`Сохранить в Nextcloud (${NC_MAIL_DIR})`}
+              onNotice={setNotice}
               onEdit={ncStatus?.connected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(detail.folder, detail.uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined}
             />}
             <MdnBar detail={detail} me={account.username} onNotice={setNotice} onDone={() => { setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] }); patchMessage(messageKey(detail), { keywords: [...detail.keywords, '$MDNSent'] }) }} />

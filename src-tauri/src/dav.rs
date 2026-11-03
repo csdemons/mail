@@ -1289,6 +1289,191 @@ pub fn update_vcard(original: &str, input: &ContactInput) -> Result<String> {
     )
 }
 
+// ---------------------------------------------------------------- файл календаря (.ics) из письма
+
+/// Событие из файла календаря: что показать перед добавлением и что записать
+/// (`ics` — отдельный календарь с одним UID: событие, его исключения и нужные часовые пояса).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IcsEvent {
+    pub uid: String,
+    pub title: String,
+    /// RFC 3339 (UTC) или YYYY-MM-DD для событий на весь день.
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+    pub location: Option<String>,
+    pub recurring: bool,
+    #[serde(skip)]
+    pub ics: String,
+}
+
+/// Сколько событий принимается из одного файла.
+pub const MAX_ICS_EVENTS: usize = 500;
+
+/// Разложить файл календаря на события по UID. Свойство METHOD (приглашение
+/// iTIP) убирается — в календаре на сервере его быть не должно; событию без UID
+/// он назначается.
+pub fn split_ics(data: &str) -> Result<Vec<IcsEvent>> {
+    // Логические строки: продолжения (начинаются с пробела/табуляции) — к предыдущей.
+    let mut lines: Vec<String> = Vec::new();
+    for raw in data.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if (line.starts_with(' ') || line.starts_with('\t')) && !lines.is_empty() {
+            let last = lines.last_mut().expect("not empty");
+            last.push_str("\r\n");
+            last.push_str(line);
+        } else if !line.trim().is_empty() {
+            lines.push(line.to_string());
+        }
+    }
+    let name_of = |l: &str| l.split([':', ';']).next().unwrap_or_default().trim().to_ascii_uppercase();
+    let mut header: Vec<String> = Vec::new();
+    let mut timezones: Vec<String> = Vec::new();
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut depth = 0usize;
+    let mut block: Vec<String> = Vec::new();
+    let mut kind = String::new();
+    for l in lines {
+        let name = name_of(&l);
+        let value = l.split_once(':').map(|(_, v)| v.trim().to_ascii_uppercase()).unwrap_or_default();
+        if name == "BEGIN" {
+            depth += 1;
+            if depth == 2 {
+                kind = value.clone();
+                block.clear();
+            }
+            if depth >= 2 {
+                block.push(l);
+            }
+            continue;
+        }
+        if name == "END" {
+            if depth >= 2 {
+                block.push(l);
+            }
+            if depth == 2 {
+                match kind.as_str() {
+                    "VTIMEZONE" => timezones.push(block.join("\r\n")),
+                    "VEVENT" => {
+                        let uid = block
+                            .iter()
+                            .find(|x| name_of(x) == "UID")
+                            .and_then(|x| x.split_once(':'))
+                            .map(|(_, v)| v.replace("\r\n ", "").replace("\r\n\t", "").trim().to_string())
+                            .filter(|u| !u.is_empty());
+                        let uid = match uid {
+                            Some(u) => u,
+                            None => {
+                                let u = new_uid();
+                                block.insert(1, format!("UID:{u}"));
+                                u
+                            }
+                        };
+                        match groups.iter_mut().find(|(u, _)| *u == uid) {
+                            Some((_, g)) => g.push(block.join("\r\n")),
+                            None => {
+                                if groups.len() >= MAX_ICS_EVENTS {
+                                    return Err(AppError::Other(format!("В файле больше {MAX_ICS_EVENTS} событий")));
+                                }
+                                groups.push((uid, vec![block.join("\r\n")]));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if depth == 1 && matches!(name.as_str(), "VERSION" | "PRODID" | "CALSCALE") {
+            header.push(l);
+        } else if depth >= 2 {
+            block.push(l);
+        }
+    }
+    if groups.is_empty() {
+        return Err(AppError::Other("В файле нет событий календаря".into()));
+    }
+    if !header.iter().any(|h| name_of(h) == "VERSION") {
+        header.insert(0, "VERSION:2.0".into());
+    }
+    if !header.iter().any(|h| name_of(h) == "PRODID") {
+        header.push("PRODID:-//NRC Kurchatov Institute//Atom Mail//RU".into());
+    }
+    let mut out = Vec::new();
+    for (uid, events) in groups {
+        let mut ics = String::from("BEGIN:VCALENDAR\r\n");
+        for h in &header {
+            ics.push_str(h);
+            ics.push_str("\r\n");
+        }
+        for tz in &timezones {
+            ics.push_str(tz);
+            ics.push_str("\r\n");
+        }
+        for e in &events {
+            ics.push_str(e);
+            ics.push_str("\r\n");
+        }
+        ics.push_str("END:VCALENDAR\r\n");
+        // Сводка — по основному событию (без RECURRENCE-ID).
+        let parsed: Vec<RawEvent> = ical::IcalParser::new(BufReader::new(ics.as_bytes()))
+            .flatten()
+            .flat_map(|c| c.events.iter().filter_map(raw_event).collect::<Vec<_>>())
+            .collect();
+        let Some(main) = parsed.iter().find(|e| e.recurrence_id.is_none()).or(parsed.first()) else { continue };
+        let (start, end, all_day) = match main.start {
+            When::Date(d) => (d.to_string(), (d + chrono::Duration::days(main.duration.num_days().max(1))).to_string(), true),
+            When::Time(t) => (t.to_rfc3339(), (t + main.duration).to_rfc3339(), false),
+        };
+        out.push(IcsEvent {
+            uid,
+            title: main.title.clone(),
+            start,
+            end,
+            all_day,
+            location: main.location.clone(),
+            recurring: main.rrule.is_some(),
+            ics,
+        });
+    }
+    if out.is_empty() {
+        return Err(AppError::Other("События в файле не удалось разобрать (нет даты начала)".into()));
+    }
+    Ok(out)
+}
+
+/// Имя файла для события на сервере: UID, если он безопасен для адреса, иначе новый.
+pub fn resource_name(uid: &str) -> String {
+    if !uid.is_empty() && uid.len() <= 120 && uid.chars().all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c)) && !uid.starts_with('.') {
+        uid.to_string()
+    } else {
+        new_uid()
+    }
+}
+
+impl DavClient {
+    /// Событие с этим UID уже есть в календаре: его адрес и ETag.
+    pub async fn find_uid(&mut self, cal: &Collection, uid: &str) -> Result<Option<(String, Option<String>)>> {
+        let url = Url::parse(&cal.url).map_err(|e| AppError::Other(e.to_string()))?;
+        let query = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><c:calendar-query xmlns:d="DAV:" xmlns:c="{NS_CAL}"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:prop-filter name="UID"><c:text-match collation="i;octet">{}</c:text-match></c:prop-filter></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>"#,
+            xml_escape(uid)
+        );
+        let Some(resps) = self.report(&url, &query).await? else { return Ok(None) };
+        for r in resps {
+            // text-match ищет подстроку — проверяем UID точно.
+            let exact = r.text(NS_CAL, "calendar-data").is_some_and(|d| d.lines().any(|l| l.trim_end_matches('\r').strip_prefix("UID:").is_some_and(|v| v.trim() == uid)));
+            if exact {
+                let href = url.join(&r.href).map(|u| u.to_string()).unwrap_or_else(|_| r.href.clone());
+                return Ok(Some((href, r.text(NS_DAV, "getetag").map(|e| e.trim().to_string()))));
+            }
+        }
+        Ok(None)
+    }
+}
+
 pub fn new_uid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -1312,6 +1497,36 @@ mod tests {
         assert!(c.check_target(&Url::parse("http://dav.local:8080/").unwrap()).is_err());
         assert!(c.check_target(&Url::parse("https://dav.local/").unwrap()).is_ok());
         assert!(c.check_target(&Url::parse("http://other.local:8080/").unwrap()).is_err());
+    }
+
+    #[test]
+    fn splits_calendar_file_by_uid() {
+        let data = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Outlook//RU\nMETHOD:REQUEST\nBEGIN:VTIMEZONE\nTZID:Russian Standard Time\nBEGIN:STANDARD\nDTSTART:16010101T000000\nTZOFFSETFROM:+0300\nTZOFFSETTO:+0300\nEND:STANDARD\nEND:VTIMEZONE\nBEGIN:VEVENT\nUID:meet-1\nSUMMARY:Совещание по проекту с очень дли\n нным названием\nDTSTART;TZID=Russian Standard Time:20261110T100000\nDTEND;TZID=Russian Standard Time:20261110T113000\nLOCATION:Переговорная 214\nRRULE:FREQ=WEEKLY;COUNT=4\nBEGIN:VALARM\nTRIGGER:-PT15M\nACTION:DISPLAY\nEND:VALARM\nEND:VEVENT\nBEGIN:VEVENT\nUID:meet-1\nRECURRENCE-ID;TZID=Russian Standard Time:20261117T100000\nSUMMARY:Перенос\nDTSTART;TZID=Russian Standard Time:20261118T100000\nDTEND;TZID=Russian Standard Time:20261118T110000\nEND:VEVENT\nBEGIN:VEVENT\nSUMMARY:Без UID\nDTSTART;VALUE=DATE:20261201\nEND:VEVENT\nEND:VCALENDAR\n";
+        let ev = split_ics(data).unwrap();
+        assert_eq!(ev.len(), 2);
+        let a = &ev[0];
+        assert_eq!(a.uid, "meet-1");
+        assert_eq!(a.title, "Совещание по проекту с очень длинным названием");
+        assert_eq!(a.start, "2026-11-10T07:00:00+00:00");
+        assert_eq!(a.end, "2026-11-10T08:30:00+00:00");
+        assert!(a.recurring && !a.all_day);
+        assert_eq!(a.location.as_deref(), Some("Переговорная 214"));
+        assert!(!a.ics.contains("METHOD:"), "METHOD kept");
+        assert!(a.ics.contains("BEGIN:VTIMEZONE") && a.ics.contains("RECURRENCE-ID") && a.ics.contains("BEGIN:VALARM"));
+        assert_eq!(a.ics.matches("BEGIN:VEVENT").count(), 2);
+        assert!(a.ics.contains("SUMMARY:Совещание по проекту с очень дли\r\n нным названием"));
+        let b = &ev[1];
+        assert!(b.all_day && b.start == "2026-12-01" && b.end == "2026-12-02");
+        assert!(b.ics.contains(&format!("UID:{}", b.uid)) && !b.uid.is_empty());
+        // Записанное читается обратно как событие календаря.
+        let back = parse_events(&a.ics, &cal(), Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap(), Utc.with_ymd_and_hms(2026, 12, 31, 0, 0, 0).unwrap(), &Origin::default());
+        assert_eq!(back.len(), 4);
+        assert!(back.iter().any(|e| e.title == "Перенос"));
+        assert!(split_ics("BEGIN:VCALENDAR\nEND:VCALENDAR\n").is_err());
+        assert!(split_ics("не календарь").is_err());
+        assert_eq!(resource_name("meet-1"), "meet-1");
+        assert_ne!(resource_name("../x"), "../x");
+        assert_ne!(resource_name("a b"), "a b");
     }
 
     fn cal() -> Collection {

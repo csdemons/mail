@@ -567,3 +567,8 @@ export interface ConnectionStatus {
   items: QueueItem[]
   conflicts: QueueConflict[]
 }
+
+/** Файл календаря (.ics) из письма. */
+export interface IcsEvent { uid: string; title: string; start: string; end: string; allDay: boolean; location: string | null; recurring: boolean }
+export interface CalendarFile { events: IcsEvent[]; calendars: DavCollection[] }
+export interface CalendarImport { added: number; updated: number; errors: string[] }

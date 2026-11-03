@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  ChevronLeft, ChevronRight, Cloud, Download, File, FilePen, FileText, Image as ImageIcon, Maximize2, Minimize2, X,
+  CalendarPlus, ChevronLeft, ChevronRight, Cloud, Download, File, FilePen, FileText, Image as ImageIcon, Maximize2, Minimize2, X,
 } from 'lucide-react'
 
 import { api, errorText, formatSize, isOfficeFile, onSessionReset } from './api'
 import type { AttachmentInfo } from './types'
+import CalendarImportDialog, { isCalendarFile } from './CalendarImport'
 
 export type PreviewKind = 'image' | 'pdf' | 'text' | null
 
@@ -84,27 +85,32 @@ interface ListProps {
   cloudTitle?: string
   /** Открыть офисный файл в редакторе Nextcloud. */
   onEdit?: (index: number, name: string) => void
+  /** Сообщения (например, «события добавлены в календарь»); без него — нет кнопки календаря. */
+  onNotice?: (text: string) => void
 }
 
 /** Вложения письма: миниатюры картинок, щелчок — просмотр, отдельная кнопка — сохранить. */
-export function AttachmentList({ folder, uid, attachments, onSave, onCloud, cloudTitle, onEdit }: ListProps) {
+export function AttachmentList({ folder, uid, attachments, onSave, onCloud, cloudTitle, onEdit, onNotice }: ListProps) {
   const [open, setOpen] = useState<number | null>(null)
+  const [importing, setImporting] = useState<AttachmentInfo | null>(null)
   const previewable = attachments.filter((a) => previewKind(a))
   return (
     <>
       <div className="attachment-list">
         {attachments.map((a) => {
           const kind = previewKind(a)
+          const calendar = Boolean(onNotice) && isCalendarFile(a)
           return (
-            <div key={a.index} className={`attachment-item ${kind === 'image' ? 'has-thumb' : ''}`}>
+            <div key={a.index} className={`attachment-item ${kind === 'image' ? 'has-thumb' : ''} ${calendar ? 'calendar-file' : ''}`}>
               <button
                 className="attachment-card"
-                title={kind ? `Просмотр: ${a.name}` : `Сохранить ${a.name}`}
-                onClick={() => (kind ? setOpen(a.index) : onSave(a.index))}
+                title={calendar ? `Добавить события из ${a.name} в календарь` : kind ? `Просмотр: ${a.name}` : `Сохранить ${a.name}`}
+                onClick={() => (calendar ? setImporting(a) : kind ? setOpen(a.index) : onSave(a.index))}
               >
-                <Thumbnail folder={folder} uid={uid} a={a} />
-                <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {kind ? 'просмотр' : a.contentType}</span></div>
+                {calendar ? <span className="attachment-icon"><CalendarPlus size={20} /></span> : <Thumbnail folder={folder} uid={uid} a={a} />}
+                <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {calendar ? 'события календаря' : kind ? 'просмотр' : a.contentType}</span></div>
               </button>
+              {calendar && <button className="secondary-button attachment-calendar" aria-label={`Добавить ${a.name} в календарь`} title="Добавить события в свой календарь" onClick={() => setImporting(a)}><CalendarPlus size={15} /> В календарь</button>}
               {onEdit && isOfficeFile(a.name) && <button className="icon-button soft attachment-edit" aria-label={`Редактировать ${a.name}`} title="Редактировать в Nextcloud (Euro-Office) — копия сохранится в папку «Почта»" onClick={() => onEdit(a.index, a.name)}><FilePen size={17} /></button>}
               <button className="icon-button soft attachment-save" aria-label={`Сохранить ${a.name}`} title="Сохранить на компьютер" onClick={() => onSave(a.index)}><Download size={17} /></button>
               {onCloud && <button className="icon-button soft attachment-cloud" aria-label={`Сохранить ${a.name} в Nextcloud`} title={cloudTitle} onClick={() => onCloud(a.index, a.name)}><Cloud size={17} /></button>}
@@ -112,6 +118,7 @@ export function AttachmentList({ folder, uid, attachments, onSave, onCloud, clou
           )
         })}
       </div>
+      {importing && onNotice && <CalendarImportDialog folder={folder} uid={uid} attachment={importing} onClose={() => setImporting(null)} onNotice={onNotice} />}
       {open !== null && (
         <AttachmentViewer
           folder={folder}
