@@ -6,8 +6,8 @@ import Login from './Login'
 import { appInFront, notify } from './notifications'
 import type { AccountEntry, MessageSummary, UnifiedFilters, UnifiedItem, UnifiedMark, UnifiedRole } from './types'
 
-export function accountTitle(a: { displayName: string; username: string }) {
-  return a.displayName.trim() || a.username
+export function accountTitle(a: { displayName: string; username: string; email?: string }) {
+  return a.displayName.trim() || a.email || a.username
 }
 
 /** Подключённые учётные записи и непрочитанные в остальных; уведомления о новых письмах в них. */
@@ -86,7 +86,7 @@ export function AccountMenu({ accounts, unread, onSwitch, onReload, onLock, onLo
         <div key={a.key} className={`account-menu-item ${a.active ? 'active' : ''}`} data-account={a.key}>
           <button className="account-pick" disabled={a.active || !a.canSwitch} title={a.canSwitch ? a.username : 'Пароль не сохранён'} onClick={() => { onClose(); onSwitch(a.key) }}>
             <span className={`status-dot ${a.active ? '' : 'idle'}`} />
-            <span className="account-pick-text"><b>{accountTitle(a)}</b><small>{a.username === accountTitle(a) ? a.host : a.username}</small></span>
+            <span className="account-pick-text"><b>{accountTitle(a)}</b><small>{(a.email || a.username) === accountTitle(a) ? `${a.exchange ? 'Exchange · ' : ''}${a.host}` : a.email || a.username}</small></span>
             {!a.active && (unread[a.key] ?? 0) > 0 && <b className="folder-count" aria-label="Непрочитанные">{unread[a.key]}</b>}
             {a.active && <small className="account-current">текущая</small>}
           </button>

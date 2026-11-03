@@ -16,6 +16,8 @@ mod rules;
 mod counterparty;
 mod offline;
 mod dragout;
+mod ews;
+mod ntlm;
 mod totp;
 mod netio;
 mod winacl;

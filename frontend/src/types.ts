@@ -10,6 +10,9 @@ export interface Account {
   locked?: boolean
   /** Сеанс открыт без связи с сервером (письма с компьютера). */
   offline?: boolean
+  /** Адрес почты (у Exchange логин может быть DOMAIN\user). */
+  email?: string
+  exchange?: boolean
 }
 
 export interface OfflineStatus {
@@ -45,6 +48,10 @@ export interface Settings {
   smtpPort: number
   davUrl: string
   displayName: string
+  /** Exchange: адрес EWS (иначе нет). */
+  ewsUrl?: string
+  /** Exchange: адрес почты, если логин — DOMAIN\user. */
+  address?: string
 }
 
 export interface LoginResult {
@@ -504,6 +511,8 @@ export interface AccountEntry {
   displayName: string
   active: boolean
   canSwitch: boolean
+  email?: string
+  exchange?: boolean
 }
 
 export interface AccountUnread { key: string; unread: number | null; error: string | null }

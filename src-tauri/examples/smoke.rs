@@ -10,6 +10,7 @@ async fn main() {
         port: env("IMAP_PORT", "993").parse().expect("IMAP_PORT"),
         username: std::env::var("IMAP_USERNAME").expect("IMAP_USERNAME"),
         password: std::env::var("IMAP_PASSWORD").expect("IMAP_PASSWORD"),
+        ews: std::env::var("EWS_URL").ok(),
     };
 
     let t = std::time::Instant::now();

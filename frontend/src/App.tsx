@@ -130,6 +130,8 @@ interface Props {
 export default function App({ account, initialNotice, onLogout, onLock, onSwitch, initialOpen }: Props) {
   // Контекст этой учётной записи с прошлого раза (переключение туда и обратно).
   const viewKey = `${account.username}@${account.host}`.toLowerCase()
+  // Свой адрес: у Exchange логин может быть DOMAIN\\user.
+  const myAddress = account.email || account.username
   const [saved] = useState(() => savedView(viewKey))
   // Защита кодом: блокировка по Ctrl+L, из меню и при бездействии.
   const [totpOn, setTotpOn] = useState(false)
@@ -1212,10 +1214,10 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       return
     }
     if (mode === 'forward') {
-      void forwardDraft(detail, account.username, signature).then(({ draft, error }) => { startDraft(draft); if (error) setNotice(error) })
+      void forwardDraft(detail, myAddress, signature).then(({ draft, error }) => { startDraft(draft); if (error) setNotice(error) })
       return
     }
-    startDraft(buildDraft(mode, detail, account.username, signature))
+    startDraft(buildDraft(mode, detail, myAddress, signature))
   }
 
   function composeTo(to: string) {
@@ -1227,12 +1229,12 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     try {
       const full = detail && messageKey(detail) === messageKey(m) ? detail : await api.getMessage(m.folder, m.uid)
       if (mode === 'forward') {
-        const { draft, error } = await forwardDraft(full, account.username, signature)
+        const { draft, error } = await forwardDraft(full, myAddress, signature)
         startDraft(draft)
         if (error) setNotice(error)
         return
       }
-      startDraft(buildDraft(mode, full, account.username, signature))
+      startDraft(buildDraft(mode, full, myAddress, signature))
     } catch (error) {
       setNotice(`Не удалось открыть письмо: ${errorText(error)}`)
     }
@@ -1363,7 +1365,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         </div>
         <button className="account-switch" aria-label="Учётные записи" onClick={() => { if (!showAccountMenu) void acc.reload(); setShowAccountMenu(!showAccountMenu) }}>
           <div className="account-avatar"><Users size={20} /></div>
-          <span><strong>{account.username}</strong><small>IMAP · {account.host}{acc.multi ? ` · ещё ${acc.accounts.length - 1}` : ''}</small></span>
+          <span><strong>{myAddress}</strong><small>{account.exchange ? 'Exchange' : 'IMAP'} · {account.host}{acc.multi ? ` · ещё ${acc.accounts.length - 1}` : ''}</small></span>
           {Object.values(acc.unread).some((n) => (n ?? 0) > 0) && <b className="rail-badge account-badge" title="Непрочитанные в других учётных записях">{Object.values(acc.unread).reduce<number>((a, n) => a + (n ?? 0), 0)}</b>}
           <ChevronDown size={17} />
         </button>
@@ -1735,7 +1737,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               onNotice={setNotice}
               onEdit={ncStatus?.connected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(detail.folder, detail.uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined}
             />}
-            <MdnBar detail={detail} me={account.username} onNotice={setNotice} onDone={() => { setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] }); patchMessage(messageKey(detail), { keywords: [...detail.keywords, '$MDNSent'] }) }} />
+            <MdnBar detail={detail} me={myAddress} onNotice={setNotice} onDone={() => { setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] }); patchMessage(messageKey(detail), { keywords: [...detail.keywords, '$MDNSent'] }) }} />
             <MessageBody detail={detail} dark={dark} onNotice={setNotice} />
             <div className="reader-actions">
               <button className="primary-button" onClick={() => openComposer('reply')}><Reply size={16} /> Ответить</button>
@@ -1756,7 +1758,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
 
       {draft && (
         <Composer
-          from={profile?.displayName ? `${profile.displayName} <${account.username}>` : account.username}
+          from={profile?.displayName ? `${profile.displayName} <${myAddress}>` : myAddress}
           draft={draft}
           contacts={contacts}
           ncConnected={Boolean(ncStatus?.connected)}
@@ -1809,7 +1811,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           <div className="compose-header"><div><strong>Учётная запись</strong><small>Параметры подключения</small></div><button className="icon-button" onClick={() => setShowSettings(false)} aria-label="Закрыть"><X size={18} /></button></div>
           <div className="settings-account">
             <div className="account-avatar"><Mail size={20} /></div>
-            <div><strong>{account.username}</strong><span>IMAP · {account.host}:{account.port} · TLS</span></div>
+            <div><strong>{myAddress}</strong><span>{account.exchange ? `Exchange (EWS) · ${account.host}` : `IMAP · ${account.host}:${account.port}`} · TLS</span></div>
             <span className="status-pill">Подключён</span>
           </div>
           <div className="profile-form">

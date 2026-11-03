@@ -2457,6 +2457,107 @@ except Exception:
 finally:
     d.quit()
 
+# 14i. Exchange (EWS): добавление по адресу и паролю (Autodiscover, NTLM), папки, письма, действия, отправка
+def ews_state():
+    import urllib.request as _u
+    ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    return json.loads(_u.urlopen('https://localhost:8445/test/state', context=ctx).read())
+def ews_post(path, body=b''):
+    import urllib.request as _u
+    ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
+    return _u.urlopen(_u.Request('https://localhost:8445' + path, data=body, method='POST'), context=ctx).read()
+ews_item = lambda subj: [i for i in ews_state()['items'] if i['subject'] == subj]
+d = session()
+try:
+    wait(d, '.message-row', 30)
+    def inv(cmd, args=None):
+        return d.execute_async_script("const cb = arguments[2]; window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1] || {}).then((r) => cb({ok: r}), (e) => cb({err: JSON.stringify(e)}))", cmd, args)
+    def acc_menu():
+        if not d.find_elements(By.CSS_SELECTOR, '.account-menu'):
+            d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
+        return wait(d, '.account-menu')
+    rowt = lambda t: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if t in r.get_attribute('textContent')]
+    [b for b in acc_menu().find_elements(By.TAG_NAME, 'button') if 'Добавить учётную запись' in b.get_attribute('textContent')][0].click()
+    form = wait(d, '.add-account .login-card')
+    [b for b in form.find_elements(By.CSS_SELECTOR, '.login-kind button') if 'Exchange' in b.text][0].click()
+    set_value(d, form.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес почты Exchange"]'), 'ivanov@exch.test')
+    set_value(d, form.find_element(By.CSS_SELECTOR, 'input[aria-label="Логин Exchange"]'), 'CORP\\ivanov')
+    # сначала неверный пароль — вход отклонён
+    set_value(d, form.find_element(By.CSS_SELECTOR, 'input[aria-label="Пароль Exchange"]'), 'wrong')
+    form.find_element(By.CSS_SELECTOR, '.login-submit').click()
+    W(d, 30).until(lambda d: 'Неверный логин или пароль' in form.find_element(By.CSS_SELECTOR, '.login-error').get_attribute('textContent'))
+    set_value(d, form.find_element(By.CSS_SELECTOR, 'input[aria-label="Пароль Exchange"]'), 'Exch-Pass-1')
+    d.save_screenshot(f'{OUT}/57-exchange-add.png')
+    form.find_element(By.CSS_SELECTOR, '.login-submit').click()
+    W(d, 40).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.add-account'))
+    saved = [a for a in json.load(open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/accounts.json')) if a.get('ewsUrl')]
+    assert saved and saved[0]['ewsUrl'] == 'https://localhost:8445/EWS/Exchange.asmx' and saved[0]['address'] == 'ivanov@exch.test' and saved[0]['username'] == 'CORP\\ivanov', saved
+    assert 'Exch-Pass-1' not in open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/accounts.json').read()
+    assert 'ok' in ews_state()['stats']['auth'], ews_state()['stats']['auth']
+    ok('Exchange account added: server found by Autodiscover, NTLMv2 with channel binding, wrong password refused, password only in keyring')
+    item = [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'ivanov@exch.test' in i.get_attribute('textContent')][0]
+    assert 'Exchange' in item.get_attribute('textContent')
+    item.find_element(By.CSS_SELECTOR, '.account-pick').click()
+    W(d, 30).until(lambda d: 'ivanov@exch.test' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent') and 'Exchange' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    W(d, 30).until(lambda d: rowt('EWS: квартальный отчёт') and rowt('EWS: приглашение на семинар'))
+    names = [f.get_attribute('textContent') for f in d.find_elements(By.CSS_SELECTOR, '.folder-item')]
+    assert any('Проекты' in n for n in names) and not any('Календарь' in n or 'Sync Issues' in n for n in names), names
+    paths = {f['path']: f for f in inv('list_folders')['ok']}
+    assert paths['INBOX']['role'] == 'inbox' and paths['INBOX/Проекты']['depth'] == 1 and paths['Отправленные']['role'] == 'sent' and paths['Удаленные']['role'] == 'trash', list(paths)
+    ok('Exchange folders: Inbox, subfolders and system folders by role; calendar and hidden folders not shown')
+    rowt('EWS: квартальный отчёт')[0].click()
+    W(d, 20).until(lambda d: 'Отчёт во вложении' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
+    assert any('Отчёт Q3.xlsx' in c.get_attribute('textContent') for c in d.find_elements(By.CSS_SELECTOR, '.attachment-card'))
+    W(d, 15).until(lambda d: ews_item('EWS: квартальный отчёт')[0]['read'])
+    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Флажок"]').click()
+    W(d, 15).until(lambda d: ews_item('EWS: квартальный отчёт')[0]['flag'])
+    uid = [m['uid'] for m in inv('list_messages', {'folder': 'INBOX', 'beforeUid': None, 'limit': 50})['ok']['items'] if m['subject'] == 'EWS: квартальный отчёт'][0]
+    assert 'ok' in inv('set_keywords', {'folder': 'INBOX', 'uids': [uid], 'keyword': '$label2', 'value': True})
+    W(d, 10).until(lambda d: ews_item('EWS: квартальный отчёт')[0]['categories'] == ['$label2'])
+    ok('Exchange mail: message and attachment open, read, flag and category saved on the server')
+    rowt('EWS: приглашение на семинар')[0].click()
+    W(d, 20).until(lambda d: 'семинар по безопасности' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Удалить письмо"]').click()
+    W(d, 15).until(lambda d: ews_item('EWS: приглашение на семинар') and ews_item('EWS: приглашение на семинар')[0]['folder'] == 'F-deleted')
+    W(d, 10).until(lambda d: not rowt('EWS: приглашение на семинар'))
+    # новое письмо на сервере — появляется после обновления
+    nm = EmailMessage(); nm['From'] = 'Коллега <kolleg@exch.test>'; nm['To'] = 'ivanov@exch.test'; nm['Subject'] = 'EWS: новое письмо'; nm.set_content('Свежая почта')
+    ews_post('/test/deliver', nm.as_bytes())
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: rowt('EWS: новое письмо'))
+    # поиск на сервере
+    found = inv('search_server', {'query': 'тема:план'})['ok']
+    assert [m['subject'] for m in found] == ['EWS: план проекта'], found
+    ok('Exchange: delete to «Удалённые», new mail after refresh, server search (AQS) across folders')
+    # отправка — через Exchange (копия в «Отправленные» на сервере)
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    wait(d, '.compose-modal')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'petrov@exch.test')
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'), 'E2E Exchange отправка')
+    body = d.find_element(By.CSS_SELECTOR, '.compose-body')
+    d.execute_script("arguments[0].focus(); document.execCommand('insertText', false, arguments[1])", body, 'Через EWS')
+    assert 'ivanov@exch.test' in d.find_element(By.CSS_SELECTOR, '.compose-modal').get_attribute('textContent')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    W(d, 30).until(lambda d: any('E2E Exchange отправка' in m for m in ews_state()['sent']))
+    sent = [m for m in ews_state()['sent'] if 'E2E Exchange отправка' in m][0]
+    assert 'From: ' in sent and 'ivanov@exch.test' in sent and 'petrov@exch.test' in sent, sent[:500]
+    assert ews_item('E2E Exchange отправка')[0]['folder'] == 'F-sent'
+    ok('Exchange: mail sent through EWS from the account address, copy kept in «Отправленные»')
+    # обратно в RuPost, Exchange отключается
+    [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'test@rrcki.ru' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.account-pick').click()
+    W(d, 30).until(lambda d: 'test@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    item = [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'ivanov@exch.test' in i.get_attribute('textContent')][0]
+    item.find_element(By.CSS_SELECTOR, 'button[aria-label^="Отключить"]').click()
+    [b for b in wait(d, '.confirm-modal').find_elements(By.TAG_NAME, 'button') if b.text == 'Отключить'][0].click()
+    W(d, 15).until(lambda d: len(acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item')) == 1)
+    assert not glob.glob(os.environ['XDG_DATA_HOME'] + '/**/exchange/*.json', recursive=True)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
+    ok('Exchange account removed with its saved data')
+except Exception:
+    d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
+finally:
+    d.quit()
+
 # 15. перезапуск → автовход из keyring
 d = session()
 try:

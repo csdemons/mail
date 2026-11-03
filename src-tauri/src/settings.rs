@@ -55,6 +55,12 @@ pub struct Settings {
     /// Категории, если веб-почта (SOGo) недоступна: [ключевое слово, имя, цвет].
     #[serde(default)]
     pub categories: Option<Vec<(String, String, String)>>,
+    /// Exchange: адрес EWS. Пусто — обычный ящик IMAP/SMTP.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ews_url: String,
+    /// Адрес почты, если логин — не адрес (Exchange: `DOMAIN\user`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub address: String,
 }
 
 pub const DEFAULT_NEXTCLOUD_URL: &str = "https://next.nrcki.ru/";
@@ -66,12 +72,20 @@ fn default_nextcloud_url() -> String {
 impl Settings {
     /// Адрес отправителя: логин, если это e-mail.
     pub fn email(&self) -> String {
+        if !self.address.is_empty() {
+            return self.address.clone();
+        }
         if self.username.contains('@') {
             self.username.clone()
         } else {
             let domain = self.host.split_once('.').map(|(_, d)| d).unwrap_or(&self.host);
             format!("{}@{}", self.username, domain)
         }
+    }
+
+    /// Учётная запись Exchange (почта по EWS).
+    pub fn is_exchange(&self) -> bool {
+        !self.ews_url.is_empty()
     }
 
     pub fn dav_base(&self) -> String {

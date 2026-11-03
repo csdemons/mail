@@ -1097,3 +1097,8 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .workspace.file-over::after { content: ''; position: absolute; inset: 6px; border: 2px dashed var(--blue); border-radius: 12px; background: color-mix(in srgb, var(--blue) 6%, transparent); pointer-events: none; z-index: 20; }
 .drop-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 21; display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-radius: 12px; background: var(--surface); color: var(--blue); font-weight: 600; box-shadow: 0 10px 40px #0003; pointer-events: none; }
 .attachment-card[draggable="true"] { cursor: grab; }
+
+/* --- вход: вид ящика --- */
+.login-kind { display: flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--panel); margin-bottom: 4px; }
+.login-kind button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-weight: 600; }
+.login-kind button.active { background: var(--surface); color: var(--blue); box-shadow: 0 1px 3px #0002; }

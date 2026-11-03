@@ -24,6 +24,8 @@ pub struct Credentials {
     pub port: u16,
     pub username: String,
     pub password: String,
+    /// Адрес EWS — учётная запись Exchange (почта по EWS, а не по IMAP).
+    pub ews: Option<String>,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -36,8 +38,13 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
+enum Backend {
+    Imap(Box<ImapSession>),
+    Ews(Box<crate::ews::EwsSession>),
+}
+
 pub struct Connection {
-    session: ImapSession,
+    backend: Backend,
     selected: Option<String>,
     creds: Credentials,
     /// Последнее открытое письмо целиком (папка, UID, исходник): вложения и их
@@ -49,6 +56,11 @@ pub struct Connection {
 /// хранилище: SChannel в Windows, OpenSSL + системные CA в Linux, поэтому
 /// корпоративные корневые сертификаты подхватываются автоматически.
 pub async fn connect(creds: &Credentials) -> Result<Connection> {
+    if let Some(url) = &creds.ews {
+        let key = format!("{}@{}", creds.username.to_lowercase(), creds.host.to_lowercase());
+        let ews = crate::ews::connect(url, &creds.username, &creds.password, &key).await?;
+        return Ok(Connection { backend: Backend::Ews(Box::new(ews)), selected: None, creds: creds.clone(), raw_cache: None });
+    }
     let tcp = tokio::time::timeout(
         CONNECT_TIMEOUT,
         TcpStream::connect((creds.host.as_str(), creds.port)),
@@ -88,7 +100,7 @@ pub async fn connect(creds: &Credentials) -> Result<Connection> {
     })?;
 
     Ok(Connection {
-        session,
+        backend: Backend::Imap(Box::new(session)),
         selected: None,
         creds: creds.clone(),
         raw_cache: None,
@@ -96,6 +108,26 @@ pub async fn connect(creds: &Credentials) -> Result<Connection> {
 }
 
 impl Connection {
+    /// Сеанс IMAP; для Exchange — ошибка «недоступно» (функция не поддерживается).
+    fn imap(&mut self) -> Result<&mut ImapSession> {
+        match &mut self.backend {
+            Backend::Imap(s) => Ok(s),
+            Backend::Ews(_) => Err(AppError::Other("Для учётной записи Exchange это пока недоступно".into())),
+        }
+    }
+
+    /// Сеанс Exchange (EWS), если это ящик Exchange.
+    pub fn ews(&mut self) -> Option<&mut crate::ews::EwsSession> {
+        match &mut self.backend {
+            Backend::Ews(e) => Some(e),
+            Backend::Imap(_) => None,
+        }
+    }
+
+    pub fn is_ews(&self) -> bool {
+        matches!(self.backend, Backend::Ews(_))
+    }
+
     /// Соединение открыто для этой учётной записи (тот же ящик на том же сервере).
     pub fn is_account(&self, creds: &Credentials) -> bool {
         self.creds.username.eq_ignore_ascii_case(&creds.username) && self.creds.host.eq_ignore_ascii_case(&creds.host) && self.creds.port == creds.port
@@ -103,17 +135,29 @@ impl Connection {
 
     /// Список возможностей сервера (CAPABILITY) — для диагностики.
     pub async fn capabilities(&mut self) -> Result<Vec<String>> {
-        let caps = self.session.capabilities().await?;
+        if self.is_ews() {
+            return Ok(vec!["EWS".into()]);
+        }
+        let caps = self.imap()?.capabilities().await?;
         let mut list: Vec<String> = caps.iter().map(|c| format!("{c:?}")).collect();
         list.sort();
         Ok(list)
     }
 
     pub async fn logout(mut self) {
-        let _ = self.session.logout().await;
+        match &mut self.backend {
+            Backend::Imap(s) => {
+                let _ = s.logout().await;
+            }
+            Backend::Ews(e) => e.close(),
+        }
     }
 
     async fn ensure_selected(&mut self, folder: &str) -> Result<()> {
+        if self.is_ews() {
+            self.selected = Some(folder.to_string());
+            return Ok(());
+        }
         if self.selected.as_deref() != Some(folder) {
             self.select(folder).await?;
         }
@@ -136,7 +180,7 @@ impl Connection {
     async fn select(&mut self, folder: &str) -> Result<async_imap::types::Mailbox> {
         for attempt in 0..2 {
             self.selected = None;
-            let mailbox = self.session.select(folder).await.map_err(|e| match e {
+            let mailbox = self.imap()?.select(folder).await.map_err(|e| match e {
                 async_imap::error::Error::No(_) => AppError::NotFound,
                 other => other.into(),
             })?;
@@ -356,8 +400,11 @@ pub fn build_folder_tree(raw: Vec<RawFolder>) -> Vec<Folder> {
 }
 
 pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
+    if let Some(e) = conn.ews() {
+        return e.list_folders().await;
+    }
     let mut names: Vec<_> = conn
-        .session
+        .imap()?
         .list(Some(""), Some("*"))
         .await?
         .try_collect()
@@ -367,7 +414,7 @@ pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
     if !names.iter().any(|n| n.name().eq_ignore_ascii_case("INBOX")) {
         conn.reconnect().await?;
         names = conn
-            .session
+            .imap()?
             .list(Some(""), Some("*"))
             .await?
             .try_collect()
@@ -406,7 +453,7 @@ pub async fn list_folders(conn: &mut Connection) -> Result<Vec<Folder>> {
         // STATUS не должен ронять весь список, если одна папка недоступна.
         // Отказ сервера (NO/BAD) — просто нет счётчика. Любая другая ошибка
         // (неразобранный ответ, обрыв) портит соединение: переподключаемся.
-        match conn.session.status(&folder.id, "(MESSAGES UNSEEN)").await {
+        match conn.imap()?.status(&folder.id, "(MESSAGES UNSEEN)").await {
             Ok(mb) => {
                 folder.total = mb.exists;
                 // RuPost иногда отдаёт мусорный UNSEEN (например, 4141792512 при 0 писем).
@@ -766,13 +813,16 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
 /// Новые непрочитанные письма папки с UID больше `after_uid` (новые сверху, не больше
 /// `limit`) и последний UID папки — для уведомлений. Флаг \\Seen не меняется.
 pub async fn new_unseen(conn: &mut Connection, folder: &str, after_uid: u32, limit: u32) -> Result<(Vec<MessageSummary>, u32)> {
+    if let Some(e) = conn.ews() {
+        return e.new_unseen(folder, after_uid, limit).await;
+    }
     let mailbox = conn.select(folder).await?;
     let last_uid = mailbox.uid_next.map(|n| n.saturating_sub(1)).unwrap_or(0);
     if limit == 0 || mailbox.exists == 0 {
         return Ok((Vec::new(), last_uid));
     }
     let mut uids: Vec<u32> = conn
-        .session
+        .imap()?
         .uid_search(format!("UNSEEN UID {}:*", after_uid.saturating_add(1)))
         .await?
         .into_iter()
@@ -785,7 +835,7 @@ pub async fn new_unseen(conn: &mut Connection, folder: &str, after_uid: u32, lim
         return Ok((Vec::new(), last_uid));
     }
     let fetches: Vec<Fetch> = conn
-        .session
+        .imap()?
         .uid_fetch(uid_set(&uids), "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])")
         .await?
         .try_collect()
@@ -811,6 +861,9 @@ pub async fn list_messages(
     before_uid: Option<u32>,
     limit: u32,
 ) -> Result<MessagePage> {
+    if let Some(e) = conn.ews() {
+        return e.list_messages(folder, before_uid, limit).await;
+    }
     let mailbox = conn.select(folder).await?;
     let total = mailbox.exists;
     let limit = limit.clamp(1, 200) as usize;
@@ -819,7 +872,7 @@ pub async fn list_messages(
         return Ok(MessagePage { items: Vec::new(), total, has_more: false });
     }
 
-    let mut uids: Vec<u32> = conn.session.uid_search("ALL").await?.into_iter().collect();
+    let mut uids: Vec<u32> = conn.imap()?.uid_search("ALL").await?.into_iter().collect();
     uids.sort_unstable_by(|a, b| b.cmp(a));
     if let Some(before) = before_uid {
         uids.retain(|uid| *uid < before);
@@ -832,7 +885,7 @@ pub async fn list_messages(
 
     let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
     let fetches: Vec<Fetch> = conn
-        .session
+        .imap()?
         .uid_fetch(
             set,
             "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER])",
@@ -859,7 +912,7 @@ async fn fetch_raw(conn: &mut Connection, folder: &str, uid: u32) -> Result<Fetc
     conn.ensure_selected(folder).await?;
 
     let sizes: Vec<Fetch> = conn
-        .session
+        .imap()?
         .uid_fetch(uid.to_string(), "(UID RFC822.SIZE)")
         .await?
         .try_collect()
@@ -875,7 +928,7 @@ async fn fetch_raw(conn: &mut Connection, folder: &str, uid: u32) -> Result<Fetc
     }
 
     let mut fetches: Vec<Fetch> = conn
-        .session
+        .imap()?
         .uid_fetch(
             uid.to_string(),
             "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[])",
@@ -900,6 +953,11 @@ async fn raw_message(conn: &mut Connection, folder: &str, uid: u32) -> Result<Ve
         if f == folder && *u == uid {
             return Ok(raw.clone());
         }
+    }
+    if let Some(e) = conn.ews() {
+        let raw = e.mime(folder, uid).await?;
+        conn.raw_cache = Some((folder.to_string(), uid, raw.clone()));
+        return Ok(raw);
     }
     let fetch = fetch_raw(conn, folder, uid).await?;
     Ok(fetch.body().ok_or(AppError::NotFound)?.to_vec())
@@ -954,6 +1012,13 @@ pub fn sanitize_filename(name: &str) -> String {
 }
 
 pub async fn get_message(conn: &mut Connection, folder: &str, uid: u32) -> Result<MessageDetail> {
+    if let Some(e) = conn.ews() {
+        let raw = e.mime(folder, uid).await?;
+        let summary = e.summaries_of(folder, &[uid]).await?.into_iter().next().ok_or(AppError::NotFound)?;
+        let detail = detail_from_raw(summary, &raw);
+        conn.raw_cache = Some((folder.to_string(), uid, raw));
+        return Ok(detail);
+    }
     let fetch = fetch_raw(conn, folder, uid).await?;
     let body = fetch.body().ok_or(AppError::NotFound)?;
     let parsed = MessageParser::default().parse(body);
@@ -1121,8 +1186,12 @@ impl Connection {
 
 /// UIDVALIDITY папки и флаги всех писем (только чтение: EXAMINE).
 pub async fn folder_flags(conn: &mut Connection, folder: &str) -> Result<(u32, Vec<(u32, FlagState)>)> {
+    if conn.is_ews() {
+        conn.selected = Some(folder.to_string());
+        return conn.ews().expect("ews").folder_flags(folder).await;
+    }
     conn.selected = None;
-    let mailbox = conn.session.examine(folder).await.map_err(|e| match e {
+    let mailbox = conn.imap()?.examine(folder).await.map_err(|e| match e {
         async_imap::error::Error::No(_) => AppError::NotFound,
         other => other.into(),
     })?;
@@ -1130,17 +1199,20 @@ pub async fn folder_flags(conn: &mut Connection, folder: &str) -> Result<(u32, V
     if mailbox.exists == 0 {
         return Ok((validity, Vec::new()));
     }
-    let fetches: Vec<Fetch> = conn.session.uid_fetch("1:*", "(UID FLAGS)").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch("1:*", "(UID FLAGS)").await?.try_collect().await?;
     Ok((validity, fetches.iter().filter_map(|f| f.uid.map(|u| (u, flag_state(f)))).collect()))
 }
 
 /// Заголовки писем для индекса (папка уже открыта `folder_flags`).
 pub async fn index_summaries(conn: &mut Connection, folder: &str, uids: &[u32]) -> Result<Vec<MessageSummary>> {
+    if let Some(e) = conn.ews() {
+        return e.summaries_of(folder, uids).await;
+    }
     if uids.is_empty() {
         return Ok(Vec::new());
     }
     let fetches: Vec<Fetch> = conn
-        .session
+        .imap()?
         .uid_fetch(uid_set(uids), "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])")
         .await?
         .try_collect()
@@ -1161,11 +1233,15 @@ pub async fn index_summaries(conn: &mut Connection, folder: &str, uids: &[u32]) 
 /// размер ответа ограничен на уровне IMAP, даже если сервер сообщил неверный размер;
 /// письма больше `max_each` пропускаются.
 pub async fn raw_bodies(conn: &mut Connection, uids: &[u32], max_each: u32) -> Result<Vec<(u32, Vec<u8>)>> {
+    if conn.is_ews() {
+        let folder = conn.selected.clone().ok_or(AppError::NotFound)?;
+        return conn.ews().expect("ews").mimes(&folder, uids, max_each).await;
+    }
     if uids.is_empty() {
         return Ok(Vec::new());
     }
     let query = format!("(UID BODY.PEEK[]<0.{}>)", u64::from(max_each) + 1);
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), query).await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid_set(uids), query).await?.try_collect().await?;
     Ok(fetches
         .iter()
         .filter_map(|f| {
@@ -1177,7 +1253,10 @@ pub async fn raw_bodies(conn: &mut Connection, uids: &[u32], max_each: u32) -> R
 
 /// Непрочитанные во «Входящих» (для других учётных записей — без SELECT).
 pub async fn inbox_unseen(conn: &mut Connection) -> Result<u32> {
-    let mb = conn.session.status("INBOX", "(MESSAGES UNSEEN)").await?;
+    if let Some(e) = conn.ews() {
+        return e.unread("INBOX").await;
+    }
+    let mb = conn.imap()?.status("INBOX", "(MESSAGES UNSEEN)").await?;
     Ok(mb.unseen.unwrap_or(0).min(mb.exists))
 }
 
@@ -1185,7 +1264,10 @@ pub async fn inbox_unseen(conn: &mut Connection) -> Result<u32> {
 
 /// Разделитель уровней папок на сервере («/» или «.»).
 pub async fn hierarchy_delimiter(conn: &mut Connection) -> Result<String> {
-    let names: Vec<_> = conn.session.list(Some(""), Some("")).await?.try_collect().await?;
+    if conn.is_ews() {
+        return Ok("/".into());
+    }
+    let names: Vec<_> = conn.imap()?.list(Some(""), Some("")).await?.try_collect().await?;
     Ok(names.first().and_then(|n| n.delimiter()).unwrap_or("/").to_string())
 }
 
@@ -1215,12 +1297,12 @@ pub async fn ensure_folder_path(conn: &mut Connection, parts: &[String], delimit
 /// Message-ID писем папки — чтобы повторный импорт не создавал копий.
 pub async fn message_ids(conn: &mut Connection, folder: &str) -> Result<std::collections::HashSet<String>> {
     conn.selected = None;
-    let mailbox = conn.session.examine(folder).await?;
+    let mailbox = conn.imap()?.examine(folder).await?;
     let mut out = std::collections::HashSet::new();
     if mailbox.exists == 0 {
         return Ok(out);
     }
-    let fetches: Vec<Fetch> = conn.session.fetch("1:*", "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.fetch("1:*", "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?.try_collect().await?;
     let parser = MessageParser::default();
     for f in &fetches {
         if let Some(id) = f.header().and_then(|h| parser.parse_headers(h)).and_then(|m| m.message_id().map(str::to_string)) {
@@ -1236,7 +1318,7 @@ pub async fn append_imported(conn: &mut Connection, folder: &str, seen: bool, fl
     let flags = format!("({})", flags.join(" "));
     let date = date.and_then(|d| chrono::DateTime::from_timestamp(d, 0)).map(|d| format!("\"{}\"", d.format("%d-%b-%Y %H:%M:%S +0000")));
     conn.selected = None;
-    conn.session.append(folder, Some(&flags), date.as_deref(), raw).await?;
+    conn.imap()?.append(folder, Some(&flags), date.as_deref(), raw).await?;
     Ok(())
 }
 
@@ -1248,14 +1330,14 @@ pub async fn reconnect_now(conn: &mut Connection) -> Result<()> {
 /// UID и размеры всех писем папки (папка открывается только для чтения).
 pub async fn all_uids(conn: &mut Connection, folder: &str) -> Result<Vec<(u32, u32)>> {
     conn.selected = None;
-    let mailbox = conn.session.examine(folder).await.map_err(|e| match e {
+    let mailbox = conn.imap()?.examine(folder).await.map_err(|e| match e {
         async_imap::error::Error::No(_) => AppError::NotFound,
         other => other.into(),
     })?;
     if mailbox.exists == 0 {
         return Ok(Vec::new());
     }
-    let fetches: Vec<Fetch> = conn.session.uid_fetch("1:*", "(UID RFC822.SIZE)").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch("1:*", "(UID RFC822.SIZE)").await?.try_collect().await?;
     let mut out: Vec<(u32, u32)> = fetches.iter().filter_map(|f| Some((f.uid?, f.size.unwrap_or(0)))).collect();
     out.sort_unstable();
     Ok(out)
@@ -1278,7 +1360,7 @@ pub async fn export_batch(conn: &mut Connection, uids: &[u32]) -> Result<Vec<Exp
     // Не больше MAX_MESSAGE_MB на письмо — даже если сервер сообщил неверный размер.
     let max = MAX_MESSAGE_MB as usize * 1024 * 1024;
     let query = format!("(UID FLAGS INTERNALDATE BODY.PEEK[]<0.{}>)", max + 1);
-    let mut fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), query).await?.try_collect().await?;
+    let mut fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid_set(uids), query).await?.try_collect().await?;
     fetches.sort_by_key(|f| f.uid);
     Ok(fetches
         .iter()
@@ -1292,16 +1374,22 @@ pub async fn export_batch(conn: &mut Connection, uids: &[u32]) -> Result<Vec<Exp
 
 /// Поиск по тексту писем на сервере (IMAP SEARCH TEXT, UTF-8).
 pub async fn search_server(conn: &mut Connection, folder: &str, query: &crate::search::Query) -> Result<Vec<u32>> {
+    if let Some(e) = conn.ews() {
+        return e.search(folder, query).await;
+    }
     let Some(criteria) = query.imap_criteria() else { return Ok(Vec::new()) };
     conn.ensure_selected(folder).await?;
     let cmd = if query.needs_utf8() { format!("CHARSET UTF-8 {criteria}") } else { criteria };
-    let mut uids: Vec<u32> = conn.session.uid_search(cmd).await?.into_iter().collect();
+    let mut uids: Vec<u32> = conn.imap()?.uid_search(cmd).await?.into_iter().collect();
     uids.sort_unstable_by(|a, b| b.cmp(a));
     Ok(uids)
 }
 
 /// Заголовки найденных писем (папка открыта `search_server`).
 pub async fn summaries_of(conn: &mut Connection, folder: &str, uids: &[u32]) -> Result<Vec<MessageSummary>> {
+    if let Some(e) = conn.ews() {
+        return e.summaries_of(folder, uids).await;
+    }
     if uids.is_empty() {
         return Ok(Vec::new());
     }
@@ -1312,15 +1400,32 @@ pub async fn summaries_of(conn: &mut Connection, folder: &str, uids: &[u32]) -> 
 /// Кладёт отправленное письмо в папку «Отправленные» (\\Sent или по имени).
 /// Возвращает имя папки.
 pub async fn append_sent(conn: &mut Connection, raw: &[u8]) -> Result<String> {
+    if let Some(e) = conn.ews() {
+        let folder = e.role_folder(FolderRole::Sent).await?.ok_or_else(|| AppError::Other("Папка «Отправленные» не найдена".into()))?;
+        e.append(&folder, raw, true).await?;
+        return Ok(folder);
+    }
     let folder = role_folder(conn, FolderRole::Sent).await?.ok_or_else(|| AppError::Other("Папка «Отправленные» не найдена".into()))?;
     conn.selected = None;
-    conn.session.append(&folder, Some("(\\Seen)"), None, raw).await?;
+    conn.imap()?.append(&folder, Some("(\\Seen)"), None, raw).await?;
     Ok(folder)
+}
+
+/// Отправить письмо средствами почтового сервера (Exchange: с копией в
+/// «Отправленные»). У ящиков IMAP так не отправляется — для них SMTP.
+pub async fn send_via_server(conn: &mut Connection, raw: &[u8]) -> Result<()> {
+    match conn.ews() {
+        Some(e) => e.send(raw).await,
+        None => Err(AppError::Other("Отправка через IMAP не поддерживается".into())),
+    }
 }
 
 /// Служебная папка своего ящика: по атрибуту SPECIAL-USE, иначе по привычному имени.
 pub async fn role_folder(conn: &mut Connection, role: FolderRole) -> Result<Option<String>> {
-    let names: Vec<_> = conn.session.list(Some(""), Some("*")).await?.try_collect().await?;
+    if let Some(e) = conn.ews() {
+        return e.role_folder(role).await;
+    }
+    let names: Vec<_> = conn.imap()?.list(Some(""), Some("*")).await?.try_collect().await?;
     let attr_matches = |a: &NameAttribute<'_>| match role {
         FolderRole::Sent => matches!(a, NameAttribute::Sent),
         FolderRole::Drafts => matches!(a, NameAttribute::Drafts),
@@ -1364,15 +1469,20 @@ pub fn parse_role(name: &str) -> Option<FolderRole> {
 
 /// Положить письмо в «Черновики» (отложенная отправка). Возвращает имя папки.
 pub async fn append_draft(conn: &mut Connection, raw: &[u8]) -> Result<String> {
+    if let Some(e) = conn.ews() {
+        let folder = e.role_folder(FolderRole::Drafts).await?.ok_or_else(|| AppError::Other("Папка «Черновики» не найдена".into()))?;
+        e.append(&folder, raw, false).await?;
+        return Ok(folder);
+    }
     let folder = match role_folder(conn, FolderRole::Drafts).await? {
         Some(f) => f,
         None => {
-            conn.session.create("Drafts").await?;
+            conn.imap()?.create("Drafts").await?;
             "Drafts".to_string()
         }
     };
     conn.selected = None;
-    conn.session.append(&folder, Some("(\\Seen \\Draft)"), None, raw).await?;
+    conn.imap()?.append(&folder, Some("(\\Seen \\Draft)"), None, raw).await?;
     Ok(folder)
 }
 
@@ -1436,14 +1546,17 @@ fn custom_keywords(f: &Fetch) -> Vec<String> {
 
 /// Письма в «Черновиках», ожидающие отложенной отправки.
 pub async fn scheduled(conn: &mut Connection) -> Result<Vec<Scheduled>> {
+    if conn.is_ews() {
+        return Ok(Vec::new());
+    }
     let Some(folder) = role_folder(conn, FolderRole::Drafts).await? else { return Ok(Vec::new()) };
     conn.ensure_selected(&folder).await?;
-    let uids: Vec<u32> = conn.session.uid_search(format!("UNDELETED HEADER {SEND_AT_HEADER} \"\"")).await?.into_iter().collect();
+    let uids: Vec<u32> = conn.imap()?.uid_search(format!("UNDELETED HEADER {SEND_AT_HEADER} \"\"")).await?.into_iter().collect();
     if uids.is_empty() {
         return Ok(Vec::new());
     }
     let fetches: Vec<Fetch> = conn
-        .session
+        .imap()?
         .uid_fetch(uid_set(&uids), format!("(UID FLAGS BODY.PEEK[HEADER.FIELDS ({SEND_AT_HEADER} SUBJECT TO)])"))
         .await?
         .try_collect()
@@ -1473,8 +1586,11 @@ pub async fn scheduled(conn: &mut Connection) -> Result<Vec<Scheduled>> {
 
 /// Исходник письма целиком (папка, UID) — для отправки отложенного письма.
 pub async fn raw_of(conn: &mut Connection, folder: &str, uid: u32) -> Result<Vec<u8>> {
+    if let Some(e) = conn.ews() {
+        return e.mime(folder, uid).await;
+    }
     conn.ensure_selected(folder).await?;
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid.to_string(), "(UID BODY.PEEK[])").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid.to_string(), "(UID BODY.PEEK[])").await?.try_collect().await?;
     fetches.iter().find(|f| f.uid == Some(uid)).and_then(|f| f.body()).map(<[u8]>::to_vec).ok_or(AppError::NotFound)
 }
 
@@ -1483,9 +1599,9 @@ pub async fn raw_of(conn: &mut Connection, folder: &str, uid: u32) -> Result<Vec
 /// ждёт и смотрит, чья метка меньше. Возвращает true, если отправляет эта копия.
 pub async fn claim(conn: &mut Connection, folder: &str, uid: u32, token: &str) -> Result<bool> {
     conn.ensure_selected(folder).await?;
-    let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("+FLAGS.SILENT (atomclaim{token})")).await?.try_collect().await?;
+    let _: Vec<Fetch> = conn.imap()?.uid_store(uid.to_string(), format!("+FLAGS.SILENT (atomclaim{token})")).await?.try_collect().await?;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
     let Some(f) = fetches.iter().find(|f| f.uid == Some(uid)) else { return Ok(false) };
     if f.flags().any(|x| matches!(x, Flag::Deleted)) {
         return Ok(false);
@@ -1501,7 +1617,7 @@ pub async fn claim(conn: &mut Connection, folder: &str, uid: u32, token: &str) -
     let settled = keywords.iter().any(|k| k == SENT_MARK || k == UNKNOWN_MARK);
     let interrupted = keywords.iter().any(|k| k.starts_with("atomclaim") && *k != own && claim_time(k).unwrap_or(0) < fresh_after);
     if settled || interrupted {
-        let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("-FLAGS.SILENT (atomclaim{token})")).await?.try_collect().await?;
+        let _: Vec<Fetch> = conn.imap()?.uid_store(uid.to_string(), format!("-FLAGS.SILENT (atomclaim{token})")).await?.try_collect().await?;
         return Ok(false);
     }
     let mut claims: Vec<String> = keywords.into_iter().filter(|k| k.starts_with("atomclaim")).collect();
@@ -1513,7 +1629,7 @@ pub async fn claim(conn: &mut Connection, folder: &str, uid: u32, token: &str) -
 /// снимаются метка «неизвестно» и все захваты.
 pub async fn clear_send_marks(conn: &mut Connection, folder: &str, uid: u32) -> Result<()> {
     conn.ensure_selected(folder).await?;
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
     let Some(f) = fetches.iter().find(|f| f.uid == Some(uid)) else { return Err(AppError::NotFound) };
     let marks: Vec<String> = f
         .flags()
@@ -1526,14 +1642,17 @@ pub async fn clear_send_marks(conn: &mut Connection, folder: &str, uid: u32) -> 
     if marks.is_empty() {
         return Ok(());
     }
-    let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("-FLAGS.SILENT ({})", marks.join(" "))).await?.try_collect().await?;
+    let _: Vec<Fetch> = conn.imap()?.uid_store(uid.to_string(), format!("-FLAGS.SILENT ({})", marks.join(" "))).await?.try_collect().await?;
     Ok(())
 }
 
 /// Удалить письмо из папки (после отправки отложенного) — только это письмо.
 pub async fn remove_message(conn: &mut Connection, folder: &str, uid: u32) -> Result<()> {
+    if let Some(e) = conn.ews() {
+        return e.delete_messages(folder, &[uid], None).await.map(|_| ());
+    }
     conn.ensure_selected(folder).await?;
-    let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+    let _: Vec<Fetch> = conn.imap()?.uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
     expunge_uids(conn, &[uid]).await
 }
 
@@ -1541,7 +1660,10 @@ pub async fn remove_message(conn: &mut Connection, folder: &str, uid: u32) -> Re
 
 /// Папка шаблонов (как «Templates» в Thunderbird); создаётся при первом сохранении.
 pub async fn templates_folder(conn: &mut Connection, create: bool) -> Result<Option<String>> {
-    let names: Vec<_> = conn.session.list(Some(""), Some("*")).await?.try_collect().await?;
+    if conn.is_ews() {
+        return if create { Err(AppError::Other("Шаблоны для учётной записи Exchange пока недоступны".into())) } else { Ok(None) };
+    }
+    let names: Vec<_> = conn.imap()?.list(Some(""), Some("*")).await?.try_collect().await?;
     let found = names
         .iter()
         .map(|n| n.name().to_string())
@@ -1553,7 +1675,7 @@ pub async fn templates_folder(conn: &mut Connection, create: bool) -> Result<Opt
     if found.is_some() || !create {
         return Ok(found);
     }
-    conn.session.create("Templates").await?;
+    conn.imap()?.create("Templates").await?;
     Ok(Some("Templates".into()))
 }
 
@@ -1570,11 +1692,11 @@ pub struct Template {
 pub async fn templates(conn: &mut Connection) -> Result<Vec<Template>> {
     let Some(folder) = templates_folder(conn, false).await? else { return Ok(Vec::new()) };
     conn.ensure_selected(&folder).await?;
-    let uids: Vec<u32> = conn.session.uid_search("UNDELETED").await?.into_iter().collect();
+    let uids: Vec<u32> = conn.imap()?.uid_search("UNDELETED").await?.into_iter().collect();
     if uids.is_empty() {
         return Ok(Vec::new());
     }
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(&uids[..uids.len().min(200)]), "(UID BODY.PEEK[])").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid_set(&uids[..uids.len().min(200)]), "(UID BODY.PEEK[])").await?.try_collect().await?;
     let parser = MessageParser::default();
     let mut out: Vec<Template> = fetches
         .iter()
@@ -1597,7 +1719,7 @@ pub async fn templates(conn: &mut Connection) -> Result<Vec<Template>> {
 pub async fn append_template(conn: &mut Connection, raw: &[u8]) -> Result<()> {
     let folder = templates_folder(conn, true).await?.expect("created");
     conn.selected = None;
-    conn.session.append(&folder, Some("(\\Seen)"), None, raw).await?;
+    conn.imap()?.append(&folder, Some("(\\Seen)"), None, raw).await?;
     Ok(())
 }
 
@@ -1617,32 +1739,49 @@ pub fn due_of(keywords: &[String]) -> Option<chrono::DateTime<chrono::Utc>> {
 
 /// Флажок со сроком (или без срока): прежние сроки снимаются.
 pub async fn set_due(conn: &mut Connection, folder: &str, uid: u32, due: Option<chrono::DateTime<chrono::Utc>>) -> Result<()> {
+    if let Some(e) = conn.ews() {
+        let old: Vec<String> = e.summaries_of(folder, &[uid]).await?.into_iter().next().map(|m| m.keywords.into_iter().filter(|k| k.starts_with(DUE_PREFIX)).collect()).unwrap_or_default();
+        for k in old {
+            e.set_keyword(folder, &[uid], &k, false).await?;
+        }
+        e.set_flag(folder, &[uid], FlagKind::Flagged, true).await?;
+        if let Some(at) = due {
+            e.set_keyword(folder, &[uid], &due_keyword(&at), true).await?;
+        }
+        return Ok(());
+    }
     conn.ensure_selected(folder).await?;
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid.to_string(), "(UID FLAGS)").await?.try_collect().await?;
     let old: Vec<String> = fetches
         .iter()
         .find(|f| f.uid == Some(uid))
         .map(|f| f.flags().filter_map(|x| match x { Flag::Custom(k) if k.starts_with(DUE_PREFIX) => Some(k.to_string()), _ => None }).collect())
         .unwrap_or_default();
     if !old.is_empty() {
-        let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("-FLAGS.SILENT ({})", old.join(" "))).await?.try_collect().await?;
+        let _: Vec<Fetch> = conn.imap()?.uid_store(uid.to_string(), format!("-FLAGS.SILENT ({})", old.join(" "))).await?.try_collect().await?;
     }
     let mut add = vec!["\\Flagged".to_string()];
     if let Some(at) = due {
         add.push(due_keyword(&at));
     }
-    let _: Vec<Fetch> = conn.session.uid_store(uid.to_string(), format!("+FLAGS.SILENT ({})", add.join(" "))).await?.try_collect().await?;
+    let _: Vec<Fetch> = conn.imap()?.uid_store(uid.to_string(), format!("+FLAGS.SILENT ({})", add.join(" "))).await?.try_collect().await?;
     Ok(())
 }
 
 /// Письма с флажком и сроком в папке.
 pub async fn due_in(conn: &mut Connection, folder: &str) -> Result<Vec<MessageSummary>> {
+    if let Some(e) = conn.ews() {
+        let q = crate::search::Query { flagged: true, ..Default::default() };
+        let uids = e.search(folder, &q).await?;
+        let items = e.summaries_of(folder, &uids).await?;
+        return Ok(items.into_iter().filter(|m| m.keywords.iter().any(|k| k.starts_with(DUE_PREFIX))).collect());
+    }
     conn.ensure_selected(folder).await?;
-    let uids: Vec<u32> = conn.session.uid_search("FLAGGED UNDELETED").await?.into_iter().collect();
+    let uids: Vec<u32> = conn.imap()?.uid_search("FLAGGED UNDELETED").await?.into_iter().collect();
     if uids.is_empty() {
         return Ok(Vec::new());
     }
-    let flags: Vec<Fetch> = conn.session.uid_fetch(uid_set(&uids), "(UID FLAGS)").await?.try_collect().await?;
+    let flags: Vec<Fetch> = conn.imap()?.uid_fetch(uid_set(&uids), "(UID FLAGS)").await?.try_collect().await?;
     let with_due: Vec<u32> = flags
         .iter()
         .filter(|f| f.flags().any(|x| matches!(x, Flag::Custom(k) if k.starts_with(DUE_PREFIX))))
@@ -1658,13 +1797,16 @@ pub async fn junk_folder(conn: &mut Connection) -> Result<String> {
     if let Some(f) = role_folder(conn, FolderRole::Junk).await? {
         return Ok(f);
     }
-    conn.session.create("Junk").await?;
+    conn.imap()?.create("Junk").await?;
     Ok("Junk".into())
 }
 
 /// Папка «Отложенные» (создаётся при первом использовании).
 pub async fn snoozed_folder(conn: &mut Connection, create: bool) -> Result<Option<String>> {
-    let names: Vec<_> = conn.session.list(Some(""), Some("*")).await?.try_collect().await?;
+    if conn.is_ews() {
+        return if create { Err(AppError::Other("«Отложить» для учётной записи Exchange пока недоступно".into())) } else { Ok(None) };
+    }
+    let names: Vec<_> = conn.imap()?.list(Some(""), Some("*")).await?.try_collect().await?;
     let found = names.iter().map(|n| n.name().to_string()).find(|n| {
         let leaf = utf7_imap::decode_utf7_imap(n.clone()).to_lowercase();
         leaf == "отложенные" || leaf == "snoozed"
@@ -1674,7 +1816,7 @@ pub async fn snoozed_folder(conn: &mut Connection, create: bool) -> Result<Optio
         return Ok(found);
     }
     let name = utf7_imap::encode_utf7_imap("Отложенные".to_string());
-    conn.session.create(&name).await?;
+    conn.imap()?.create(&name).await?;
     Ok(Some(name))
 }
 
@@ -1684,11 +1826,11 @@ pub const SNOOZE_PREFIX: &str = "atomsnooze-";
 /// Письма «Отложенных», срок которых наступил.
 pub async fn snoozed_due(conn: &mut Connection, folder: &str, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<u32>> {
     conn.ensure_selected(folder).await?;
-    let uids: Vec<u32> = conn.session.uid_search("UNDELETED").await?.into_iter().collect();
+    let uids: Vec<u32> = conn.imap()?.uid_search("UNDELETED").await?.into_iter().collect();
     if uids.is_empty() {
         return Ok(Vec::new());
     }
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(&uids), "(UID FLAGS)").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid_set(&uids), "(UID FLAGS)").await?.try_collect().await?;
     Ok(fetches
         .iter()
         .filter_map(|f| {
@@ -1704,14 +1846,14 @@ pub async fn snoozed_due(conn: &mut Connection, folder: &str, now: chrono::DateT
 /// Снять все ключевые слова «отложено» у писем.
 pub async fn clear_snooze(conn: &mut Connection, folder: &str, uids: &[u32]) -> Result<()> {
     conn.ensure_selected(folder).await?;
-    let fetches: Vec<Fetch> = conn.session.uid_fetch(uid_set(uids), "(UID FLAGS)").await?.try_collect().await?;
+    let fetches: Vec<Fetch> = conn.imap()?.uid_fetch(uid_set(uids), "(UID FLAGS)").await?.try_collect().await?;
     let kws: std::collections::BTreeSet<String> = fetches
         .iter()
         .flat_map(|f| f.flags().filter_map(|x| match x { Flag::Custom(k) if k.starts_with(SNOOZE_PREFIX) => Some(k.to_string()), _ => None }).collect::<Vec<_>>())
         .collect();
     if !kws.is_empty() {
         let list: Vec<String> = kws.into_iter().collect();
-        let _: Vec<Fetch> = conn.session.uid_store(uid_set(uids), format!("-FLAGS.SILENT ({})", list.join(" "))).await?.try_collect().await?;
+        let _: Vec<Fetch> = conn.imap()?.uid_store(uid_set(uids), format!("-FLAGS.SILENT ({})", list.join(" "))).await?.try_collect().await?;
     }
     Ok(())
 }
@@ -1720,6 +1862,9 @@ pub async fn clear_snooze(conn: &mut Connection, folder: &str, uids: &[u32]) -> 
 /// `folder` (проверка по Message-ID, а если UID уже другой — поиск по Message-ID)
 /// или `None`, если письма в папке нет. Папки нет — все `None`.
 pub async fn locate(conn: &mut Connection, folder: &str, targets: &[crate::offline::Target]) -> Result<Vec<Option<u32>>> {
+    if let Some(e) = conn.ews() {
+        return e.locate(folder, targets).await;
+    }
     if targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -1732,7 +1877,7 @@ pub async fn locate(conn: &mut Connection, folder: &str, targets: &[crate::offli
     let fetches: Vec<Fetch> = if uids.is_empty() {
         Vec::new()
     } else {
-        conn.session.uid_fetch(uid_set(&uids), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?.try_collect().await?
+        conn.imap()?.uid_fetch(uid_set(&uids), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])").await?.try_collect().await?
     };
     let parser = MessageParser::default();
     let found: Vec<(u32, Option<String>)> = fetches
@@ -1751,7 +1896,7 @@ pub async fn locate(conn: &mut Connection, folder: &str, targets: &[crate::offli
         }
         let id = t.msg_id.as_deref().map(crate::offline::norm_id).filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\'));
         let searched = match id {
-            Some(id) => conn.session.uid_search(format!("HEADER Message-ID \"{id}\"")).await?.into_iter().max(),
+            Some(id) => conn.imap()?.uid_search(format!("HEADER Message-ID \"{id}\"")).await?.into_iter().max(),
             None => None,
         };
         out.push(searched);
@@ -1761,14 +1906,20 @@ pub async fn locate(conn: &mut Connection, folder: &str, targets: &[crate::offli
 
 /// UIDNEXT папки (STATUS, без открытия): по нему видно, пришли ли новые письма.
 pub async fn uid_next(conn: &mut Connection, folder: &str) -> Result<u32> {
-    let mb = conn.session.status(folder, "(UIDNEXT UIDVALIDITY)").await?;
+    if let Some(e) = conn.ews() {
+        return e.uid_next(folder).await;
+    }
+    let mb = conn.imap()?.status(folder, "(UIDNEXT UIDVALIDITY)").await?;
     Ok(mb.uid_next.unwrap_or(0))
 }
 
 /// UID писем папки начиная с `from` (новые письма).
 pub async fn uids_from(conn: &mut Connection, folder: &str, from: u32) -> Result<Vec<u32>> {
+    if let Some(e) = conn.ews() {
+        return e.uids_from(folder, from).await;
+    }
     conn.ensure_selected(folder).await?;
-    let mut uids: Vec<u32> = conn.session.uid_search(format!("UID {from}:*")).await?.into_iter().filter(|u| *u >= from).collect();
+    let mut uids: Vec<u32> = conn.imap()?.uid_search(format!("UID {from}:*")).await?.into_iter().filter(|u| *u >= from).collect();
     uids.sort_unstable();
     Ok(uids)
 }
@@ -1778,9 +1929,15 @@ pub async fn set_keyword(conn: &mut Connection, folder: &str, uids: &[u32], keyw
     if !valid_keyword(keyword) {
         return Err(AppError::Other("Недопустимое имя метки".into()));
     }
+    if let Some(e) = conn.ews() {
+        return e.set_keyword(folder, uids, keyword, value).await;
+    }
+    if !valid_keyword(keyword) {
+        return Err(AppError::Other("Недопустимое имя метки".into()));
+    }
     conn.ensure_selected(folder).await?;
     let op = if value { "+FLAGS.SILENT" } else { "-FLAGS.SILENT" };
-    let _: Vec<Fetch> = conn.session.uid_store(uid_set(uids), format!("{op} ({keyword})")).await?.try_collect().await?;
+    let _: Vec<Fetch> = conn.imap()?.uid_store(uid_set(uids), format!("{op} ({keyword})")).await?.try_collect().await?;
     Ok(())
 }
 
@@ -1802,6 +1959,9 @@ pub const IMPORTANT: &str = "$label1";
 
 /// Флаг сразу у нескольких писем.
 pub async fn set_flag_many(conn: &mut Connection, folder: &str, uids: &[u32], flag: FlagKind, value: bool) -> Result<()> {
+    if let Some(e) = conn.ews() {
+        return e.set_flag(folder, uids, flag, value).await;
+    }
     for uid in uids {
         set_flag(conn, folder, *uid, flag, value).await?;
     }
@@ -1815,6 +1975,9 @@ pub async fn set_flag(
     flag: FlagKind,
     value: bool,
 ) -> Result<()> {
+    if let Some(e) = conn.ews() {
+        return e.set_flag(folder, &[uid], flag, value).await;
+    }
     conn.ensure_selected(folder).await?;
     let name = match flag {
         FlagKind::Seen => "\\Seen",
@@ -1824,7 +1987,7 @@ pub async fn set_flag(
     };
     let op = if value { "+FLAGS.SILENT" } else { "-FLAGS.SILENT" };
     let _: Vec<Fetch> = conn
-        .session
+        .imap()?
         .uid_store(uid.to_string(), format!("{op} ({name})"))
         .await?
         .try_collect()
@@ -1836,14 +1999,17 @@ pub async fn set_flag(
 
 /// Создаёт папку (если её ещё нет) и подписывается на неё.
 pub async fn create_folder(conn: &mut Connection, name: &str) -> Result<()> {
-    if let Err(e) = conn.session.create(name).await {
+    if let Some(e) = conn.ews() {
+        return e.create_folder(name).await;
+    }
+    if let Err(e) = conn.imap()?.create(name).await {
         // ALREADYEXISTS — не ошибка: папку могли создать в веб-почте.
         let text = e.to_string();
         if !text.to_ascii_uppercase().contains("ALREADYEXISTS") && !text.to_lowercase().contains("exists") {
             return Err(e.into());
         }
     }
-    let _ = conn.session.subscribe(name).await;
+    let _ = conn.imap()?.subscribe(name).await;
     Ok(())
 }
 
@@ -1865,25 +2031,25 @@ async fn expunge_uids(conn: &mut Connection, uids: &[u32]) -> Result<()> {
     #[cfg(not(debug_assertions))]
     let force_plain = false;
     if !force_plain && has_capability(conn, "UIDPLUS").await {
-        let _: Vec<_> = conn.session.uid_expunge(uid_set(uids)).await?.try_collect().await?;
+        let _: Vec<_> = conn.imap()?.uid_expunge(uid_set(uids)).await?.try_collect().await?;
         return Ok(());
     }
     // Без UIDPLUS есть только EXPUNGE, а он удаляет ВСЕ письма папки с \\Deleted —
     // в том числе помеченные к удалению другим клиентом (Outlook, веб-почта).
     // Поэтому на время EXPUNGE снимаем \\Deleted с чужих писем и затем возвращаем.
     let ours: std::collections::HashSet<u32> = uids.iter().copied().collect();
-    let others: Vec<u32> = conn.session.uid_search("DELETED").await?.into_iter().filter(|u| !ours.contains(u)).collect();
+    let others: Vec<u32> = conn.imap()?.uid_search("DELETED").await?.into_iter().filter(|u| !ours.contains(u)).collect();
     if !others.is_empty() {
-        let _: Vec<Fetch> = conn.session.uid_store(uid_set(&others), "-FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+        let _: Vec<Fetch> = conn.imap()?.uid_store(uid_set(&others), "-FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
     }
     let result: Result<()> = async {
-        let _: Vec<_> = conn.session.expunge().await?.try_collect().await?;
+        let _: Vec<_> = conn.imap()?.expunge().await?.try_collect().await?;
         Ok(())
     }
     .await;
     if !others.is_empty() {
         let restored: Result<Vec<Fetch>> = async {
-            Ok(conn.session.uid_store(uid_set(&others), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?)
+            Ok(conn.imap()?.uid_store(uid_set(&others), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?)
         }
         .await;
         if let Err(e) = restored {
@@ -1895,16 +2061,19 @@ async fn expunge_uids(conn: &mut Connection, uids: &[u32]) -> Result<()> {
 
 /// Перемещает письма в другую папку (UID MOVE, без него — COPY + удаление).
 pub async fn move_messages(conn: &mut Connection, folder: &str, uids: &[u32], target: &str) -> Result<()> {
+    if let Some(e) = conn.ews() {
+        return e.move_messages(folder, uids, target).await;
+    }
     if uids.is_empty() || folder == target {
         return Ok(());
     }
     let can_move = has_capability(conn, "MOVE").await;
     conn.ensure_selected(folder).await?;
     if can_move {
-        conn.session.uid_mv(uid_set(uids), target).await?;
+        conn.imap()?.uid_mv(uid_set(uids), target).await?;
     } else {
-        conn.session.uid_copy(uid_set(uids), target).await?;
-        let _: Vec<Fetch> = conn.session.uid_store(uid_set(uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+        conn.imap()?.uid_copy(uid_set(uids), target).await?;
+        let _: Vec<Fetch> = conn.imap()?.uid_store(uid_set(uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
         expunge_uids(conn, uids).await?;
     }
     Ok(())
@@ -1913,6 +2082,9 @@ pub async fn move_messages(conn: &mut Connection, folder: &str, uids: &[u32], ta
 /// Удаление: в «Корзину» (`trash`), а из самой корзины (или если её нет) — насовсем.
 /// Возвращает `true`, если письма удалены безвозвратно.
 pub async fn delete_messages(conn: &mut Connection, folder: &str, uids: &[u32], trash: Option<&str>) -> Result<bool> {
+    if let Some(e) = conn.ews() {
+        return e.delete_messages(folder, uids, trash).await;
+    }
     if uids.is_empty() {
         return Ok(false);
     }
@@ -1923,7 +2095,7 @@ pub async fn delete_messages(conn: &mut Connection, folder: &str, uids: &[u32], 
         }
         _ => {
             conn.ensure_selected(folder).await?;
-            let _: Vec<Fetch> = conn.session.uid_store(uid_set(uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+            let _: Vec<Fetch> = conn.imap()?.uid_store(uid_set(uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
             expunge_uids(conn, uids).await?;
             Ok(true)
         }
@@ -1937,12 +2109,13 @@ pub async fn delete_messages(conn: &mut Connection, folder: &str, uids: &[u32], 
 pub async fn raw_command(conn: &mut Connection, command: &str) -> Vec<String> {
     use async_imap::imap_proto::types::Response;
     let mut out = Vec::new();
-    let tag = match conn.session.run_command(command).await {
+    let Ok(session) = conn.imap() else { return vec!["Exchange: команды IMAP не применяются".into()] };
+    let tag = match session.run_command(command).await {
         Ok(tag) => tag,
         Err(e) => return vec![format!("ошибка отправки: {e}")],
     };
-    loop {
-        match conn.session.read_response().await {
+    while let Ok(session) = conn.imap() {
+        match session.read_response().await {
             Ok(Some(resp)) => {
                 let done = matches!(resp.parsed(), Response::Done { tag: t, .. } if *t == tag);
                 out.push(format!("{:?}", resp.parsed()));
@@ -1970,6 +2143,15 @@ pub async fn raw_command(conn: &mut Connection, command: &str) -> Vec<String> {
 /// Отчёт для разбора проблем: что сервер отвечает на ключевые запросы.
 /// Пароль в отчёт не попадает. Папка открывается только на чтение (EXAMINE).
 pub async fn diagnostics(conn: &mut Connection, folder: Option<&str>) -> Result<String> {
+    if conn.is_ews() {
+        let folders = conn.ews().expect("ews").list_folders().await;
+        return Ok(format!(
+            "Atom Mail {} — диагностика Exchange (EWS)\n\nАдрес EWS: {}\nВход: выполнен\nПапок: {}",
+            env!("CARGO_PKG_VERSION"),
+            conn.creds.ews.clone().unwrap_or_default(),
+            folders.map(|f| f.len().to_string()).unwrap_or_else(|e| format!("ошибка: {e}"))
+        ));
+    }
     use std::fmt::Write;
     let mut r = String::new();
     let _ = writeln!(r, "Atom Mail {} — диагностика IMAP", env!("CARGO_PKG_VERSION"));
@@ -1979,7 +2161,7 @@ pub async fn diagnostics(conn: &mut Connection, folder: Option<&str>) -> Result<
 
     let _ = writeln!(r, "\n## LIST \"\" \"*\"");
     let mut ids = Vec::new();
-    let listed: std::result::Result<Vec<_>, String> = match conn.session.list(Some(""), Some("*")).await {
+    let listed: std::result::Result<Vec<_>, String> = match conn.imap()?.list(Some(""), Some("*")).await {
         Ok(stream) => stream.try_collect::<Vec<_>>().await.map_err(|e| e.to_string()),
         Err(e) => Err(e.to_string()),
     };
@@ -2007,7 +2189,7 @@ pub async fn diagnostics(conn: &mut Connection, folder: Option<&str>) -> Result<
 
     let _ = writeln!(r, "\n## STATUS (MESSAGES UNSEEN) по папкам");
     for id in &ids {
-        match conn.session.status(id, "(MESSAGES UNSEEN)").await {
+        match conn.imap()?.status(id, "(MESSAGES UNSEEN)").await {
             Ok(mb) => {
                 let _ = writeln!(r, "ok  {id}: {} / {:?}", mb.exists, mb.unseen);
             }
@@ -2024,14 +2206,14 @@ pub async fn diagnostics(conn: &mut Connection, folder: Option<&str>) -> Result<
     if let Some(folder) = folder {
         conn.selected = None;
         let _ = writeln!(r, "\n## EXAMINE {folder} ({})", utf7_imap::decode_utf7_imap(folder.to_string()));
-        match conn.session.examine(folder).await {
+        match conn.imap()?.examine(folder).await {
             Ok(mb) => {
                 let _ = writeln!(
                     r,
                     "exists={} recent={} unseen={:?} uidvalidity={:?} uidnext={:?}",
                     mb.exists, mb.recent, mb.unseen, mb.uid_validity, mb.uid_next
                 );
-                match conn.session.uid_search("ALL").await {
+                match conn.imap()?.uid_search("ALL").await {
                     Ok(uids) => {
                         let mut uids: Vec<u32> = uids.into_iter().collect();
                         uids.sort_unstable();

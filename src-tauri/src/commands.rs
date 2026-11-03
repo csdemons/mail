@@ -197,6 +197,9 @@ impl AppState {
 /// Трей, настройки окна и запуск свёрнутым (автозапуск передаёт `--minimized`).
 pub fn setup_desktop(app: &AppHandle) {
     use tauri::Manager;
+    if let Ok(dir) = host::data_dir(app) {
+        crate::ews::set_data_dir(dir);
+    }
     let state = app.state::<AppState>();
     let prefs = host::config_dir(app).map(|d| crate::desktop::load_prefs(&d)).unwrap_or_default();
     state.close_to_tray.store(prefs.close_to_tray, Ordering::SeqCst);
@@ -344,6 +347,9 @@ pub struct Account {
     /// Сервер недоступен — сеанс открыт без сети, с письмами на компьютере.
     #[serde(default)]
     offline: bool,
+    /// Адрес почты (у Exchange логин может быть DOMAIN\user).
+    email: String,
+    exchange: bool,
 }
 
 #[derive(Serialize)]
@@ -743,6 +749,8 @@ fn account_of(s: &Settings) -> Account {
         port: s.port,
         locked: false,
         offline: false,
+        email: s.email(),
+        exchange: s.is_exchange(),
     }
 }
 
@@ -764,12 +772,22 @@ pub async fn login(
     smtp_host: Option<String>,
     smtp_port: Option<u16>,
     dav_url: Option<String>,
+    ews_url: Option<String>,
+    address: Option<String>,
 ) -> Result<LoginResult> {
     if let Some(u) = dav_url.as_deref() {
         settings::validate_dav_url(u)?;
     }
-    let host = host.trim().to_string();
     let username = username.trim().to_string();
+    let address = address.map(|a| a.trim().to_string()).unwrap_or_default();
+    let exchange = match ews_url {
+        Some(u) => Some(resolve_exchange(&username, &password, &address, &u).await?),
+        None => None,
+    };
+    let (host, port) = match &exchange {
+        Some(url) => (exchange_host(url), 443),
+        None => (host.trim().to_string(), port),
+    };
     if host.is_empty() || username.is_empty() || password.is_empty() {
         return Err(AppError::Other("Укажите сервер, логин и пароль".into()));
     }
@@ -814,14 +832,11 @@ pub async fn login(
         signature: mine.and_then(|p| p.signature.clone()),
         offline_days: mine.and_then(|p| p.offline_days),
         categories: mine.and_then(|p| p.categories.clone()),
+        ews_url: exchange.clone().unwrap_or_default(),
+        address: if exchange.is_some() { address.clone() } else { String::new() },
     };
 
-    let creds = Credentials {
-        host,
-        port,
-        username,
-        password: password.clone(),
-    };
+    let creds = creds_of(&s, password.clone());
     if totp::load(&account_key(&s.username, &s.host)).is_some() {
         // Пароль проверяем сразу, а почту подключаем только после кода TOTP.
         imap::connect(&creds).await?.logout().await;
@@ -867,12 +882,7 @@ pub async fn auto_login(app: AppHandle, state: State<'_, AppState>) -> Result<Op
     let Some(password) = settings::load_password(&s) else {
         return Ok(None);
     };
-    let creds = Credentials {
-        host: s.host.clone(),
-        port: s.port,
-        username: s.username.clone(),
-        password,
-    };
+    let creds = creds_of(&s, password);
     if totp::load(&account_key(&s.username, &s.host)).is_some() {
         // Сохранённый пароль используется только после кода из приложения.
         *state.pending.lock().await = Some(Pending { creds, profile: s.clone(), remember: None });
@@ -918,9 +928,11 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
     end_session(&state).await;
     // Письма на компьютере удаляются вместе с паролем.
     if let (Some(account), Ok(root)) = (account.clone(), host::data_dir(&app)) {
+        let acc = account.clone();
         if let Ok(Err(e)) = tokio::task::spawn_blocking(move || store::wipe(&root, &account)).await {
             log::warn!("local store not removed on logout: {e}");
         }
+        crate::ews::forget(&acc);
     }
     // «Выйти и забыть пароль» забывает и подключение к Nextcloud: пароль приложения
     // отзывается на сервере и удаляется из системного хранилища — именно этой
@@ -1320,17 +1332,34 @@ pub struct SendTicket {
 /// Всё — от имени и в ящик учётной записи `ctx`, даже если пользователь за это
 /// время переключился на другую или вышел.
 async fn deliver(ctx: &AccountCtx, raw: &[u8], built: Option<&lettre::Message>) -> Result<SendResult> {
-    let profile = ctx.profile().await;
-    let creds = &ctx.creds;
-    // Исходник с проверкой связи перед передачей: если сервер недоступен, письмо
-    // точно не ушло (его можно поставить в очередь), обрыв во время передачи —
-    // «результат неизвестен».
     let _ = built;
-    smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, raw).await?;
+    send_as(ctx, raw).await?;
+    // Exchange сам сохраняет копию в «Отправленные».
+    if ctx.creds.ews.is_some() {
+        return Ok(SendResult { saved_to: None, warning: None, queued: false });
+    }
     match append_sent_as(ctx, raw).await {
         Ok(folder) => Ok(SendResult { saved_to: Some(folder), warning: None, queued: false }),
         Err(e) => Ok(SendResult { saved_to: None, warning: Some(format!("Письмо отправлено, но копия не сохранена в «Отправленные»: {e}")), queued: false }),
     }
+}
+
+/// Отправить письмо от имени учётной записи `ctx`: Exchange — через EWS (её
+/// соединение, а после закрытия сеанса — отдельное), остальные — через SMTP с
+/// проверкой связи перед передачей: если сервер недоступен, письмо точно не ушло
+/// (его можно поставить в очередь), обрыв во время передачи — «результат неизвестен».
+async fn send_as(ctx: &AccountCtx, raw: &[u8]) -> Result<()> {
+    if ctx.creds.ews.is_some() {
+        if !ctx.is_closed() {
+            return with_ctx!(once ctx, c => imap::send_via_server(c, raw));
+        }
+        let mut c = imap::connect(&ctx.creds).await?;
+        let r = imap::send_via_server(&mut c, raw).await;
+        c.logout().await;
+        return r;
+    }
+    let profile = ctx.profile().await;
+    smtp::send_raw(&profile.smtp_host, profile.smtp_port, &ctx.creds.username, &ctx.creds.password, raw).await
 }
 
 /// Копия в «Отправленные» — в ящик учётной записи `ctx`: через её соединение,
@@ -2756,7 +2785,11 @@ pub async fn unsubscribe(state: State<'_, AppState>, folder: String, uid: u32) -
             read_receipt: false,
             extra_headers: vec![],
         })?;
-        smtp::send(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, &message).await?;
+        if ctx.creds.ews.is_some() {
+            send_as(&ctx, &message.formatted()).await?;
+        } else {
+            smtp::send(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, &message).await?;
+        }
         return Ok(UnsubscribeResult { done: true, open_url: None, how: "письмом на адрес отписки".into() });
     }
     Ok(UnsubscribeResult { done: false, open_url: u.https, how: "на сайте рассылки".into() })
@@ -2826,7 +2859,6 @@ async fn return_snoozed(ctx: &AccountCtx) -> Result<usize> {
 pub async fn mdn_respond(state: State<'_, AppState>, folder: String, uid: u32, send: bool) -> Result<()> {
     let ctx = state.ctx().await?;
     if send {
-        let creds = ctx.creds.clone();
         let profile = ctx.profile().await;
         let raw = match local_raw(&ctx, &folder, uid).await {
             Some(r) => r,
@@ -2841,7 +2873,7 @@ pub async fn mdn_respond(state: State<'_, AppState>, folder: String, uid: u32, s
             .ok_or_else(|| AppError::Other("Отправитель не запрашивал уведомление".into()))?;
         let id = msg.message_id().map(|i| format!("<{}>", i.trim_matches(['<', '>'])));
         let mdn = smtp::build_mdn(&profile.display_name, &profile.email(), &to, msg.subject().unwrap_or_default(), id.as_deref());
-        smtp::send_raw(&profile.smtp_host, profile.smtp_port, &creds.username, &creds.password, &mdn).await?;
+        send_as(&ctx, &mdn).await?;
     }
     with_conn!(state, c => imap::set_keyword(c, &folder, &[uid], "$MDNSent", true))?;
     if let Some(st) = local(&ctx).await {
@@ -2855,6 +2887,10 @@ pub async fn mdn_respond(state: State<'_, AppState>, folder: String, uid: u32, s
 async fn dav_client(ctx: &AccountCtx) -> Result<(dav::DavClient, url::Url)> {
     let creds = ctx.creds.clone();
     let profile = ctx.profile().await;
+    // Exchange: календарь и контакты — через EWS (следующая версия), если не указан свой сервер CalDAV.
+    if profile.is_exchange() && profile.dav_url.trim().is_empty() {
+        return Err(AppError::Other("Календарь и контакты Exchange появятся в следующей версии Atom Mail".into()));
+    }
     let base = url::Url::parse(&profile.dav_base())
         .map_err(|e| AppError::Other(format!("Некорректный адрес сервера календаря: {e}")))?;
     Ok((dav::DavClient::new(&creds.username, &creds.password, &base)?, base))
@@ -4723,6 +4759,8 @@ pub struct AccountEntry {
     active: bool,
     /// Пароль известен (сохранён или введён в этой сессии) — можно переключиться.
     can_switch: bool,
+    email: String,
+    exchange: bool,
 }
 
 async fn active_key(state: &AppState) -> Option<String> {
@@ -4741,8 +4779,26 @@ async fn password_of(state: &AppState, s: &Settings) -> Option<String> {
     tokio::task::spawn_blocking(move || settings::load_password(&s)).await.ok().flatten()
 }
 
+/// Адрес EWS для входа в Exchange: введённый вручную или найденный автоматически
+/// (Autodiscover) по адресу почты.
+async fn resolve_exchange(username: &str, password: &str, address: &str, input: &str) -> Result<String> {
+    let input = input.trim();
+    if !input.is_empty() && input != "auto" {
+        return Ok(crate::ews::normalize_url(input)?.to_string());
+    }
+    let email = if address.contains('@') { address } else { username };
+    if !email.contains('@') {
+        return Err(AppError::Other("Укажите адрес почты или адрес сервера Exchange".into()));
+    }
+    crate::ews::autodiscover(email, username, password).await
+}
+
+fn exchange_host(url: &str) -> String {
+    url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_lowercase)).unwrap_or_default()
+}
+
 fn creds_of(s: &Settings, password: String) -> Credentials {
-    Credentials { host: s.host.clone(), port: s.port, username: s.username.clone(), password }
+    Credentials { host: s.host.clone(), port: s.port, username: s.username.clone(), password, ews: s.is_exchange().then(|| s.ews_url.clone()) }
 }
 
 /// Подключённые учётные записи (активная — первой).
@@ -4754,7 +4810,7 @@ pub async fn accounts_list(app: AppHandle, state: State<'_, AppState>) -> Result
         let key = settings::account_key(&s);
         let is_active = active.as_deref() == Some(key.as_str());
         let can_switch = is_active || password_of(&state, &s).await.is_some();
-        out.push(AccountEntry { key, username: s.username.clone(), host: s.host.clone(), port: s.port, display_name: s.display_name.clone(), active: is_active, can_switch });
+        out.push(AccountEntry { key, username: s.username.clone(), host: s.host.clone(), port: s.port, display_name: s.display_name.clone(), active: is_active, can_switch, email: s.email(), exchange: s.is_exchange() });
     }
     out.sort_by_key(|a| !a.active);
     Ok(out)
@@ -4774,12 +4830,22 @@ pub async fn account_add(
     smtp_host: Option<String>,
     smtp_port: Option<u16>,
     dav_url: Option<String>,
+    ews_url: Option<String>,
+    address: Option<String>,
 ) -> Result<AccountEntry> {
     if let Some(u) = dav_url.as_deref() {
         settings::validate_dav_url(u)?;
     }
-    let host = host.trim().to_string();
     let username = username.trim().to_string();
+    let address = address.map(|a| a.trim().to_string()).unwrap_or_default();
+    let exchange = match ews_url {
+        Some(u) => Some(resolve_exchange(&username, &password, &address, &u).await?),
+        None => None,
+    };
+    let (host, port) = match &exchange {
+        Some(url) => (exchange_host(url), 443),
+        None => (host.trim().to_string(), port),
+    };
     if host.is_empty() || username.is_empty() || password.is_empty() {
         return Err(AppError::Other("Укажите сервер, логин и пароль".into()));
     }
@@ -4805,6 +4871,8 @@ pub async fn account_add(
         signature: None,
         offline_days: None,
         categories: None,
+        ews_url: exchange.clone().unwrap_or_default(),
+        address: if exchange.is_some() { address.clone() } else { String::new() },
     };
     let creds = creds_of(&s, password.clone());
     let conn = imap::connect(&creds).await?;
@@ -4815,7 +4883,7 @@ pub async fn account_add(
     state.others.lock().await.insert(key.clone(), conn);
     list.push(s.clone());
     settings::save_accounts(&app, &list)?;
-    Ok(AccountEntry { key, username, host, port, display_name: String::new(), active: false, can_switch: true })
+    Ok(AccountEntry { key, username, host, port, display_name: String::new(), active: false, can_switch: true, email: s.email(), exchange: s.is_exchange() })
 }
 
 /// Переключиться на другую учётную запись: сессия текущей закрывается, её пароль
@@ -4893,6 +4961,7 @@ pub async fn account_remove(app: AppHandle, state: State<'_, AppState>, key: Str
             log::warn!("local store of removed account not wiped: {e}");
         }
     }
+    crate::ews::forget(&key);
     settings::remove_account(&app, &key)
 }
 

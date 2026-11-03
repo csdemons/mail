@@ -14,6 +14,10 @@ export interface LoginParams {
   smtpHost: string
   smtpPort: number
   davUrl: string
+  /** Exchange: адрес EWS или 'auto' (автоопределение); нет — обычный IMAP. */
+  ewsUrl?: string
+  /** Exchange: адрес почты, если логин — DOMAIN\user. */
+  address?: string
 }
 
 /** Ошибки команд приходят строкой (см. AppError в src-tauri/src/error.rs). */
@@ -27,8 +31,8 @@ export const PAGE_SIZE = 50
 
 export const api = {
   getSettings: () => invoke<Settings | null>('get_settings'),
-  login: ({ host, port, username, password, remember, smtpHost, smtpPort, davUrl }: LoginParams) =>
-    invoke<LoginResult>('login', { host, port, username, password, remember, smtpHost, smtpPort, davUrl }),
+  login: ({ host, port, username, password, remember, smtpHost, smtpPort, davUrl, ewsUrl, address }: LoginParams) =>
+    invoke<LoginResult>('login', { host, port, username, password, remember, smtpHost, smtpPort, davUrl, ewsUrl: ewsUrl ?? null, address: address ?? null }),
   getProfile: () => invoke<Settings | null>('get_profile'),
   updateProfile: (p: { displayName: string; smtpHost: string; smtpPort: number; davUrl: string; password: string | null }) =>
     invoke<Settings>('update_profile', { ...p }),
@@ -69,7 +73,7 @@ export const api = {
   templateDelete: (folder: string, uid: number) => invoke<void>('template_delete', { folder, uid }),
   listContacts: () => invoke<ContactsResult>('list_contacts'),
   accountsList: () => invoke<AccountEntry[]>('accounts_list'),
-  accountAdd: (p: LoginParams) => invoke<AccountEntry>('account_add', { ...p }),
+  accountAdd: (p: LoginParams) => invoke<AccountEntry>('account_add', { ...p, ewsUrl: p.ewsUrl ?? null, address: p.address ?? null }),
   accountSwitch: (key: string) => invoke<LoginResult>('account_switch', { key }),
   accountRemove: (key: string) => invoke<void>('account_remove', { key }),
   accountsUnread: () => invoke<AccountUnread[]>('accounts_unread'),

@@ -10,6 +10,7 @@ async fn main() {
         port: env("IMAP_PORT", "993").parse().expect("IMAP_PORT"),
         username: std::env::var("IMAP_USERNAME").expect("IMAP_USERNAME"),
         password: std::env::var("IMAP_PASSWORD").expect("IMAP_PASSWORD"),
+        ews: std::env::var("EWS_URL").ok(),
     };
     let folder = std::env::args().nth(1).unwrap_or_else(|| "INBOX".into());
     let mut conn = imap::connect(&creds).await.expect("connect");

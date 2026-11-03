@@ -33,6 +33,7 @@ export RRCKI_E2E_POLL_SECS=8  # фоновая проверка почты/ча�
 export RRCKI_E2E_NOTIFY_LOG="$E2E_HOME/notify.log"
 export RRCKI_E2E_VARIANT=test
 export RRCKI_E2E_AUTOCONFIG_URL=https://localhost:8443/autoconfig/mail/config-v1.1.xml  # автоопределение серверов
+export RRCKI_E2E_AUTODISCOVER_EWS=https://localhost:8445/autodiscover/autodiscover.xml  # Autodiscover Exchange
 # Импорт и резервная копия: файлы, которые «выберет» отладочная сборка (их создаёт и e2e.py).
 export E2E_HOME
 mkdir -p "$E2E_HOME/import" "$E2E_HOME/backup" "$E2E_HOME/restore" "$E2E_HOME/tb"

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { LockKeyhole, ServerCog } from 'lucide-react'
+import { Building, LockKeyhole, Mail, ServerCog } from 'lucide-react'
 
 import { api, errorText } from './api'
 import kurchatovLogo from './assets/kurchatov-logo.png'
@@ -34,6 +34,11 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
     api.getPolicy().then((p) => { setRemember(p.rememberPassword); setAllowRemember(p.allowRememberPassword) }).catch(() => undefined)
   }, [])
   const [showServer, setShowServer] = useState(false)
+  // Вид ящика: обычная почта (IMAP/SMTP) или Exchange (EWS).
+  const [kind, setKind] = useState<'imap' | 'exchange'>(initial?.ewsUrl ? 'exchange' : 'imap')
+  const [email, setEmail] = useState(initial?.ewsUrl ? (initial.address || initial.username) : '')
+  const [exLogin, setExLogin] = useState(initial?.ewsUrl && initial.address ? initial.username : '')
+  const [ewsUrl, setEwsUrl] = useState(initial?.ewsUrl ?? '')
   /** Серверы определены автоматически (или взяты из прошлого входа) — показываем, какие. */
   const [found, setFound] = useState<string>(initial ? `${initial.host}:${initial.port}, SMTP ${initial.smtpHost}:${initial.smtpPort}` : '')
   const [note, setNote] = useState('')
@@ -51,6 +56,30 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
     }
     setBusy(true)
     setError('')
+    if (kind === 'exchange') {
+      try {
+        const params = {
+          host: '', port: 443, username: exLogin.trim() || email.trim(), password, remember,
+          smtpHost: '', smtpPort: 465, davUrl: '', ewsUrl: ewsUrl.trim() || 'auto', address: email.trim(),
+        }
+        if (add) {
+          const entry = await api.accountAdd(params)
+          setPassword('')
+          add.onAdded(entry.key)
+          return
+        }
+        const result = await api.login(params)
+        setPassword('')
+        onLoggedIn(result)
+      } catch (err) {
+        const text = errorText(err)
+        if (text.includes('не найден автоматически')) setShowServer(true)
+        setError(text)
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
     try {
       let server = { host, port: portNumber, smtpHost, smtpPort: smtpPortNumber, login: username.trim() }
       const domainOf = (s: string) => s.split('@')[1]?.toLowerCase() ?? ''
@@ -105,6 +134,31 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
           ? 'Ещё один почтовый ящик: рабочий, личный или общий. Переключение — в меню учётной записи, письма всех ящиков — в «Все входящие».'
           : 'Адрес почты и пароль — серверы программа определит сама (Яндекс, Mail.ru, Gmail, корпоративная почта).'}</p>
 
+        <div className="login-kind" role="tablist" aria-label="Вид почтового ящика">
+          <button type="button" role="tab" aria-selected={kind === 'imap'} className={kind === 'imap' ? 'active' : ''} onClick={() => { setKind('imap'); setError('') }}><Mail size={15} /> Почта (IMAP)</button>
+          <button type="button" role="tab" aria-selected={kind === 'exchange'} className={kind === 'exchange' ? 'active' : ''} onClick={() => { setKind('exchange'); setError(''); setShowServer(false) }}><Building size={15} /> Exchange</button>
+        </div>
+
+        {kind === 'exchange' ? <>
+          <label className="login-field">
+            <span>Адрес почты</span>
+            <input autoFocus required type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ivanov@организация.ru" aria-label="Адрес почты Exchange" />
+          </label>
+          <label className="login-field">
+            <span>Логин Windows (если отличается от адреса)</span>
+            <input autoComplete="username" value={exLogin} onChange={(e) => setExLogin(e.target.value)} placeholder="ДОМЕН\ivanov" aria-label="Логин Exchange" />
+          </label>
+          <label className="login-field">
+            <span>Пароль</span>
+            <input required type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="Пароль Exchange" />
+          </label>
+          {showServer ? <label className="login-field">
+            <span>Сервер Exchange (адрес EWS)</span>
+            <input value={ewsUrl} onChange={(e) => setEwsUrl(e.target.value)} placeholder="mail.организация.ru или https://…/EWS/Exchange.asmx" aria-label="Сервер Exchange" />
+          </label> : <button type="button" className="text-button login-server-toggle" onClick={() => setShowServer(true)}>
+            <ServerCog size={15} /> {ewsUrl ? `Сервер: ${ewsUrl}` : 'Сервер определится автоматически (Autodiscover)'} · Указать вручную
+          </button>}
+        </> : <>
         <label className="login-field">
           <span>Адрес почты</span>
           <input autoFocus required autoComplete="username" value={username}
@@ -146,6 +200,7 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
             <ServerCog size={15} /> {found ? `Серверы: ${found}` : 'Серверы определятся автоматически'} · Настроить вручную
           </button>
         )}
+        </>}
 
         <label className="login-remember">
           <input type="checkbox" checked={remember && allowRemember} disabled={!allowRemember} title={allowRemember ? undefined : 'Запрещено политикой администратора'} onChange={(e) => setRemember(e.target.checked)} />
