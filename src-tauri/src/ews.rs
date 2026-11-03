@@ -1454,11 +1454,8 @@ impl EwsSession {
         let start = parse_time(&ev.start).or_else(|| chrono::NaiveDate::parse_from_str(&ev.start, "%Y-%m-%d").ok().and_then(|d| d.and_hms_opt(0, 0, 0)).map(|t| Utc.from_utc_datetime(&t))).unwrap_or_else(Utc::now);
         let existing = self.events(cal, start - chrono::Duration::days(2), start + chrono::Duration::days(2)).await.unwrap_or_default();
         let mut replaced = false;
-        for old in existing.iter().filter(|e| e.uid == ev.uid) {
-            if self.delete_event(&old.href).await.is_ok() {
-                replaced = true;
-            }
-            break;
+        if let Some(old) = existing.iter().find(|e| e.uid == ev.uid) {
+            replaced = self.delete_event(&old.href).await.is_ok();
         }
         let op = format!(
             r#"<m:CreateItem SendMeetingInvitations="SendToNone"><m:SavedItemFolderId><t:FolderId Id="{}"/></m:SavedItemFolderId><m:Items><t:CalendarItem><t:MimeContent CharacterSet="UTF-8">{}</t:MimeContent></t:CalendarItem></m:Items></m:CreateItem>"#,
