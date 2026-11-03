@@ -2884,12 +2884,30 @@ pub async fn mdn_respond(state: State<'_, AppState>, folder: String, uid: u32, s
 
 // ---------------------------------------------------------------- календарь и контакты
 
+/// Учётная запись Exchange: календарь и контакты — через EWS на её соединении.
+fn exchange(ctx: &AccountCtx) -> bool {
+    ctx.creds.ews.is_some()
+}
+
+fn ews_of(c: &mut Connection) -> Result<&mut crate::ews::EwsSession> {
+    c.ews().ok_or_else(|| AppError::Other("Не учётная запись Exchange".into()))
+}
+
+/// Календари Exchange (один раз за сеанс, как у CalDAV).
+async fn ews_calendars(ctx: &AccountCtx) -> Result<Vec<dav::Collection>> {
+    if let Some(c) = ctx.calendars.lock().await.clone() {
+        return Ok(c);
+    }
+    let found = with_ctx!(ctx, c => async { ews_of(c)?.calendars().await })?;
+    *ctx.calendars.lock().await = Some(found.clone());
+    Ok(found)
+}
+
 async fn dav_client(ctx: &AccountCtx) -> Result<(dav::DavClient, url::Url)> {
     let creds = ctx.creds.clone();
     let profile = ctx.profile().await;
-    // Exchange: календарь и контакты — через EWS (следующая версия), если не указан свой сервер CalDAV.
     if profile.is_exchange() && profile.dav_url.trim().is_empty() {
-        return Err(AppError::Other("Календарь и контакты Exchange появятся в следующей версии Atom Mail".into()));
+        return Err(AppError::Other("Для учётной записи Exchange это недоступно".into()));
     }
     let base = url::Url::parse(&profile.dav_base())
         .map_err(|e| AppError::Other(format!("Некорректный адрес сервера календаря: {e}")))?;
@@ -2907,6 +2925,13 @@ pub struct ContactsResult {
 #[tauri::command]
 pub async fn list_contacts(state: State<'_, AppState>) -> Result<ContactsResult> {
     let ctx = state.ctx().await?;
+    if exchange(&ctx) {
+        let books = crate::ews::EwsSession::books();
+        *ctx.books.lock().await = Some(books.clone());
+        let mut contacts = with_ctx!(ctx, c => async { ews_of(c)?.contacts().await })?;
+        contacts.sort_by_key(|c| c.full_name.to_lowercase());
+        return Ok(ContactsResult { books, contacts, errors: Vec::new() });
+    }
     let (mut client, base) = dav_client(&ctx).await?;
     // Кэш читаем отдельным оператором: guard в выражении `match` жил бы до
     // конца match, и повторный lock ниже заблокировал бы команду навсегда.
@@ -2942,6 +2967,29 @@ pub async fn search_contacts(state: State<'_, AppState>, query: String) -> Resul
 
 async fn find_contacts(ctx: &AccountCtx, query: &str) -> Result<Vec<dav::Contact>> {
     let query = query.trim().to_string();
+    if exchange(ctx) {
+        if query.chars().count() < 2 {
+            return Ok(Vec::new());
+        }
+        let q = query.to_lowercase();
+        let (mine, gal) = with_ctx!(ctx, c => async {
+            let e = ews_of(c)?;
+            let mine = e.contacts().await.unwrap_or_default();
+            let gal = e.resolve(&query).await.unwrap_or_default();
+            Ok((mine, gal))
+        })?;
+        let mut out: Vec<dav::Contact> = mine
+            .into_iter()
+            .filter(|c| c.full_name.to_lowercase().contains(&q) || c.emails.iter().any(|e| e.to_lowercase().contains(&q)) || c.phones.iter().any(|p| p.contains(&q)) || c.org.as_deref().is_some_and(|o| o.to_lowercase().contains(&q)))
+            .collect();
+        for g in gal {
+            if !out.iter().any(|o| o.emails.iter().any(|e| g.emails.iter().any(|x| x.eq_ignore_ascii_case(e)))) {
+                out.push(g);
+            }
+        }
+        out.truncate(50);
+        return Ok(out);
+    }
     if query.chars().count() < 2 {
         return Ok(Vec::new());
     }
@@ -3023,6 +3071,11 @@ fn urlencoding_segment(name: &str) -> String {
 #[tauri::command]
 pub async fn browse_contacts(state: State<'_, AppState>, book_url: String) -> Result<Vec<dav::Contact>> {
     let ctx = state.ctx().await?;
+    // Общая адресная книга Exchange целиком не выдаётся — только поиском.
+    if exchange(&ctx) {
+        let _ = book_url;
+        return Ok(Vec::new());
+    }
     let (_, base) = dav_client(&ctx).await?;
     let books = ctx.books.lock().await.clone().unwrap_or_default();
     let book = books.iter().find(|b| b.url == book_url).cloned().ok_or_else(|| AppError::Other("Адресная книга не найдена".into()))?;
@@ -3048,6 +3101,11 @@ pub async fn browse_contacts(state: State<'_, AppState>, book_url: String) -> Re
 #[tauri::command]
 pub async fn contact_details(state: State<'_, AppState>, href: String, id: String) -> Result<dav::Contact> {
     let ctx = state.ctx().await?;
+    if exchange(&ctx) {
+        let mut c = with_ctx!(ctx, c => async { ews_of(c)?.contact(&href).await })?;
+        c.id = id;
+        return Ok(c);
+    }
     let (mut client, _) = dav_client(&ctx).await?;
     let books = ctx.books.lock().await.clone().unwrap_or_default();
     let mut found: Option<dav::Contact> = None;
@@ -3156,6 +3214,10 @@ fn collection_child(collection_url: &str, uid: &str, ext: &str) -> Result<String
 #[tauri::command]
 pub async fn create_event(state: State<'_, AppState>, calendar_url: String, input: dav::EventInput) -> Result<()> {
     let ctx = state.ctx().await?;
+    if exchange(&ctx) {
+        let cal = ews_calendars(&ctx).await?.into_iter().find(|c| c.url == calendar_url).ok_or_else(|| AppError::Other("Календарь не найден".into()))?;
+        return with_ctx!(ctx, c => async { ews_of(c)?.create_event(&cal, &input).await });
+    }
     let cols = known(&ctx, dav::Kind::Calendar).await?;
     let cal = cols
         .iter()
@@ -3176,6 +3238,9 @@ pub async fn update_event(
     change_time: bool,
 ) -> Result<()> {
     let ctx = state.ctx().await?;
+    if exchange(&ctx) {
+        return with_ctx!(ctx, c => async { ews_of(c)?.update_event(&href, &input, change_time).await });
+    }
     let cal = owning_collection(&known(&ctx, dav::Kind::Calendar).await?, &href)?;
     require_writable(&cal)?;
     let (mut client, _) = dav_client(&ctx).await?;
@@ -3188,6 +3253,10 @@ pub async fn update_event(
 #[tauri::command]
 pub async fn delete_event(state: State<'_, AppState>, href: String, etag: Option<String>) -> Result<()> {
     let ctx = state.ctx().await?;
+    if exchange(&ctx) {
+        let _ = etag;
+        return with_ctx!(ctx, c => async { ews_of(c)?.delete_event(&href).await });
+    }
     let cal = owning_collection(&known(&ctx, dav::Kind::Calendar).await?, &href)?;
     require_writable(&cal)?;
     let (mut client, _) = dav_client(&ctx).await?;
@@ -3197,6 +3266,12 @@ pub async fn delete_event(state: State<'_, AppState>, href: String, etag: Option
 #[tauri::command]
 pub async fn create_contact(state: State<'_, AppState>, book_url: String, input: dav::ContactInput) -> Result<()> {
     let ctx = state.ctx().await?;
+    if exchange(&ctx) {
+        if book_url != crate::ews::CONTACTS_URL {
+            return Err(AppError::Other("Общая адресная книга доступна только для чтения".into()));
+        }
+        return with_ctx!(ctx, c => async { ews_of(c)?.create_contact(&input).await });
+    }
     let cols = known(&ctx, dav::Kind::Contacts).await?;
     let book = cols
         .iter()
@@ -3212,6 +3287,9 @@ pub async fn create_contact(state: State<'_, AppState>, book_url: String, input:
 #[tauri::command]
 pub async fn update_contact(state: State<'_, AppState>, href: String, input: dav::ContactInput) -> Result<()> {
     let ctx = state.ctx().await?;
+    if exchange(&ctx) {
+        return with_ctx!(ctx, c => async { ews_of(c)?.update_contact(&href, &input).await });
+    }
     let book = owning_collection(&known(&ctx, dav::Kind::Contacts).await?, &href)?;
     require_writable(&book)?;
     let (mut client, _) = dav_client(&ctx).await?;
@@ -3223,6 +3301,10 @@ pub async fn update_contact(state: State<'_, AppState>, href: String, input: dav
 #[tauri::command]
 pub async fn delete_contact(state: State<'_, AppState>, href: String, etag: Option<String>) -> Result<()> {
     let ctx = state.ctx().await?;
+    if exchange(&ctx) {
+        let _ = etag;
+        return with_ctx!(ctx, c => async { ews_of(c)?.delete_contact(&href).await });
+    }
     let book = owning_collection(&known(&ctx, dav::Kind::Contacts).await?, &href)?;
     require_writable(&book)?;
     let (mut client, _) = dav_client(&ctx).await?;
@@ -3285,6 +3367,9 @@ async fn ics_attachment(ctx: &AccountCtx, folder: &str, uid: u32, index: usize) 
 pub async fn calendar_file_preview(state: State<'_, AppState>, folder: String, uid: u32, index: usize) -> Result<CalendarFile> {
     let ctx = state.ctx().await?;
     let events = ics_attachment(&ctx, &folder, uid, index).await?;
+    if exchange(&ctx) {
+        return Ok(CalendarFile { events, calendars: ews_calendars(&ctx).await? });
+    }
     let (mut client, base) = dav_client(&ctx).await?;
     let calendars = calendars_of(&ctx, &mut client, &base).await?.into_iter().filter(|c| c.writable).collect();
     Ok(CalendarFile { events, calendars })
@@ -3304,6 +3389,21 @@ pub struct CalendarImport {
 pub async fn calendar_file_import(state: State<'_, AppState>, folder: String, uid: u32, index: usize, calendar_url: String, uids: Option<Vec<String>>) -> Result<CalendarImport> {
     let ctx = state.ctx().await?;
     let events = ics_attachment(&ctx, &folder, uid, index).await?;
+    if exchange(&ctx) {
+        let cal = ews_calendars(&ctx).await?.into_iter().find(|c| c.url == calendar_url).ok_or_else(|| AppError::Other("Календарь не найден".into()))?;
+        let mut result = CalendarImport { added: 0, updated: 0, errors: Vec::new() };
+        for e in events.iter().filter(|e| uids.as_ref().is_none_or(|u| u.contains(&e.uid))) {
+            match with_ctx!(ctx, c => async { ews_of(c)?.import_ics(&cal, e).await }) {
+                Ok(true) => result.updated += 1,
+                Ok(false) => result.added += 1,
+                Err(err) => result.errors.push(format!("«{}»: {err}", e.title)),
+            }
+        }
+        if result.added + result.updated == 0 && !result.errors.is_empty() {
+            return Err(AppError::Other(result.errors.join("; ")));
+        }
+        return Ok(result);
+    }
     let (mut client, base) = dav_client(&ctx).await?;
     let cal = calendars_of(&ctx, &mut client, &base)
         .await?
@@ -3334,6 +3434,19 @@ pub async fn calendar_file_import(state: State<'_, AppState>, folder: String, ui
 }
 
 async fn fetch_events(ctx: &AccountCtx, start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>) -> Result<EventsResult> {
+    if exchange(ctx) {
+        let calendars = ews_calendars(ctx).await?;
+        let mut events = Vec::new();
+        let mut errors = Vec::new();
+        for cal in &calendars {
+            match with_ctx!(ctx, c => async { ews_of(c)?.events(cal, start, end).await }) {
+                Ok(list) => events.extend(list),
+                Err(e) => errors.push(format!("{}: {e}", cal.name)),
+            }
+        }
+        events.sort_by(|a, b| a.start.cmp(&b.start));
+        return Ok(EventsResult { calendars, events, errors });
+    }
     let (mut client, base) = dav_client(ctx).await?;
     let cached = ctx.calendars.lock().await.clone();
     let calendars = match cached {
@@ -4688,6 +4801,17 @@ pub async fn contacts_import(app: AppHandle, state: State<'_, AppState>, book_ur
     if list.is_empty() {
         return Err(AppError::Other("В файле не найдено контактов с адресом почты или телефоном".into()));
     }
+    if exchange(&ctx) {
+        let job = crate::transfer::Job::new("contacts");
+        job.update(|s| s.total = list.len() as u64);
+        let id = state.jobs.add(job.clone());
+        let ctx = ctx.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = import_contacts_ews(&ctx, list, &job).await;
+            job.finish(result);
+        });
+        return Ok(Some(id));
+    }
     let (client, _) = dav_client(&ctx).await?;
     let job = crate::transfer::Job::new("contacts");
     job.update(|s| s.total = list.len() as u64);
@@ -4697,6 +4821,49 @@ pub async fn contacts_import(app: AppHandle, state: State<'_, AppState>, book_ur
         job.finish(result);
     });
     Ok(Some(id))
+}
+
+/// Загрузка контактов из файла в «Контакты» Exchange (без повторов по адресу и имени).
+async fn import_contacts_ews(ctx: &AccountCtx, list: Vec<dav::ContactInput>, job: &crate::transfer::Job) -> Result<String> {
+    job.update(|s| s.phase = "Проверка адресной книги".into());
+    let existing = with_ctx!(ctx, c => async { ews_of(c)?.contacts().await })?;
+    let mut emails: std::collections::HashSet<String> = existing.iter().flat_map(|c| c.emails.iter().map(|e| e.to_lowercase())).collect();
+    let mut names: std::collections::HashSet<String> = existing.iter().map(|c| c.full_name.to_lowercase()).collect();
+    job.update(|s| s.phase = "Загрузка в «Контакты»".into());
+    for c in list {
+        if job.cancelled() || ctx.is_closed() {
+            break;
+        }
+        let dup = if c.emails.is_empty() { names.contains(&c.full_name.to_lowercase()) } else { c.emails.iter().any(|e| emails.contains(&e.to_lowercase())) };
+        if dup {
+            job.update(|s| {
+                s.duplicates += 1;
+                s.done += 1;
+            });
+            continue;
+        }
+        match with_ctx!(ctx, x => async { ews_of(x)?.create_contact(&c).await }) {
+            Ok(()) => {
+                emails.extend(c.emails.iter().map(|e| e.to_lowercase()));
+                names.insert(c.full_name.to_lowercase());
+                job.update(|s| s.imported += 1);
+            }
+            Err(e) => {
+                job.update(|s| s.skipped += 1);
+                job.note(format!("{}: {e}", c.full_name));
+            }
+        }
+        job.update(|s| s.done += 1);
+    }
+    let s = job.status();
+    let mut text = format!("Добавлено контактов: {}", s.imported);
+    if s.duplicates > 0 {
+        text.push_str(&format!(", уже были в книге: {}", s.duplicates));
+    }
+    if s.skipped > 0 {
+        text.push_str(&format!(", не добавлены: {}", s.skipped));
+    }
+    Ok(text)
 }
 
 async fn import_contacts(mut client: dav::DavClient, book: dav::Collection, list: Vec<dav::ContactInput>, job: &crate::transfer::Job) -> Result<String> {

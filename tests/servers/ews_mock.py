@@ -110,8 +110,11 @@ def now():
 def iso(ts):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts))
 
-def parse_iso(s):
-    return time.mktime(time.strptime(s.replace('Z', ''), '%Y-%m-%dT%H:%M:%S')) - time.timezone
+def parse_iso(s, tz_hours=0):
+    import calendar as _c
+    v = s.strip()
+    if v.endswith('Z'): return _c.timegm(time.strptime(v[:-1], '%Y-%m-%dT%H:%M:%S'))
+    return _c.timegm(time.strptime(v[:19], '%Y-%m-%dT%H:%M:%S')) - tz_hours * 3600
 
 FOLDERS = {
     'F-root': {'name': 'Top of Information Store', 'parent': None, 'class': 'IPF.Note', 'dist': 'msgfolderroot'},
@@ -122,6 +125,7 @@ FOLDERS = {
     'F-junk': {'name': 'Нежелательная почта', 'parent': 'F-root', 'class': 'IPF.Note', 'dist': 'junkemail'},
     'F-proj': {'name': 'Проекты', 'parent': 'F-inbox', 'class': 'IPF.Note', 'dist': None},
     'F-cal': {'name': 'Календарь', 'parent': 'F-root', 'class': 'IPF.Appointment', 'dist': 'calendar'},
+    'F-contacts': {'name': 'Контакты', 'parent': 'F-root', 'class': 'IPF.Contact', 'dist': 'contacts'},
     'F-hidden': {'name': 'Sync Issues', 'parent': 'F-root', 'class': 'IPF.Note', 'dist': None, 'hidden': True},
 }
 ITEMS = {}   # id -> {folder, mime, received, read, flag, importance, categories, verb}
@@ -269,6 +273,9 @@ def aqs_ok(q, it):
 
 def handle(op, el):
     """Операция EWS → (имя ответа, список ResponseMessage)."""
+    r = pim(op, el)
+    if r is not None:
+        return r
     if op == 'GetFolder':
         out = []
         for ref in el.find('m:FolderIds', NS):
@@ -357,6 +364,207 @@ def handle(op, el):
     return [resp(op, '', 'Error', 'ErrorInvalidRequest', f'unsupported {op}')]
 
 
+# ---------------------------------------------------------------- календарь и контакты
+CAL = {}       # id -> {start, end, allday, subject, location, body, organizer, attendees, uid, rrule_count, exceptions}
+CONTACTS = {}  # id -> {name, emails{key:v}, phones{key:v}, company, title, body}
+CANCELLED = []
+GAL = [{'name': 'Петров Пётр Петрович', 'email': 'petrov@exch.test', 'dept': 'Отдел ИТ', 'title': 'Ведущий инженер', 'phone': '+7 495 100-00-01'},
+       {'name': 'Петрова Ольга', 'email': 'petrova@exch.test', 'dept': 'Бухгалтерия', 'title': 'Бухгалтер', 'phone': '+7 495 100-00-02'}]
+TZ = {'hours': 0}   # TimeZoneContext текущего запроса (Russian Standard Time → +3)
+
+
+def day0(ts):
+    return ts - ts % 86400
+
+TOMORROW10 = day0(now()) + 86400 + 7 * 3600   # 10:00 МСК завтра
+CAL['CAL-1'] = {'start': TOMORROW10, 'end': TOMORROW10 + 3600, 'allday': False, 'subject': 'EWS: планёрка отдела', 'location': 'Переговорная 3',
+                'body': 'Повестка: квартальный отчёт', 'organizer': ('Петров Пётр', 'petrov@exch.test'), 'attendees': ['ivanov@exch.test', 'sidorova@partner.ru'],
+                'uid': 'uid-planerka', 'count': 1, 'mine': False}
+CONTACTS['CON-1'] = {'name': 'Сидорова Анна', 'emails': {'EmailAddress1': 'sidorova@partner.ru'}, 'phones': {'BusinessPhone': '+7 812 000-00-00'}, 'company': 'Партнёр', 'title': 'Менеджер', 'body': 'Договор № 5'}
+
+
+def occurrences(cid, ev, start, end):
+    out = []
+    for n in range(ev['count']):
+        s0 = ev['start'] + n * 7 * 86400; e0 = ev['end'] + n * 7 * 86400
+        if s0 < end and e0 > start:
+            oid = cid if ev['count'] == 1 else f'{cid}~{n}'
+            out.append((oid, s0, e0, 'Single' if ev['count'] == 1 else 'Occurrence'))
+    return out
+
+
+def cal_xml(cid, ev, s0, e0, kind, props, details=False):
+    x = f'<t:ItemId Id="{cid}" ChangeKey="CK{cid}"/>'
+    x += f'<t:Subject>{esc(ev["subject"])}</t:Subject>'
+    if details: x += f'<t:Body BodyType="Text">{esc(ev["body"])}</t:Body>'
+    x += f'<t:Start>{iso(s0)}</t:Start><t:End>{iso(e0)}</t:End><t:IsAllDayEvent>{"true" if ev["allday"] else "false"}</t:IsAllDayEvent>'
+    if ev['location']: x += f'<t:Location>{esc(ev["location"])}</t:Location>'
+    x += f'<t:IsMeeting>{"true" if ev["attendees"] else "false"}</t:IsMeeting><t:IsRecurring>{"true" if ev["count"] > 1 else "false"}</t:IsRecurring>'
+    x += f'<t:MyResponseType>{"Organizer" if ev["mine"] else "Accept"}</t:MyResponseType><t:CalendarItemType>{kind}</t:CalendarItemType>'
+    o = ev['organizer']
+    x += f'<t:Organizer><t:Mailbox><t:Name>{esc(o[0])}</t:Name><t:EmailAddress>{esc(o[1])}</t:EmailAddress></t:Mailbox></t:Organizer>'
+    if details and ev['attendees']:
+        x += '<t:RequiredAttendees>' + ''.join(f'<t:Attendee><t:Mailbox><t:Name>{a}</t:Name><t:EmailAddress>{a}</t:EmailAddress></t:Mailbox></t:Attendee>' for a in ev['attendees']) + '</t:RequiredAttendees>'
+    x += f'<t:UID>{esc(ev["uid"])}</t:UID>'
+    return f'<t:CalendarItem>{x}</t:CalendarItem>'
+
+
+def contact_xml(cid, c, details=False):
+    x = f'<t:ItemId Id="{cid}" ChangeKey="CK{cid}"/>'
+    if details and c.get('body'): x += f'<t:Body BodyType="Text">{esc(c["body"])}</t:Body>'
+    x += f'<t:DisplayName>{esc(c["name"])}</t:DisplayName>'
+    if c.get('company'): x += f'<t:CompanyName>{esc(c["company"])}</t:CompanyName>'
+    if c['emails']: x += '<t:EmailAddresses>' + ''.join(f'<t:Entry Key="{k}">{esc(v)}</t:Entry>' for k, v in sorted(c['emails'].items())) + '</t:EmailAddresses>'
+    if c['phones']: x += '<t:PhoneNumbers>' + ''.join(f'<t:Entry Key="{k}">{esc(v)}</t:Entry>' for k, v in c['phones'].items()) + '</t:PhoneNumbers>'
+    if c.get('title'): x += f'<t:JobTitle>{esc(c["title"])}</t:JobTitle>'
+    return f'<t:Contact>{x}</t:Contact>'
+
+
+def ics_event(ics):
+    """Минимальный разбор iCalendar (SUMMARY, DTSTART/DTEND, LOCATION, UID, RRULE WEEKLY;COUNT)."""
+    lines = ics.replace('\r\n ', '').replace('\r\n\t', '').replace('\r\n', '\n').split('\n')
+    ev = {'subject': '', 'location': '', 'body': '', 'uid': '', 'count': 1, 'allday': False, 'organizer': ('Иванов', ADDRESS), 'attendees': [], 'mine': True}
+    inside = False
+    for l in lines:
+        if l == 'BEGIN:VEVENT': inside = True; continue
+        if l == 'END:VEVENT': break
+        if not inside or ':' not in l: continue
+        name, val = l.split(':', 1); key = name.split(';')[0]
+        if key == 'SUMMARY': ev['subject'] = val
+        elif key == 'LOCATION': ev['location'] = val
+        elif key == 'UID': ev['uid'] = val
+        elif key == 'RRULE':
+            m = re.search(r'COUNT=(\d+)', val); ev['count'] = int(m.group(1)) if m else 1
+        elif key in ('DTSTART', 'DTEND'):
+            if 'VALUE=DATE' in name:
+                import calendar as _c
+                ts = _c.timegm(time.strptime(val, '%Y%m%d')) - 3 * 3600; ev['allday'] = True
+            else:
+                ts = parse_iso(time.strftime('%Y-%m-%dT%H:%M:%S', time.strptime(val.rstrip('Z'), '%Y%m%dT%H%M%S')) + ('Z' if val.endswith('Z') else ''), 3 if 'TZID' in name else 0)
+            ev['start' if key == 'DTSTART' else 'end'] = ts
+    ev.setdefault('end', ev['start'] + 86400)
+    return ev
+
+
+def pim(op, el):
+    """Календарь и контакты; None — операция не про них."""
+    if op == 'FindItem':
+        cv = el.find('m:CalendarView', NS)
+        fid = folder_ref(el.find('m:ParentFolderIds', NS))
+        if cv is not None:
+            start, end = parse_iso(cv.get('StartDate')), parse_iso(cv.get('EndDate'))
+            if end - start > 2 * 366 * 86400:
+                return [resp(op, '', 'Error', 'ErrorCalendarViewRangeTooBig', 'range too big')]
+            items = [(oid, ev, s0, e0, k) for cid, ev in CAL.items() for oid, s0, e0, k in occurrences(cid, ev, start, end)]
+            items.sort(key=lambda x: x[2])
+            return [resp(op, f'<m:RootFolder TotalItemsInView="{len(items)}" IncludesLastItemInRange="true"><t:Items>{"".join(cal_xml(oid, ev, s0, e0, k, None) for oid, ev, s0, e0, k in items)}</t:Items></m:RootFolder>')]
+        if fid == 'F-contacts':
+            rows = ''.join('<t:Contact><t:ItemId Id="%s"/></t:Contact>' % k for k in CONTACTS)
+            return [resp(op, f'<m:RootFolder TotalItemsInView="{len(CONTACTS)}" IncludesLastItemInRange="true"><t:Items>{rows}</t:Items></m:RootFolder>')]
+        return None
+    if op == 'GetItem':
+        ids = [i.get('Id') for i in el.find('m:ItemIds', NS)]
+        if not ids or not any(i.split('~')[0] in CAL or i in CONTACTS for i in ids):
+            return None
+        out = []
+        for iid in ids:
+            base = iid.split('~')[0]
+            if base in CAL:
+                ev = CAL[base]; n = int(iid.split('~')[1]) if '~' in iid else 0
+                out.append(resp(op, f'<m:Items>{cal_xml(iid, ev, ev["start"] + n * 604800, ev["end"] + n * 604800, "Single", None, True)}</m:Items>'))
+            elif iid in CONTACTS:
+                out.append(resp(op, f'<m:Items>{contact_xml(iid, CONTACTS[iid], True)}</m:Items>'))
+            else:
+                out.append(resp(op, '', 'Error', 'ErrorItemNotFound', 'not found'))
+        return out
+    if op == 'CreateItem':
+        items = el.find('m:Items', NS)
+        cal_el = items.find('t:CalendarItem', NS); con_el = items.find('t:Contact', NS)
+        if cal_el is not None:
+            cid = f'CAL-{next(seq)}'
+            mime = cal_el.findtext('t:MimeContent', None, NS)
+            if mime:
+                CAL[cid] = ics_event(base64.b64decode(mime).decode())
+            else:
+                allday = cal_el.findtext('t:IsAllDayEvent', 'false', NS) == 'true'
+                tz = TZ['hours']
+                CAL[cid] = {'start': parse_iso(cal_el.findtext('t:Start', '', NS), tz), 'end': parse_iso(cal_el.findtext('t:End', '', NS), tz), 'allday': allday,
+                            'subject': cal_el.findtext('t:Subject', '', NS), 'location': cal_el.findtext('t:Location', '', NS) or '', 'body': cal_el.findtext('t:Body', '', NS) or '',
+                            'organizer': ('Иванов', ADDRESS), 'attendees': [], 'uid': f'uid-{cid}', 'count': 1, 'mine': True}
+            return [resp(op, f'<m:Items><t:CalendarItem><t:ItemId Id="{cid}"/></t:CalendarItem></m:Items>')]
+        if con_el is not None:
+            cid = f'CON-{next(seq)}'
+            CONTACTS[cid] = {'name': con_el.findtext('t:DisplayName', '', NS), 'company': con_el.findtext('t:CompanyName', '', NS), 'title': con_el.findtext('t:JobTitle', '', NS),
+                             'body': con_el.findtext('t:Body', '', NS), 'surname': con_el.findtext('t:Surname', '', NS), 'given': con_el.findtext('t:GivenName', '', NS),
+                             'emails': {e.get('Key'): e.text for e in con_el.findall('t:EmailAddresses/t:Entry', NS)},
+                             'phones': {e.get('Key'): e.text for e in con_el.findall('t:PhoneNumbers/t:Entry', NS)}}
+            return [resp(op, f'<m:Items><t:Contact><t:ItemId Id="{cid}"/></t:Contact></m:Items>')]
+        return None
+    if op == 'UpdateItem':
+        out = []
+        changes = list(el.find('m:ItemChanges', NS))
+        def target(ch):
+            r = ch.find('t:RecurringMasterItemId', NS)
+            return (r.get('OccurrenceId').split('~')[0], True) if r is not None else (ch.find('t:ItemId', NS).get('Id'), False)
+        if not any(target(ch)[0] in CAL or target(ch)[0] in CONTACTS for ch in changes):
+            return None
+        for ch in changes:
+            tid, master = target(ch)
+            if tid in CAL:
+                ev = CAL[tid]
+                for upd in ch.find('t:Updates', NS):
+                    f = upd.find('t:FieldURI', NS).get('FieldURI'); v = upd.find('t:CalendarItem', NS)
+                    if upd.tag.endswith('DeleteItemField'):
+                        ev[{'calendar:Location': 'location', 'item:Body': 'body'}.get(f, 'x')] = ''; continue
+                    if f == 'item:Subject': ev['subject'] = v.findtext('t:Subject', '', NS)
+                    if f == 'item:Body': ev['body'] = v.findtext('t:Body', '', NS)
+                    if f == 'calendar:Location': ev['location'] = v.findtext('t:Location', '', NS)
+                    if f == 'calendar:Start': ev['start'] = parse_iso(v.findtext('t:Start', '', NS), TZ['hours'])
+                    if f == 'calendar:End': ev['end'] = parse_iso(v.findtext('t:End', '', NS), TZ['hours'])
+                    if f == 'calendar:IsAllDayEvent': ev['allday'] = v.findtext('t:IsAllDayEvent', '', NS) == 'true'
+                ev['updated_master'] = master
+                out.append(resp(op, '<m:Items/>'))
+            elif tid in CONTACTS:
+                c = CONTACTS[tid]
+                for upd in ch.find('t:Updates', NS):
+                    fu = upd.find('t:FieldURI', NS); iu = upd.find('t:IndexedFieldURI', NS); v = upd.find('t:Contact', NS)
+                    if iu is not None:
+                        bucket = c['emails'] if iu.get('FieldURI') == 'contacts:EmailAddress' else c['phones']
+                        if upd.tag.endswith('DeleteItemField'): bucket.pop(iu.get('FieldIndex'), None)
+                        else: bucket[iu.get('FieldIndex')] = v.find('.//t:Entry', NS).text
+                        continue
+                    key = {'contacts:DisplayName': 'name', 'contacts:CompanyName': 'company', 'contacts:JobTitle': 'title', 'item:Body': 'body', 'contacts:Surname': 'surname', 'contacts:GivenName': 'given', 'contacts:FileAs': 'fileas'}.get(fu.get('FieldURI'))
+                    if key: c[key] = '' if upd.tag.endswith('DeleteItemField') else (v[0].text or '')
+                out.append(resp(op, '<m:Items/>'))
+            else:
+                out.append(resp(op, '', 'Error', 'ErrorItemNotFound', 'not found'))
+        return out
+    if op == 'DeleteItem':
+        refs = list(el.find('m:ItemIds', NS))
+        ids = [(r.get('OccurrenceId') or r.get('Id')).split('~')[0] for r in refs]
+        if not any(i in CAL or i in CONTACTS for i in ids):
+            return None
+        out = []
+        for i in ids:
+            if i in CAL:
+                if el.get('SendMeetingCancellations') == 'SendToAllAndSaveCopy': CANCELLED.append(CAL[i]['subject'])
+                CAL.pop(i); out.append(resp(op, ''))
+            elif i in CONTACTS:
+                CONTACTS.pop(i); out.append(resp(op, ''))
+            else:
+                out.append(resp(op, '', 'Error', 'ErrorItemNotFound', 'not found'))
+        return out
+    if op == 'ResolveNames':
+        q = (el.findtext('m:UnresolvedEntry', '', NS) or '').lower()
+        hits = [g for g in GAL if q in g['name'].lower() or q in g['email']]
+        if not hits:
+            return [resp(op, '', 'Error', 'ErrorNameResolutionNoResults', 'No results were found.')]
+        res = ''.join(f'<t:Resolution><t:Mailbox><t:Name>{esc(g["name"])}</t:Name><t:EmailAddress>{g["email"]}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:Mailbox><t:Contact><t:DisplayName>{esc(g["name"])}</t:DisplayName><t:PhoneNumbers><t:Entry Key="BusinessPhone">{g["phone"]}</t:Entry></t:PhoneNumbers><t:Department>{esc(g["dept"])}</t:Department><t:JobTitle>{esc(g["title"])}</t:JobTitle></t:Contact></t:Resolution>' for g in hits)
+        cls, code = ('Warning', 'ErrorNameResolutionMultipleResults') if len(hits) > 1 else ('Success', 'NoError')
+        return [resp(op, f'<m:ResolutionSet TotalItemsInView="{len(hits)}" IncludesLastItemInRange="true">{res}</m:ResolutionSet>', cls, code, 'Multiple results' if len(hits) > 1 else None)]
+    return None
+
+
 AUTODISCOVER = '''<?xml version="1.0" encoding="utf-8"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"><Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"><User><DisplayName>Иванов</DisplayName></User><Account><AccountType>email</AccountType><Action>settings</Action><Protocol><Type>EXCH</Type><EwsUrl>https://localhost:{port}/EWS/Exchange.asmx</EwsUrl></Protocol></Account></Response></Autodiscover>'''
 
 
@@ -375,9 +583,10 @@ class H(BaseHTTPRequestHandler):
 
     def authed(self):
         """NTLM на соединении: тип 1 → вызов; тип 3 — проверка; дальше соединение помнит вход."""
-        if getattr(self, '_ok', False) or getattr(self.connection, 'ntlm_ok', False):
-            return True
         a = self.headers.get('Authorization', '')
+        # Новый вход на уже вошедшем соединении — заново (как IIS).
+        if not a and getattr(self.connection, 'ntlm_ok', False):
+            return True
         scheme, _, tok = a.partition(' ')
         if scheme not in ('NTLM', 'Negotiate') or not tok:
             self.send(401, 'auth', headers=[('WWW-Authenticate', 'Negotiate'), ('WWW-Authenticate', 'NTLM')]); return False
@@ -411,6 +620,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(404, 'not found', 'text/plain')
         root = ET.fromstring(body)
         op_el = root.find('soap:Body', NS)[0]
+        tzd = root.find('soap:Header/t:TimeZoneContext/t:TimeZoneDefinition', NS)
+        TZ['hours'] = 3 if tzd is not None and tzd.get('Id') == 'Russian Standard Time' else 0
         op = op_el.tag.split('}')[1]
         with lock:
             STATS['ops'].append(op)
@@ -422,6 +633,8 @@ class H(BaseHTTPRequestHandler):
             with lock:
                 st = {'folders': {k: {kk: vv for kk, vv in v.items()} for k, v in FOLDERS.items()},
                       'items': [{'id': k, 'folder': v['folder'], 'subject': str(parsed(v)['subject']), 'read': v['read'], 'flag': v['flag'], 'importance': v['importance'], 'categories': v['categories']} for k, v in ITEMS.items()],
+                      'cal': [{'id': k, 'subject': v['subject'], 'start': iso(v['start']), 'end': iso(v['end']), 'allday': v['allday'], 'location': v['location'], 'body': v['body'], 'count': v['count'], 'uid': v['uid'], 'master': v.get('updated_master')} for k, v in CAL.items()],
+                      'contacts': CONTACTS, 'cancelled': CANCELLED,
                       'sent': [(lambda x: f"From: {x['from']}\nTo: {x['to']}\nSubject: {x['subject']}")(email.message_from_bytes(m, policy=email.policy.default)) for m in SENT], 'stats': STATS}
             return self.send(200, json.dumps(st, ensure_ascii=False), 'application/json')
         self.send(404, 'not found', 'text/plain')

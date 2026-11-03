@@ -166,7 +166,7 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
             ? <div className="empty-state"><Search size={30} /><strong>{selectedBook.name}</strong><span>Сервер не отдаёт эту книгу списком — сотрудники находятся по поиску: введите фамилию, имя, e-mail или отдел.</span></div>
             : <div className="empty-state"><BookUser size={30} /><strong>Контакты не найдены</strong>{query.trim().length < 2 && <span>Корпоративная книга ищется по имени или e-mail — начните вводить.</span>}</div>)}
         </div>
-        <div className="list-footer"><span>{visible.length}{selectedBook && Array.isArray(browseState) ? '' : ` из ${data?.contacts.length ?? 0}`}</span><span>{selectedBook && !selectedBook.writable ? 'SOGo' : 'CardDAV'}</span></div>
+        <div className="list-footer"><span>{visible.length}{selectedBook && Array.isArray(browseState) ? '' : ` из ${data?.contacts.length ?? 0}`}</span><span>{(data?.books ?? []).some((b) => b.url.startsWith('ews:')) ? 'Exchange' : selectedBook && !selectedBook.writable ? 'SOGo' : 'CardDAV'}</span></div>
       </main>
 
       <section className="reader-pane">

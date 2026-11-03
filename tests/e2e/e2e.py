@@ -2543,6 +2543,87 @@ try:
     assert 'From: ' in sent and 'ivanov@exch.test' in sent and 'petrov@exch.test' in sent, sent[:500]
     assert ews_item('E2E Exchange отправка')[0]['folder'] == 'F-sent'
     ok('Exchange: mail sent through EWS from the account address, copy kept in «Отправленные»')
+    # >>> exchange pim
+    import datetime as _dx
+    rail = lambda name: d.find_element(By.XPATH, f"//nav[@class='module-rail']//button[.//span[text()='{name}']]")
+    rail('Календарь').click()
+    rng = {'start': (_dx.datetime.utcnow() - _dx.timedelta(days=2)).strftime('%Y-%m-%dT00:00:00Z'), 'end': (_dx.datetime.utcnow() + _dx.timedelta(days=40)).strftime('%Y-%m-%dT00:00:00Z')}
+    r = W(d, 30).until(lambda d: (inv('list_events', rng).get('ok') or None))
+    assert not r['errors'], r['errors']
+    cal = r['calendars'][0]
+    assert cal['name'] == 'Календарь' and cal['writable'] and len(r['calendars']) == 1, r['calendars']
+    pl = [e for e in r['events'] if e['title'] == 'EWS: планёрка отдела'][0]
+    assert pl['location'] == 'Переговорная 3' and pl['description'] == 'Повестка: квартальный отчёт' and pl['organizer'] == 'Петров Пётр', pl
+    assert 'sidorova@partner.ru' in pl['participants'] and 'petrov@exch.test' in pl['participants'], pl['participants']
+    assert not [w for w in d.find_elements(By.CSS_SELECTOR, '.inline-warning') if 'недоступно' in w.get_attribute('textContent')]
+    d.save_screenshot(f'{OUT}/58-exchange-calendar.png')
+    ok('Exchange calendar: calendars and events with place, description, organizer and participants')
+    t0 = (_dx.datetime.utcnow() + _dx.timedelta(days=3)).replace(hour=9, minute=0, second=0, microsecond=0)
+    fmt = lambda t: t.strftime('%Y-%m-%dT%H:%M:%SZ')
+    assert 'ok' in inv('create_event', {'calendarUrl': cal['url'], 'input': {'title': 'E2E Exchange встреча', 'location': 'Каб. 5', 'description': 'Обсудить план', 'start': fmt(t0), 'end': fmt(t0 + _dx.timedelta(hours=1)), 'allDay': False}})
+    day, day2 = (_dx.date.today() + _dx.timedelta(days=5)).isoformat(), (_dx.date.today() + _dx.timedelta(days=6)).isoformat()
+    assert 'ok' in inv('create_event', {'calendarUrl': cal['url'], 'input': {'title': 'E2E Exchange весь день', 'location': None, 'description': None, 'start': day, 'end': day2, 'allDay': True}})
+    evs = inv('list_events', rng)['ok']['events']
+    m = [e for e in evs if e['title'] == 'E2E Exchange встреча'][0]
+    a = [e for e in evs if e['title'] == 'E2E Exchange весь день'][0]
+    assert m['start'].startswith(t0.strftime('%Y-%m-%dT%H:%M')) and m['location'] == 'Каб. 5' and m['description'] == 'Обсудить план' and not m['allDay'], m
+    assert a['allDay'] and a['start'] == day and a['end'] == day2, a
+    t1 = t0 + _dx.timedelta(days=1)
+    assert 'ok' in inv('update_event', {'href': m['href'], 'input': {'title': 'E2E Exchange встреча (перенос)', 'location': '', 'description': 'Обсудить план', 'start': fmt(t1), 'end': fmt(t1 + _dx.timedelta(hours=2)), 'allDay': False}, 'changeTime': True})
+    st = [c for c in ews_state()['cal'] if c['subject'] == 'E2E Exchange встреча (перенос)']
+    assert st and st[0]['start'] == fmt(t1) and st[0]['end'] == fmt(t1 + _dx.timedelta(hours=2)) and st[0]['location'] == '', st
+    assert 'ok' in inv('delete_event', {'href': a['href'], 'etag': a['etag']})
+    assert 'ok' in inv('delete_event', {'href': pl['href'], 'etag': pl['etag']})
+    stc = ews_state()
+    assert not [c for c in stc['cal'] if c['subject'] in ('E2E Exchange весь день', 'EWS: планёрка отдела')] and stc['cancelled'] == [], stc['cal']
+    ok('Exchange calendar: events created (with time and all-day), moved and edited, deleted; someone else’s meeting removed without sending a cancellation')
+    rail('Контакты').click()
+    W(d, 30).until(lambda d: any('Сидорова Анна' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.contact-row')))
+    lc = inv('list_contacts')['ok']
+    assert [b['name'] for b in lc['books']] == ['Контакты', 'Общая адресная книга'], lc['books']
+    sa = [c for c in lc['contacts'] if c['fullName'] == 'Сидорова Анна'][0]
+    assert sa['emails'] == ['sidorova@partner.ru'] and sa['phones'] == ['+7 812 000-00-00'] and sa['org'] == 'Партнёр' and sa['title'] == 'Менеджер', sa
+    found = inv('search_contacts', {'query': 'Петров'})['ok']
+    gal = {c['emails'][0]: c for c in found}
+    assert gal['petrov@exch.test']['title'] == 'Ведущий инженер' and gal['petrov@exch.test']['org'] == 'Отдел ИТ' and not gal['petrov@exch.test']['editable'] and 'petrova@exch.test' in gal, found
+    det = inv('contact_details', {'href': 'ews:gal:petrov@exch.test', 'id': 'x'})['ok']
+    assert det['phones'] == ['+7 495 100-00-01'], det
+    assert 'ok' in inv('create_contact', {'bookUrl': 'ews:contacts', 'input': {'fullName': 'Кузнецов Иван Сергеевич', 'emails': ['kuz@romashka.ru'], 'phones': ['+7 900 111-22-33'], 'org': 'ООО Ромашка', 'title': 'Директор', 'note': 'Важный клиент'}})
+    kz = [v for v in ews_state()['contacts'].values() if v['name'] == 'Кузнецов Иван Сергеевич'][0]
+    assert kz['surname'] == 'Кузнецов' and kz['given'] == 'Иван' and kz['emails'] == {'EmailAddress1': 'kuz@romashka.ru'} and kz['phones'] == {'BusinessPhone': '+7 900 111-22-33'} and kz['company'] == 'ООО Ромашка' and kz['body'] == 'Важный клиент', kz
+    kc = [c for c in inv('list_contacts')['ok']['contacts'] if c['fullName'] == 'Кузнецов Иван Сергеевич'][0]
+    assert 'ok' in inv('update_contact', {'href': kc['href'], 'input': {'fullName': 'Кузнецов Иван Сергеевич', 'emails': ['kuz@romashka.ru', 'ivan@romashka.ru'], 'phones': [], 'org': 'ООО Ромашка', 'title': 'Генеральный директор', 'note': ''}})
+    kz = [v for v in ews_state()['contacts'].values() if v['name'] == 'Кузнецов Иван Сергеевич'][0]
+    assert kz['emails'] == {'EmailAddress1': 'kuz@romashka.ru', 'EmailAddress2': 'ivan@romashka.ru'} and kz['phones'] == {} and kz['title'] == 'Генеральный директор' and kz['body'] == '', kz
+    assert inv('contact_details', {'href': kc['href'], 'id': kc['id']})['ok']['emails'] == ['kuz@romashka.ru', 'ivan@romashka.ru']
+    assert 'ok' in inv('delete_contact', {'href': kc['href'], 'etag': kc['etag']})
+    assert not [v for v in ews_state()['contacts'].values() if v['name'] == 'Кузнецов Иван Сергеевич']
+    d.save_screenshot(f'{OUT}/59-exchange-contacts.png')
+    ok('Exchange contacts: own contacts and the organization address book (search), contact created, edited and deleted')
+    rail('Почта').click()
+    wait(d, '.message-row', 30)
+    d1 = _dx.date.today() + _dx.timedelta(days=8)
+    ics = ('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//RU\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:e2e-ews-sched\r\nSUMMARY:EWS: совещание по графику\r\n'
+           f'DTSTART;TZID=Europe/Moscow:{d1:%Y%m%d}T110000\r\nDTEND;TZID=Europe/Moscow:{d1:%Y%m%d}T120000\r\nRRULE:FREQ=WEEKLY;COUNT=3\r\nLOCATION:Зал 1\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n')
+    im = EmailMessage(); im['From'] = 'Секретарь <secretary@exch.test>'; im['To'] = 'ivanov@exch.test'; im['Subject'] = 'EWS: график совещаний'; im.set_content('График во вложении')
+    im.add_attachment(ics.encode(), maintype='text', subtype='calendar', filename='График.ics')
+    ews_post('/test/deliver', im.as_bytes())
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: rowt('EWS: график совещаний'))
+    rowt('EWS: график совещаний')[0].click()
+    # (о результате говорит и всплывающее сообщение, но его может сменить уведомление о новом письме — проверяем сервер)
+    for creates in (1, 2):
+        wait(d, 'button[aria-label="Добавить График.ics в календарь"]', 20).click()
+        dlg = wait(d, '.ics-modal')
+        W(d, 30).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.ics-events li')) == 1)
+        before = ews_state()['stats']['ops'].count('CreateItem')
+        [b for b in dlg.find_elements(By.CSS_SELECTOR, '.ics-buttons button') if 'Добавить' in b.text][0].click()
+        W(d, 30).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.ics-modal') and ews_state()['stats']['ops'].count('CreateItem') > before)
+        occ = [e for e in inv('list_events', rng)['ok']['events'] if e['title'] == 'EWS: совещание по графику']
+        assert len(occ) == 3 and all(e['location'] == 'Зал 1' and e['recurring'] for e in occ), occ
+    assert len([c for c in ews_state()['cal'] if c['uid'] == 'e2e-ews-sched']) == 1
+    ok('calendar file in an Exchange mail: recurring meeting added to the Exchange calendar; added again — replaced, not doubled')
+    # <<< exchange pim
     # обратно в RuPost, Exchange отключается
     [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'test@rrcki.ru' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.account-pick').click()
     W(d, 30).until(lambda d: 'test@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
