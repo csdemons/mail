@@ -1874,7 +1874,11 @@ try:
             assert secret not in qraw, secret
         [b for b in d.find_elements(By.CSS_SELECTOR, '.offline-banner button') if 'В очереди' in b.text][0].click()
         panel = wait(d, '.queue-modal')
-        assert 'Отправить «E2E без сети письмо»' in panel.get_attribute('textContent'), panel.get_attribute('textContent')
+        try:
+            W(d, 15).until(lambda d: 'Отправить «E2E без сети письмо»' in d.find_element(By.CSS_SELECTOR, '.queue-modal').get_attribute('textContent'))
+        except Exception:
+            print('QUEUE PANEL:', d.find_element(By.CSS_SELECTOR, '.queue-modal').get_attribute('textContent')); raise
+        panel = d.find_element(By.CSS_SELECTOR, '.queue-modal')
         d.save_screenshot(f'{OUT}/46-offline-queue.png')
         panel.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
         ok('offline actions and outgoing mail queued (encrypted on disk), listed in the queue')
