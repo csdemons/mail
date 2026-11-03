@@ -422,7 +422,7 @@ class H(BaseHTTPRequestHandler):
             with lock:
                 st = {'folders': {k: {kk: vv for kk, vv in v.items()} for k, v in FOLDERS.items()},
                       'items': [{'id': k, 'folder': v['folder'], 'subject': str(parsed(v)['subject']), 'read': v['read'], 'flag': v['flag'], 'importance': v['importance'], 'categories': v['categories']} for k, v in ITEMS.items()],
-                      'sent': [email.message_from_bytes(m, policy=email.policy.default).as_string() for m in SENT], 'stats': STATS}
+                      'sent': [(lambda x: f"From: {x['from']}\nTo: {x['to']}\nSubject: {x['subject']}")(email.message_from_bytes(m, policy=email.policy.default)) for m in SENT], 'stats': STATS}
             return self.send(200, json.dumps(st, ensure_ascii=False), 'application/json')
         self.send(404, 'not found', 'text/plain')
 
