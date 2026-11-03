@@ -1805,7 +1805,15 @@ try:
     assert card.get_attribute('draggable') == 'true'
     d.execute_script("arguments[0].dispatchEvent(new DragEvent('dragstart', {bubbles: true, cancelable: true, dataTransfer: new DataTransfer()}))", card)
     bases = [os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/nonexistent'), 'rrcki-mail'), os.path.expanduser('~/.cache/rrcki-mail')]
-    staged = lambda: [f for b in bases for f in glob.glob(f'{b}/dragout-*/Смета 2027.xlsx') if os.path.getmtime(f) >= t_drag - 1]
+    def staged():
+        out = []
+        for f in (f for b in bases for f in glob.glob(f'{b}/dragout-*/Смета 2027.xlsx')):
+            try:
+                if os.path.getmtime(f) >= t_drag - 1:
+                    out.append(f)
+            except FileNotFoundError:
+                pass  # старую копию программа только что убрала
+        return out
     W(d, 15).until(lambda d: staged())
     assert open(staged()[0], 'rb').read() == b'SMETA-DATA-2027'
     assert os.stat(os.path.dirname(staged()[0])).st_mode & 0o077 == 0
