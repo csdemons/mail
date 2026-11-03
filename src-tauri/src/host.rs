@@ -215,6 +215,25 @@ pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Res
     Ok(())
 }
 
+/// Начать перетаскивание файлов из окна `label` в папку компьютера (в главном потоке).
+pub fn start_drag_out(app: &AppHandle, label: &str, paths: Vec<PathBuf>) -> Result<()> {
+    let w = app.get_webview_window(label).ok_or_else(|| AppError::Other("Окно не найдено".into()))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let win = w.clone();
+    app.run_on_main_thread(move || {
+        #[cfg(target_os = "linux")]
+        let ok = win.gtk_window().map(|g| crate::dragout::start_gtk(&g, paths)).unwrap_or(false);
+        #[cfg(not(target_os = "linux"))]
+        let ok = drag::start_drag(&win, drag::DragItem::Files(paths), drag::Image::Raw(include_bytes!("../icons/32x32.png").to_vec()), |_, _| {}, drag::Options::default()).is_ok();
+        let _ = tx.send(ok);
+    })
+    .map_err(|e| AppError::Other(e.to_string()))?;
+    match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+        Ok(true) => Ok(()),
+        _ => Err(AppError::Other("Не удалось начать перетаскивание — сохраните вложение кнопкой «Сохранить»".into())),
+    }
+}
+
 /// Закрывает окна писем (при выходе из учётной записи).
 pub fn close_message_windows(app: &AppHandle) {
     for (label, w) in app.webview_windows() {

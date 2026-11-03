@@ -115,6 +115,7 @@
     "allow-forward-attachments",
     "allow-calendar-file-preview",
     "allow-calendar-file-import",
+    "allow-attachment-drag-out",
     "allow-rules-save",
     "allow-talk-file-data",
     "allow-update-contact",

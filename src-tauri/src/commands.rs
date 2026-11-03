@@ -2652,6 +2652,23 @@ pub async fn forward_attachments(state: State<'_, AppState>, folder: String, uid
     Ok(out)
 }
 
+/// Перетаскивание вложения из письма в папку компьютера: копия во временном
+/// каталоге, затем системное перетаскивание из окна, где начали тянуть.
+#[tauri::command]
+pub async fn attachment_drag_out(app: AppHandle, window: tauri::Window, state: State<'_, AppState>, folder: String, uid: u32, index: usize) -> Result<()> {
+    let ctx = state.ctx().await?;
+    let (name, data) = attachment(&ctx, &folder, uid, index).await?;
+    let path = tokio::task::spawn_blocking(move || crate::dragout::stage(&name, &data)).await.map_err(|e| AppError::Other(e.to_string()))??;
+    // E2E (отладочная сборка): в Xvfb нет кнопки мыши, которую отпустят, — системное
+    // перетаскивание не начинаем, проверяется подготовленный файл.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("RRCKI_E2E_SAVE_DIR").is_some() {
+        return Ok(());
+    }
+    let label = window.label().to_string();
+    tokio::task::spawn_blocking(move || host::start_drag_out(&app, &label, vec![path])).await.map_err(|e| AppError::Other(e.to_string()))?
+}
+
 /// «Это спам» — в «Спам» с меткой $Junk; «Не спам» — во «Входящие» с меткой $NotJunk
 /// (метки понимают фильтры спама сервера и Thunderbird).
 #[tauri::command]
@@ -5166,6 +5183,7 @@ macro_rules! app_commands {
             crate::commands::forward_attachments,
             crate::commands::calendar_file_preview,
             crate::commands::calendar_file_import,
+            crate::commands::attachment_drag_out,
             crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,

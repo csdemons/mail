@@ -10,7 +10,7 @@ import {
   api, editNotice, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE,
 } from './api'
 import type {
-  Account, Contact, Draft, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile, UnifiedFilters, UnifiedRole, UnifiedItem, SavedView,
+  Account, Contact, Draft, PickedFile, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile, UnifiedFilters, UnifiedRole, UnifiedItem, SavedView,
 } from './types'
 import About from './About'
 import kurchatovLogo from './assets/kurchatov-logo.png'
@@ -33,7 +33,7 @@ import MessageBody from './MessageBody'
 import AddressLine from './AddressLine'
 import MdnBar from './MdnBar'
 import DuePicker from './DuePicker'
-import { printMessage, snoozePresets, snoozedUntil } from './mailTools'
+import { fileToBase64, printMessage, snoozePresets, snoozedUntil } from './mailTools'
 import { categoriesOf, dueLabel, dueOf, duePresets, threadKeys, userCategories, withDue } from './mailExtras'
 import ScheduledMail from './ScheduledMail'
 import { useOutbox } from './sending'
@@ -1177,6 +1177,26 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     msgDrag.current = { x0: e.clientX, y0: e.clientY, items, active: false }
   }
 
+  // Файлы с компьютера, брошенные на окно почты (редактор закрыт), — новое письмо с ними.
+  const [fileOver, setFileOver] = useState(false)
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes('Files')
+  async function dropToNewMail(list: FileList) {
+    setFileOver(false)
+    const files: PickedFile[] = []
+    const errors: string[] = []
+    for (const file of Array.from(list)) {
+      try {
+        files.push(await api.attachData(file.name, await fileToBase64(file)))
+      } catch (e) {
+        errors.push(`${file.name}: ${errorText(e)}`)
+      }
+    }
+    if (files.length > 0) {
+      startDraft({ mode: 'new', to: '', cc: '', subject: files.length === 1 ? files[0].name : '', body: withSignature('', signature), inReplyTo: null, references: null, files })
+    }
+    if (errors.length > 0) setNotice(`Не приложено: ${errors.join('; ')}`)
+  }
+
   function startDraft(next: Draft) {
     setDraft(next)
     // Контакты для подсказок адресов — один раз за сессию, ошибки не мешают письму.
@@ -1366,7 +1386,13 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         />}
       </header>
 
-      <div className="workspace">
+      <div
+        className={`workspace ${fileOver ? 'file-over' : ''}`}
+        onDragOver={(e) => { if (module === 'mail' && !draft && hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; if (!fileOver) setFileOver(true) } }}
+        onDragLeave={(e) => { if (fileOver && !e.currentTarget.contains(e.relatedTarget as Node | null)) setFileOver(false) }}
+        onDrop={(e) => { if (module === 'mail' && !draft && e.dataTransfer.files.length > 0) { e.preventDefault(); void dropToNewMail(e.dataTransfer.files) } else setFileOver(false) }}
+      >
+        {fileOver && <div className="drop-hint" aria-hidden="true"><Paperclip size={22} /> Отпустите — файлы будут вложены в новое письмо</div>}
         <nav className="module-rail" aria-label="Модули">
           <button className={`module ${module === 'mail' ? 'active' : ''}`} onClick={() => setModule('mail')}><Mail /><span>Почта</span></button>
           <button className={`module ${module === 'calendar' ? 'active' : ''}`} onClick={() => setModule('calendar')}><CalendarDays /><span>Календарь</span></button>

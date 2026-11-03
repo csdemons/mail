@@ -1091,3 +1091,9 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .ics-help { font-size: 12px; margin: 0; }
 .ics-buttons { display: flex; gap: 8px; }
 .ics-buttons button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; }
+
+/* --- файлы с компьютера на окно почты --- */
+.workspace { position: relative; }
+.workspace.file-over::after { content: ''; position: absolute; inset: 6px; border: 2px dashed var(--blue); border-radius: 12px; background: color-mix(in srgb, var(--blue) 6%, transparent); pointer-events: none; z-index: 20; }
+.drop-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 21; display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-radius: 12px; background: var(--surface); color: var(--blue); font-weight: 600; box-shadow: 0 10px 40px #0003; pointer-events: none; }
+.attachment-card[draggable="true"] { cursor: grab; }

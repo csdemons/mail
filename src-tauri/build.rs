@@ -115,6 +115,7 @@ const COMMANDS: &[&str] = &[
             "forward_attachments",
             "calendar_file_preview",
             "calendar_file_import",
+            "attachment_drag_out",
             "talk_file_data",
         "accounts_list",
         "account_add",

@@ -23,6 +23,7 @@
     "allow-forward-attachments",
     "allow-calendar-file-preview",
     "allow-calendar-file-import",
+    "allow-attachment-drag-out",
     "allow-save-attachment",
     "allow-close-window",
     "allow-message-html-remote",

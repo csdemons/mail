@@ -15,6 +15,7 @@ mod search;
 mod rules;
 mod counterparty;
 mod offline;
+mod dragout;
 mod totp;
 mod netio;
 mod winacl;

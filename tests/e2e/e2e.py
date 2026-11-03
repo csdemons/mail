@@ -1797,6 +1797,33 @@ try:
     W(d, 20).until(lambda d: any('обновлено: 2' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
     assert titles().count('Планёрка по проекту') == 3 and titles().count('Выездное совещание') == 1, titles()
     ok('calendar file in a mail: events previewed and added to the chosen calendar; re-import updates, no duplicates')
+    # перетаскивание вложения из письма в папку компьютера: файл с настоящим именем готовится и отдаётся системе
+    t_drag = time.time()
+    rowt('E2E пересылка')[0].click()
+    W(d, 10).until(lambda d: 'Смета во вложении' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
+    card = [c for c in d.find_elements(By.CSS_SELECTOR, '.attachment-card') if 'Смета 2027.xlsx' in c.get_attribute('textContent')][0]
+    assert card.get_attribute('draggable') == 'true'
+    d.execute_script("arguments[0].dispatchEvent(new DragEvent('dragstart', {bubbles: true, cancelable: true, dataTransfer: new DataTransfer()}))", card)
+    bases = [os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/nonexistent'), 'rrcki-mail'), os.path.expanduser('~/.cache/rrcki-mail')]
+    staged = lambda: [f for b in bases for f in glob.glob(f'{b}/dragout-*/Смета 2027.xlsx') if os.path.getmtime(f) >= t_drag - 1]
+    W(d, 15).until(lambda d: staged())
+    assert open(staged()[0], 'rb').read() == b'SMETA-DATA-2027'
+    assert os.stat(os.path.dirname(staged()[0])).st_mode & 0o077 == 0
+    ok('drag an attachment out of a mail: copy with its real name in a private folder handed to the system drag')
+    # файлы с компьютера, брошенные на окно почты, — новое письмо с вложениями
+    d.execute_script("""
+      const dt = new DataTransfer(); dt.items.add(new File(['план'], 'План работ.docx', {type: 'application/octet-stream'}));
+      const t = document.querySelector('.message-list');
+      t.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer: dt}));
+      t.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt}));""")
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.compose-modal') and any('План работ.docx' in c.get_attribute('textContent') for c in d.find_elements(By.CSS_SELECTOR, '.compose-files .file-chip')))
+    assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'План работ.docx'
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@nrcki.ru')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    W(d, 20).until(lambda d: sent_with('План работ.docx'))
+    fm2 = email.message_from_bytes(subject_of(sent_with('План работ.docx')[0])[1])
+    assert any(str(make_header(decode_header(p.get_filename() or ''))) == 'План работ.docx' and p.get_payload(decode=True) == 'план'.encode() for p in fm2.walk()), 'dropped file not attached'
+    ok('files dropped onto the mail window open a new mail with them attached')
     M = imap()
     for n, subj in enumerate(('E2E без сети флажок', 'E2E без сети удалить', 'E2E без сети конфликт')):
         m = EmailMessage(); m['From'] = 'Робот <robot@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj; m['Message-ID'] = f'<offline-{n}-{int(time.time())}@e2e>'; m.set_content(f'Текст: {subj}')

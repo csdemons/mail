@@ -51,6 +51,7 @@ export const api = {
   discoverServers: (email: string) => invoke<{ imapHost: string; imapPort: number; smtpHost: string; smtpPort: number; username: string; source: string; note: string | null }>('discover_servers', { email }),
   attachData: (name: string, data: string) => invoke<PickedFile>('attach_data', { name, data }),
   forwardAttachments: (folder: string, uid: number) => invoke<PickedFile[]>('forward_attachments', { folder, uid }),
+  attachmentDragOut: (folder: string, uid: number, index: number) => invoke<void>('attachment_drag_out', { folder, uid, index }),
   calendarFilePreview: (folder: string, uid: number, index: number) => invoke<CalendarFile>('calendar_file_preview', { folder, uid, index }),
   calendarFileImport: (folder: string, uid: number, index: number, calendarUrl: string, uids: string[]) =>
     invoke<CalendarImport>('calendar_file_import', { folder, uid, index, calendarUrl, uids }),

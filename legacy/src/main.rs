@@ -47,6 +47,8 @@ mod rules;
 mod counterparty;
 #[path = "../../src-tauri/src/offline.rs"]
 mod offline;
+#[path = "../../src-tauri/src/dragout.rs"]
+mod dragout;
 #[path = "../../src-tauri/src/totp.rs"]
 mod totp;
 #[path = "../../src-tauri/src/smtp.rs"]

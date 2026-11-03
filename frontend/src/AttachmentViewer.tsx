@@ -104,6 +104,12 @@ export function AttachmentList({ folder, uid, attachments, onSave, onCloud, clou
             <div key={a.index} className={`attachment-item ${kind === 'image' ? 'has-thumb' : ''} ${calendar ? 'calendar-file' : ''}`}>
               <button
                 className="attachment-card"
+                draggable
+                onDragStart={(e) => {
+                  // Перетаскивание в папку компьютера — системное, из программы (файл с настоящим именем).
+                  e.preventDefault()
+                  api.attachmentDragOut(folder, uid, a.index).catch((err) => onNotice?.(`Не удалось перетащить «${a.name}»: ${errorText(err)}`))
+                }}
                 title={calendar ? `Добавить события из ${a.name} в календарь` : kind ? `Просмотр: ${a.name}` : `Сохранить ${a.name}`}
                 onClick={() => (calendar ? setImporting(a) : kind ? setOpen(a.index) : onSave(a.index))}
               >
