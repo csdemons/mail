@@ -228,26 +228,51 @@ fn ntlm_token(headers: &[String], scheme: &str) -> Option<Vec<u8>> {
     })
 }
 
+/// Полный текст ошибки запроса (с причинами): reqwest прячет главное в `source()`.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        let t = c.to_string();
+        if !out.contains(&t) {
+            out.push_str(": ");
+            out.push_str(&t);
+        }
+        cur = c.source();
+    }
+    out
+}
+
+/// Ошибка запроса к Exchange для пользователя. Непринятый сертификат — не «нет связи»:
+/// иначе программа ушла бы в работу без сети, а пользователь искал бы проблему в сети.
+fn send_error(e: &reqwest::Error, url: &Url) -> AppError {
+    let host = url.host_str().unwrap_or_default().to_string();
+    let chain = error_chain(e);
+    let low = chain.to_lowercase();
+    if low.contains("certificate") || low.contains("сертификат") || low.contains("unknownissuer") || low.contains("cert_") || low.contains("self signed") || low.contains("self-signed") {
+        AppError::Tls(format!("сертификат сервера {host} не принят системой ({chain}). Если сервер использует сертификат внутреннего центра сертификации организации, его нужно установить в доверенные корневые сертификаты компьютера"))
+    } else if e.is_timeout() {
+        AppError::Timeout
+    } else if e.is_connect() {
+        AppError::Unreachable(host, chain)
+    } else {
+        AppError::ConnectionLost
+    }
+}
+
 impl EwsSession {
     async fn http_send(&self, body: &str, auth: Option<String>) -> Result<reqwest::Response> {
         let mut req = self.http.post(self.url.clone()).header("Content-Type", "text/xml; charset=utf-8").body(body.to_string());
         if let Some(a) = auth {
             req = req.header("Authorization", a);
         }
-        req.send().await.map_err(|e| {
-            if e.is_timeout() {
-                AppError::Timeout
-            } else if e.is_connect() {
-                AppError::Unreachable(self.url.host_str().unwrap_or_default().to_string(), e.to_string())
-            } else {
-                AppError::ConnectionLost
-            }
-        })
+        req.send().await.map_err(|e| send_error(&e, &self.url))
     }
 
     /// Выполнить запрос SOAP, при необходимости войти (NTLM или Basic).
     async fn post_raw(&mut self, body: &str, limit: usize) -> Result<String> {
-        for _ in 0..3 {
+        let mut tried_basic = false;
+        for _ in 0..4 {
             let resp = match self.auth {
                 Auth::Basic => {
                     let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", self.login, self.password));
@@ -274,6 +299,12 @@ impl EwsSession {
                             };
                         }
                         Auth::Ntlm(_) if self.authed => self.authed = false,
+                        // NTLM не прошёл, а сервер принимает и простой вход: так бывает за
+                        // обратным прокси, который не держит соединение для NTLM.
+                        Auth::Ntlm(_) if has("Basic") && !tried_basic => {
+                            tried_basic = true;
+                            self.auth = Auth::Basic;
+                        }
                         _ => return Err(AppError::AuthFailed),
                     }
                 }
@@ -310,7 +341,7 @@ impl EwsSession {
             .body("")
             .send()
             .await
-            .map_err(|e| if e.is_timeout() { AppError::Timeout } else if e.is_connect() { AppError::Unreachable(self.url.host_str().unwrap_or_default().to_string(), e.to_string()) } else { AppError::ConnectionLost })?;
+            .map_err(|e| send_error(&e, &self.url))?;
         let cert = first.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()).map(<[u8]>::to_vec);
         let headers = www_auth(&first);
         let _ = crate::netio::read_limited(first, crate::netio::SMALL_LIMIT).await;
@@ -1760,6 +1791,227 @@ pub async fn autodiscover(email: &str, login: &str, password: &str) -> Result<St
         last = AppError::Other("Сервер Exchange не найден автоматически — укажите его адрес (например, mail.организация.ru)".into());
     }
     Err(last)
+}
+
+// ---------------------------------------------------------------- диагностика входа
+
+/// Строки CN из сертификата (сначала издатель, затем владелец) — без разбора ASN.1 целиком.
+fn cert_names(der: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 5 < der.len() {
+        if der[i..i + 5] == [0x06, 0x03, 0x55, 0x04, 0x03] {
+            let len = der.get(i + 6).copied().unwrap_or(0) as usize;
+            if let Some(v) = der.get(i + 7..i + 7 + len) {
+                if let Ok(t) = std::str::from_utf8(v) {
+                    out.push(t.to_string());
+                }
+            }
+            i += 7;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn ntlm_info(ch: &crate::ntlm::Challenge) -> String {
+    let mut parts = vec![format!("флаги {:#010x}", ch.flags)];
+    for (id, v) in crate::ntlm::av_list(&ch.target_info) {
+        let text = || String::from_utf16_lossy(&v.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>());
+        match id {
+            1 => parts.push(format!("сервер {}", text())),
+            2 => parts.push(format!("домен NetBIOS {}", text())),
+            3 => parts.push(format!("сервер DNS {}", text())),
+            4 => parts.push(format!("домен DNS {}", text())),
+            5 => parts.push(format!("лес DNS {}", text())),
+            7 => parts.push("время сервера есть (подпись MIC)".into()),
+            _ => {}
+        }
+    }
+    parts.join(", ")
+}
+
+fn header_lines(resp: &reqwest::Response) -> String {
+    let keep = ["www-authenticate", "server", "x-feserver", "x-beserver", "x-owa-version", "x-aspnet-version", "x-powered-by", "connection", "location", "persistent-auth", "request-id", "x-diaginfo"];
+    let mut out = format!("  HTTP {} ({:?})\n", resp.status(), resp.version());
+    for (k, v) in resp.headers() {
+        if keep.contains(&k.as_str()) {
+            out.push_str(&format!("  {k}: {}\n", v.to_str().unwrap_or("?")));
+        }
+    }
+    out
+}
+
+/// Пошаговая проверка входа в Exchange: адрес, сеть, сертификат, способы входа,
+/// ответ EWS. Пароль в отчёт не попадает. Делает до трёх попыток входа (их видит
+/// контроллер домена — при пороге блокировки учётной записи это важно).
+pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> String {
+    let mut r = String::new();
+    let (user, domain) = crate::ntlm::split_login(login);
+    r.push_str(&format!("Atom Mail {} — диагностика Exchange\nПочта: {email}\nЛогин: {login} (пользователь «{user}», домен «{domain}»)\n", env!("CARGO_PKG_VERSION")));
+    // 1. Адрес EWS
+    let input = input.trim();
+    let url = if input.is_empty() || input == "auto" {
+        r.push_str("\n## Адрес EWS (Autodiscover)\n");
+        match autodiscover(if email.contains('@') { email } else { login }, login, password).await {
+            Ok(u) => {
+                r.push_str(&format!("найден: {u}\n"));
+                u
+            }
+            Err(e) => {
+                r.push_str(&format!("не найден: {e}\n"));
+                return r;
+            }
+        }
+    } else {
+        match normalize_url(input) {
+            Ok(u) => u.to_string(),
+            Err(e) => {
+                r.push_str(&format!("\nАдрес: {e}\n"));
+                return r;
+            }
+        }
+    };
+    let Ok(url) = Url::parse(&url) else { return r };
+    let host = url.host_str().unwrap_or_default().to_string();
+    r.push_str(&format!("\n## Адрес\n{url}\n"));
+    // 2. DNS
+    r.push_str("\n## DNS\n");
+    match tokio::time::timeout(Duration::from_secs(10), tokio::net::lookup_host((host.as_str(), url.port_or_known_default().unwrap_or(443)))).await {
+        Ok(Ok(addrs)) => {
+            let list: Vec<String> = addrs.map(|a| a.ip().to_string()).collect();
+            r.push_str(&format!("{host} → {}\n", list.join(", ")));
+        }
+        Ok(Err(e)) => {
+            r.push_str(&format!("{host}: имя не найдено ({e})\n"));
+            return r;
+        }
+        Err(_) => {
+            r.push_str("нет ответа DNS за 10 с\n");
+            return r;
+        }
+    }
+    // 3. TLS и первый ответ (без входа)
+    r.push_str("\n## TLS и запрос без входа\n");
+    let Ok(client) = http_client() else { return r };
+    let anon = client.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").body("").send().await;
+    let offered = match anon {
+        Ok(resp) => {
+            if let Some(cert) = resp.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()) {
+                use sha2::Digest as _;
+                let names = cert_names(cert);
+                let fp: String = sha2::Sha256::digest(cert).iter().map(|b| format!("{b:02X}")).collect();
+                r.push_str(&format!("сертификат принят системой; CN: {}; SHA-256 {}…\n", names.join(" ← "), &fp[..16]));
+            }
+            r.push_str(&header_lines(&resp));
+            let offered = www_auth(&resp);
+            let st = resp.status();
+            let _ = crate::netio::read_limited(resp, crate::netio::SMALL_LIMIT).await;
+            if st.is_redirection() {
+                r.push_str("сервер перенаправляет — нужен точный адрес EWS (обычно https://сервер/EWS/Exchange.asmx)\n");
+                return r;
+            }
+            if st != StatusCode::UNAUTHORIZED {
+                r.push_str("ожидался ответ 401 с перечнем способов входа — возможно, это не EWS или перед ним стоит прокси с собственной страницей входа\n");
+            }
+            offered
+        }
+        Err(e) => {
+            r.push_str(&format!("ошибка: {}\n", error_chain(&e)));
+            // Сертификат не принят: посмотреть, какой он (без отправки пароля).
+            if let Ok(insecure) = reqwest::Client::builder().danger_accept_invalid_certs(true).http1_only().tls_info(true).timeout(Duration::from_secs(20)).build() {
+                if let Ok(resp) = insecure.post(url.clone()).body("").send().await {
+                    if let Some(cert) = resp.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()) {
+                        r.push_str(&format!("сертификат сервера (не принят системой): CN {}\n", cert_names(cert).join(" ← ")));
+                        r.push_str("— если это сертификат внутреннего центра сертификации, установите корневой сертификат организации в доверенные на этом компьютере\n");
+                    }
+                }
+            }
+            return r;
+        }
+    };
+    let has = |sch: &str| offered.iter().any(|h| h.split_whitespace().next().is_some_and(|x| x.eq_ignore_ascii_case(sch)));
+    let schemes: Vec<&str> = ["NTLM", "Negotiate", "Basic"].into_iter().filter(|x| has(x)).collect();
+    r.push_str(&format!("способы входа: {}\n", if schemes.is_empty() { "не предложены".to_string() } else { schemes.join(", ") }));
+    // 4. Вход
+    let probe = envelope("Exchange2013_SP1", r#"<m:GetFolder><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape></m:FolderShape><m:FolderIds><t:DistinguishedFolderId Id="inbox"/></m:FolderIds></m:GetFolder>"#);
+    let mut tries: Vec<(&str, &'static str, bool)> = Vec::new();
+    if has("NTLM") || has("Negotiate") {
+        let sch = if has("NTLM") { "NTLM" } else { "Negotiate" };
+        tries.push(("NTLMv2 с привязкой к TLS (Extended Protection)", sch, true));
+        tries.push(("NTLMv2 без привязки к TLS", sch, false));
+    }
+    if has("Basic") {
+        tries.push(("Basic", "Basic", false));
+    }
+    for (title, sch, cbt) in tries {
+        r.push_str(&format!("\n## Вход: {title}\n"));
+        let Ok(c) = http_client() else { continue };
+        let resp = if sch == "Basic" {
+            let token = base64::engine::general_purpose::STANDARD.encode(format!("{login}:{password}"));
+            c.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header("Authorization", format!("Basic {token}")).body(probe.clone()).send().await
+        } else {
+            let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+            let neg = crate::ntlm::negotiate();
+            let first = match c.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header("Authorization", format!("{sch} {}", b64(&neg))).body("").send().await {
+                Ok(f) => f,
+                Err(e) => {
+                    r.push_str(&format!("ошибка: {}\n", error_chain(&e)));
+                    continue;
+                }
+            };
+            let cert = first.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()).map(<[u8]>::to_vec);
+            let hs = www_auth(&first);
+            let closes = first.headers().get("connection").and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("close"));
+            r.push_str(&format!("шаг 1 (NEGOTIATE): HTTP {}{}\n", first.status(), if closes { ", сервер закрывает соединение — NTLM так не пройдёт" } else { "" }));
+            let _ = crate::netio::read_limited(first, crate::netio::SMALL_LIMIT).await;
+            let Some(ch) = ntlm_token(&hs, sch).and_then(|t| crate::ntlm::parse_challenge(&t)) else {
+                r.push_str("сервер не прислал вызов NTLM (CHALLENGE)\n");
+                continue;
+            };
+            r.push_str(&format!("шаг 2 (CHALLENGE): {}\n", ntlm_info(&ch)));
+            let mut cc = [0u8; 8];
+            let _ = getrandom::getrandom(&mut cc);
+            let spn = format!("HTTP/{host}");
+            let auth = crate::ntlm::authenticate(&ch, &neg, &user, &domain, password, "", if cbt { cert.as_deref() } else { None }, Some(&spn), cc, crate::ntlm::filetime_now());
+            c.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header("Authorization", format!("{sch} {}", b64(&auth))).body(probe.clone()).send().await
+        };
+        match resp {
+            Err(e) => r.push_str(&format!("ошибка: {}\n", error_chain(&e))),
+            Ok(resp) => {
+                let st = resp.status();
+                r.push_str(&header_lines(&resp));
+                let text = crate::netio::text_limited(resp, crate::netio::SMALL_LIMIT).await.unwrap_or_default();
+                if st == StatusCode::UNAUTHORIZED {
+                    r.push_str("вход отклонён\n");
+                    continue;
+                }
+                if let Ok(d) = roxmltree::Document::parse(&text) {
+                    if let Some(v) = d.descendants().find(|n| n.tag_name().name() == "ServerVersionInfo") {
+                        r.push_str(&format!("версия Exchange: {}.{}.{}.{} ({})\n", v.attribute("MajorVersion").unwrap_or("?"), v.attribute("MinorVersion").unwrap_or("?"), v.attribute("MajorBuildNumber").unwrap_or("?"), v.attribute("MinorBuildNumber").unwrap_or("?"), v.attribute("Version").unwrap_or("")));
+                    }
+                    if let Some(f) = d.descendants().find(|n| n.tag_name().name() == "faultstring") {
+                        r.push_str(&format!("ошибка SOAP: {}\n", f.text().unwrap_or("")));
+                    }
+                    for m in d.descendants().filter(|n| n.tag_name().name() == "ResponseCode") {
+                        r.push_str(&format!("ответ EWS: {}\n", m.text().unwrap_or("")));
+                    }
+                    for m in d.descendants().filter(|n| n.tag_name().name() == "MessageText") {
+                        r.push_str(&format!("текст: {}\n", m.text().unwrap_or("")));
+                    }
+                } else {
+                    let head: String = text.chars().take(300).collect();
+                    r.push_str(&format!("ответ не XML: {head}\n"));
+                }
+                if st == StatusCode::OK {
+                    r.push_str("ВХОД УСПЕШЕН — этот способ работает\n");
+                    break;
+                }
+            }
+        }
+    }
+    r
 }
 
 fn ews_url_of(text: &str) -> Option<String> {

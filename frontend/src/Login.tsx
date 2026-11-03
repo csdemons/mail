@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Building, LockKeyhole, Mail, ServerCog } from 'lucide-react'
+import { Building, Copy, LockKeyhole, Mail, ServerCog, Stethoscope } from 'lucide-react'
 
 import { api, errorText } from './api'
 import kurchatovLogo from './assets/kurchatov-logo.png'
@@ -44,6 +44,21 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(initialError)
+  const [diag, setDiag] = useState<string | null>(null)
+  const [diagBusy, setDiagBusy] = useState(false)
+
+  async function runExchangeDiagnose() {
+    if (!password) { setError('Введите пароль — диагностика проверяет вход'); return }
+    setDiagBusy(true)
+    setDiag('Проверка подключения к Exchange…')
+    try {
+      setDiag(await api.exchangeDiagnose({ url: ewsUrl.trim() || 'auto', address: email.trim(), username: exLogin.trim(), password }))
+    } catch (err) {
+      setDiag(`Ошибка диагностики: ${errorText(err)}`)
+    } finally {
+      setDiagBusy(false)
+    }
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -209,6 +224,20 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
 
         {note && <div className="login-note-warn" role="note">{note}</div>}
         {error && <div className="login-error" role="alert">{error}</div>}
+        {kind === 'exchange' && (error || diag !== null) && (
+          <button type="button" className="text-button login-diag-button" disabled={diagBusy} onClick={() => void runExchangeDiagnose()}>
+            <Stethoscope size={15} /> {diagBusy ? 'Проверка…' : 'Диагностика подключения'}
+          </button>
+        )}
+        {kind === 'exchange' && diag !== null && (
+          <div className="diag-block login-diag">
+            <textarea className="diag-text" readOnly value={diag} aria-label="Отчёт диагностики Exchange" />
+            <div className="login-diag-actions">
+              <button type="button" className="text-button" onClick={() => void navigator.clipboard.writeText(diag).catch(() => undefined)}><Copy size={14} /> Копировать отчёт</button>
+              <span>Пароля в отчёте нет. Проверка делает до трёх попыток входа.</span>
+            </div>
+          </div>
+        )}
 
         <button className="primary-button login-submit" type="submit" disabled={busy}>
           <LockKeyhole size={16} /> {busy ? 'Подключение…' : add ? 'Добавить' : 'Войти'}

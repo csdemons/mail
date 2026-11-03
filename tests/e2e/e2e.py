@@ -2494,7 +2494,19 @@ try:
     set_value(d, form.find_element(By.CSS_SELECTOR, 'input[aria-label="Пароль Exchange"]'), 'wrong')
     form.find_element(By.CSS_SELECTOR, '.login-submit').click()
     W(d, 30).until(lambda d: 'Неверный логин или пароль' in form.find_element(By.CSS_SELECTOR, '.login-error').get_attribute('textContent'))
+    # диагностика входа: адрес, сертификат, способы входа, где именно отказ — без пароля в отчёте
+    form.find_element(By.CSS_SELECTOR, '.login-diag-button').click()
+    rep = lambda: form.find_element(By.CSS_SELECTOR, 'textarea[aria-label="Отчёт диагностики Exchange"]').get_attribute('value')
+    W(d, 60).until(lambda d: rep() and 'Проверка подключения' not in rep())
+    t = rep()
+    assert 'Autodiscover' in t and 'Неверный логин или пароль' in t and 'ВХОД УСПЕШЕН' not in t and 'wrong' not in t, t
     set_value(d, form.find_element(By.CSS_SELECTOR, 'input[aria-label="Пароль Exchange"]'), 'Exch-Pass-1')
+    form.find_element(By.CSS_SELECTOR, '.login-diag-button').click()
+    W(d, 60).until(lambda d: 'ВХОД УСПЕШЕН' in rep())
+    t = rep()
+    assert 'найден: https://localhost:8445/EWS/Exchange.asmx' in t and 'сертификат принят системой' in t and 'способы входа: NTLM, Negotiate' in t, t
+    assert 'шаг 2 (CHALLENGE)' in t and 'домен NetBIOS' in t and 'с привязкой к TLS' in t and 'ответ EWS: NoError' in t and 'Exch-Pass-1' not in t, t
+    ok('Exchange login diagnostics: server, certificate, offered methods, NTLM steps and the result; no password in the report')
     d.save_screenshot(f'{OUT}/57-exchange-add.png')
     form.find_element(By.CSS_SELECTOR, '.login-submit').click()
     W(d, 40).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.add-account'))

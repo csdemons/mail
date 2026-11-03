@@ -89,6 +89,11 @@ pub fn parse_challenge(msg: &[u8]) -> Option<Challenge> {
     Some(Challenge { flags, server_challenge, target_info, raw: msg.to_vec() })
 }
 
+/// Пары AV для отчёта диагностики.
+pub fn av_list(info: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    av_pairs(info)
+}
+
 /// Пары AV (TargetInfo) — список (идентификатор, значение) без завершающей пары.
 fn av_pairs(info: &[u8]) -> Vec<(u16, Vec<u8>)> {
     let mut out = Vec::new();

@@ -52,6 +52,7 @@ export const api = {
   desktopPrefsGet: () => invoke<DesktopPrefs>('desktop_prefs_get'),
   desktopPrefsSet: (prefs: DesktopPrefs) => invoke<void>('desktop_prefs_set', { prefs }),
   setUnread: (count: number) => invoke<void>('set_unread', { count }),
+  exchangeDiagnose: (p: { url: string; address: string; username: string; password: string }) => invoke<string>('exchange_diagnose', p),
   discoverServers: (email: string) => invoke<{ imapHost: string; imapPort: number; smtpHost: string; smtpPort: number; username: string; source: string; note: string | null }>('discover_servers', { email }),
   attachData: (name: string, data: string) => invoke<PickedFile>('attach_data', { name, data }),
   forwardAttachments: (folder: string, uid: number) => invoke<PickedFile[]>('forward_attachments', { folder, uid }),

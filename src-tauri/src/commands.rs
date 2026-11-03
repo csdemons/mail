@@ -461,6 +461,15 @@ async fn attachment(ctx: &AccountCtx, folder: &str, uid: u32, index: usize) -> R
     with_ctx!(ctx, c => imap::get_attachment(c, folder, uid, index))
 }
 
+/// Пошаговая проверка входа в Exchange (до входа в программу): отчёт без пароля.
+#[tauri::command]
+pub async fn exchange_diagnose(url: String, address: String, username: String, password: String) -> Result<String> {
+    let login = if username.trim().is_empty() { address.trim().to_string() } else { username.trim().to_string() };
+    Ok(tokio::time::timeout(Duration::from_secs(180), crate::ews::diagnose(&url, address.trim(), &login, &password))
+        .await
+        .unwrap_or_else(|_| "Диагностика не уложилась в 3 минуты".into()))
+}
+
 /// Серверы почты по адресу (вход «адрес + пароль»).
 #[tauri::command]
 pub async fn discover_servers(email: String) -> Result<crate::discover::Discovered> {
@@ -5398,6 +5407,7 @@ macro_rules! app_commands {
             crate::commands::show_main_window,
             crate::commands::categories_get,
             crate::commands::discover_servers,
+            crate::commands::exchange_diagnose,
             crate::commands::attach_data,
             crate::commands::talk_file_preview,
             crate::commands::unified_folder,

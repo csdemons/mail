@@ -138,6 +138,7 @@ const COMMANDS: &[&str] = &[
         "mark_spam",
         "attach_data",
         "discover_servers",
+        "exchange_diagnose",
         "template_delete",
         "template_save",
         "templates_list",
