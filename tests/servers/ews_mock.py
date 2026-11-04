@@ -603,6 +603,10 @@ class H(BaseHTTPRequestHandler):
         return True
 
     def do_POST(self):
+        # Как HTTP.sys (IIS/Exchange): POST без Content-Length и без chunked — 411 и закрыть соединение.
+        if self.headers.get('Content-Length') is None and 'chunked' not in (self.headers.get('Transfer-Encoding') or '').lower():
+            self.close_connection = True
+            return self.send(411, 'Length Required', 'text/plain', headers=[('Connection', 'close')])
         u = urlparse(self.path); n = int(self.headers.get('Content-Length', 0)); body = self.rfile.read(n)
         if u.path == '/test/deliver':
             with lock: add_item('F-inbox', body, now())

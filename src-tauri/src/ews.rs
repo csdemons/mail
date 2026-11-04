@@ -338,13 +338,18 @@ impl EwsSession {
             .post(self.url.clone())
             .header("Content-Type", "text/xml; charset=utf-8")
             .header("Authorization", format!("{scheme} {}", b64(&neg)))
-            .body("")
+            .header(reqwest::header::CONTENT_LENGTH, "0").body("")
             .send()
             .await
             .map_err(|e| send_error(&e, &self.url))?;
         let cert = first.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()).map(<[u8]>::to_vec);
         let headers = www_auth(&first);
+        let status = first.status();
         let _ = crate::netio::read_limited(first, crate::netio::SMALL_LIMIT).await;
+        // Не 401 с вызовом NTLM — это не отказ в пароле, а ответ сервера, который надо показать.
+        if status != StatusCode::UNAUTHORIZED {
+            return Err(AppError::Other(format!("Сервер Exchange ответил HTTP {status} на начало входа NTLM")));
+        }
         let challenge = ntlm_token(&headers, scheme).and_then(|t| crate::ntlm::parse_challenge(&t)).ok_or(AppError::AuthFailed)?;
         let (user, domain) = crate::ntlm::split_login(&self.login);
         let mut cc = [0u8; 8];
@@ -1483,10 +1488,12 @@ impl EwsSession {
     pub async fn import_ics(&mut self, cal: &crate::dav::Collection, ev: &crate::dav::IcsEvent) -> Result<bool> {
         let fid = cal.url.strip_prefix("ews:cal:").ok_or(AppError::NotFound)?.to_string();
         let start = parse_time(&ev.start).or_else(|| chrono::NaiveDate::parse_from_str(&ev.start, "%Y-%m-%d").ok().and_then(|d| d.and_hms_opt(0, 0, 0)).map(|t| Utc.from_utc_datetime(&t))).unwrap_or_else(Utc::now);
-        let existing = self.events(cal, start - chrono::Duration::days(2), start + chrono::Duration::days(2)).await.unwrap_or_default();
+        // Ошибка поиска не глотается: иначе событие добавилось бы второй раз вместо замены.
+        let existing = self.events(cal, start - chrono::Duration::days(2), start + chrono::Duration::days(2)).await?;
         let mut replaced = false;
         if let Some(old) = existing.iter().find(|e| e.uid == ev.uid) {
-            replaced = self.delete_event(&old.href).await.is_ok();
+            self.delete_event(&old.href).await?;
+            replaced = true;
         }
         let op = format!(
             r#"<m:CreateItem SendMeetingInvitations="SendToNone"><m:SavedItemFolderId><t:FolderId Id="{}"/></m:SavedItemFolderId><m:Items><t:CalendarItem><t:MimeContent CharacterSet="UTF-8">{}</t:MimeContent></t:CalendarItem></m:Items></m:CreateItem>"#,
@@ -1895,7 +1902,7 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
     // 3. TLS и первый ответ (без входа)
     r.push_str("\n## TLS и запрос без входа\n");
     let Ok(client) = http_client() else { return r };
-    let anon = client.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").body("").send().await;
+    let anon = client.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header(reqwest::header::CONTENT_LENGTH, "0").body("").send().await;
     let offered = match anon {
         Ok(resp) => {
             if let Some(cert) = resp.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()) {
@@ -1921,7 +1928,7 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
             r.push_str(&format!("ошибка: {}\n", error_chain(&e)));
             // Сертификат не принят: посмотреть, какой он (без отправки пароля).
             if let Ok(insecure) = reqwest::Client::builder().danger_accept_invalid_certs(true).http1_only().tls_info(true).timeout(Duration::from_secs(20)).build() {
-                if let Ok(resp) = insecure.post(url.clone()).body("").send().await {
+                if let Ok(resp) = insecure.post(url.clone()).header(reqwest::header::CONTENT_LENGTH, "0").body("").send().await {
                     if let Some(cert) = resp.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()) {
                         r.push_str(&format!("сертификат сервера (не принят системой): CN {}\n", cert_names(cert).join(" ← ")));
                         r.push_str("— если это сертификат внутреннего центра сертификации, установите корневой сертификат организации в доверенные на этом компьютере\n");
@@ -1954,7 +1961,7 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
         } else {
             let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
             let neg = crate::ntlm::negotiate();
-            let first = match c.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header("Authorization", format!("{sch} {}", b64(&neg))).body("").send().await {
+            let first = match c.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header("Authorization", format!("{sch} {}", b64(&neg))).header(reqwest::header::CONTENT_LENGTH, "0").body("").send().await {
                 Ok(f) => f,
                 Err(e) => {
                     r.push_str(&format!("ошибка: {}\n", error_chain(&e)));
