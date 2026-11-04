@@ -67,7 +67,7 @@ backend: один процесс на пользователя, как Outlook �
   напоминания и правила повтора сохраняются. Права на запись определяются по
   `current-user-privilege-set`, изменения защищены ETag (If-Match).
 
-- **Nextcloud** (`https://next.nrcki.ru` по умолчанию): подключение через браузер
+- **Nextcloud** (`https://Nextcloud.ru` по умолчанию): подключение через браузер
   (Login Flow v2 — работает и с SSO/2FA) или паролем приложения; пароль приложения
   хранится в системном хранилище, при отключении отзывается на сервере.
   - **Задачи → Deck**: доски пользователя (общие доски — по правам из Deck), колонки,
@@ -127,7 +127,7 @@ cd src-tauri; cargo run --example smoke
 
 Nextcloud (вход через браузер, доски, беседы) без интерфейса:
 ```powershell
-$env:NC_URL = 'https://next.nrcki.ru'
+$env:NC_URL = 'https://Nextcloud.ru'
 cargo run --example nextcloud_check      # NC_WRITE=1 — ещё и создать/удалить тестовую карточку и сообщение
 ```
 
