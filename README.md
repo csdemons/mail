@@ -9,7 +9,6 @@ CalDAV/CardDAV, Nextcloud — без промежуточного сервера
 Стек: [Tauri 2](https://tauri.app) (Rust) + React + TypeScript; для Astra 1.7 — та же
 программа на Tauri 1.
 
-Разработчик — Юшков Дмитрий Олегович.
 
 📖 **Документация:** [руководство пользователя](docs/user-guide.md) ·
 [администратору](docs/admin-guide.md) · [если что-то не работает](docs/troubleshooting.md) ·
