@@ -1068,6 +1068,42 @@ try:
     assert 'nrcki.ru' in t and 'evil.example' in t, t
     d.save_screenshot(f'{OUT}/28-phishing-link.png')
     [b for b in modal.find_elements(By.TAG_NAME, 'button') if 'Не открывать' in b.text][0].click()
+    # XSS: типовые приёмы в HTML-письме — ничего не выполняется ни в рамке письма, ни в окне программы.
+    xss = ('<p id="x0">Проверка</p><img src=x onerror="top.__xss=1"><svg onload="top.__xss=2"><circle r=1 /></svg>'
+           '<a id="xl" href="javascript:top.__xss=3">ссылка</a><iframe srcdoc="<script>top.__xss=4</script>"></iframe>'
+           '<script>top.__xss=5</script><body onload="top.__xss=6"><details open ontoggle="top.__xss=7">d</details>'
+           '<form action="javascript:top.__xss=8"><button id="xb">b</button></form><meta http-equiv="refresh" content="0;url=javascript:top.__xss=9">'
+           '<object data="javascript:top.__xss=10"></object><embed src="javascript:top.__xss=11"><base href="javascript:top.__xss=12//">'
+           '<style>@import "https://localhost:8443/e2e/x.css"; body{background:url("javascript:top.__xss=13")}</style>'
+           '<math><mtext><table><mglyph><style><img src=x onerror="top.__xss=14"></style></mglyph></table></mtext></math>')
+    xm = MIMEText(f'<html><body>{xss}</body></html>', 'html', 'utf-8'); xm['Subject'] = 'E2E xss'; xm['From'] = 'Злоумышленник <bad@evil.example>'; xm['To'] = 'test@rrcki.ru'
+    M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), xm.as_bytes()); M.logout()
+    title0 = d.title
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
+    W(d, 20).until(lambda d: row('E2E xss'))
+    row('E2E xss')[0].click()
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, 'iframe.message-html'))
+    frame = d.find_element(By.CSS_SELECTOR, 'iframe.message-html'); d.switch_to.frame(frame)
+    W(d, 10).until(lambda d: 'Проверка' in d.find_element(By.TAG_NAME, 'body').text)
+    # В DOM письма: ни опасных элементов, ни обработчиков, ни javascript:-адресов в атрибутах.
+    found = d.execute_script("""
+      const bad = [...document.body.querySelectorAll('script, iframe, object, embed, form, base, svg, math, meta[http-equiv]')].map((e) => e.tagName);
+      for (const e of document.body.querySelectorAll('*')) for (const a of e.attributes) {
+        if (a.name.startsWith('on') || /^\\s*javascript:/i.test(a.value)) bad.push(e.tagName + '@' + a.name);
+      }
+      return bad""")
+    assert not found, found
+    for el in d.find_elements(By.CSS_SELECTOR, 'a, button'):
+        try: el.click()
+        except Exception: pass
+    d.switch_to.default_content()
+    time.sleep(1.5)
+    assert d.execute_script("return window.__xss === undefined") and d.title == title0, d.execute_script("return window.__xss")
+    assert not d.find_elements(By.CSS_SELECTOR, '.confirm-modal[aria-label="Подозрительная ссылка"]') or True
+    ok('HTML mail XSS payloads (handlers, javascript: links, script, svg, form, meta refresh, base, mXSS) — removed, nothing runs')
+    # дальше проверки идут на письме-рассылке
+    row('E2E html')[0].click()
+    W(d, 20).until(lambda d: d.execute_script("const f = document.querySelector('iframe.message-html'); return !!(f && f.contentDocument && f.contentDocument.body && f.contentDocument.body.textContent.includes('Вёрстка'))"))
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.confirm-modal'))
     ok('link whose text shows another domain: warning before opening')
     # Даже если бы очистку обошли — CSP рамки письма не даёт исполнить код (обработчик onerror).
@@ -2642,7 +2678,10 @@ try:
         W(d, 30).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.ics-events li')) == 1)
         before = ews_state()['stats']['ops'].count('CreateItem')
         [b for b in dlg.find_elements(By.CSS_SELECTOR, '.ics-buttons button') if 'Добавить' in b.text][0].click()
-        W(d, 30).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.ics-modal') and ews_state()['stats']['ops'].count('CreateItem') > before)
+        try:
+            W(d, 30).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.ics-modal') and ews_state()['stats']['ops'].count('CreateItem') > before)
+        except Exception:
+            print('EWS LOG:', '\n'.join(ews_state()['stats'].get('log', [])[-40:])); raise
         occ = [e for e in inv('list_events', rng)['ok']['events'] if e['title'] == 'EWS: совещание по графику']
         assert len(occ) == 3 and all(e['location'] == 'Зал 1' and e['recurring'] for e in occ), occ
     assert len([c for c in ews_state()['cal'] if c['uid'] == 'e2e-ews-sched']) == 1

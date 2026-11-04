@@ -81,7 +81,16 @@ def field(msg, at):
     return msg[off:off + ln]
 
 
-def verify_auth(msg, server_challenge):
+CERT_DER = b''  # сертификат сервера (DER) — для проверки привязки к TLS-каналу
+
+
+def expected_cbt():
+    """MD5 структуры gss_channel_bindings с tls-server-end-point:SHA-256(сертификат) (RFC 5929)."""
+    app = b'tls-server-end-point:' + hashlib.sha256(CERT_DER).digest()
+    return hashlib.md5(b'\0' * 16 + struct.pack('<I', len(app)) + app).digest()
+
+
+def verify_auth(msg, server_challenge, neg=b'', chal=b''):
     """NTLMv2: проверка NTProofStr по паролю учётной записи и наличия привязки к каналу."""
     if msg[:8] != b'NTLMSSP\0' or struct.unpack('<I', msg[8:12])[0] != 3:
         return False, 'not type 3'
@@ -93,14 +102,27 @@ def verify_auth(msg, server_challenge):
     proof = hmac.new(key, server_challenge + nt[16:], 'md5').digest()
     if proof != nt[:16]:
         return False, 'bad password'
-    # AV-пары в blob: MsvAvChannelBindings (10) должна быть.
-    info, i, has_cb = nt[16 + 28:], 0, False
+    # AV-пары в blob: MsvAvChannelBindings (10) — ровно от нашего сертификата (как Extended Protection).
+    info, i, cb, flags = nt[16 + 28:], 0, None, 0
     while i + 4 <= len(info):
         t, ln = struct.unpack('<HH', info[i:i + 4])
         if t == 0: break
-        if t == 10 and info[i + 4:i + 4 + ln] != b'\0' * 16: has_cb = True
+        if t == 10: cb = info[i + 4:i + 4 + ln]
+        if t == 6: flags = struct.unpack('<I', info[i + 4:i + 8])[0]
         i += 4 + ln
-    return has_cb, 'no channel binding' if not has_cb else 'ok'
+    if cb is None or cb == b'\0' * 16:
+        return False, 'no channel binding'
+    if CERT_DER and cb != expected_cbt():
+        return False, 'wrong channel binding'
+    # MIC (MsvAvFlags 0x2): HMAC-MD5 сеансового ключа по NEGOTIATE‖CHALLENGE‖AUTHENTICATE с нулевым MIC.
+    if flags & 2:
+        session = hmac.new(key, proof, 'md5').digest()
+        zeroed = msg[:72] + b'\0' * 16 + msg[88:]
+        if hmac.new(session, neg + chal + zeroed, 'md5').digest() != msg[72:88]:
+            return False, 'bad MIC'
+    elif neg:
+        return False, 'no MIC'
+    return True, 'ok'
 
 
 # ---------------------------------------------------------------- ящик
@@ -576,6 +598,12 @@ class H(BaseHTTPRequestHandler):
 
     def send(self, code, body=b'', ctype='text/xml; charset=utf-8', headers=()):
         if isinstance(body, str): body = body.encode()
+        a = self.headers.get('Authorization', '') if self.headers else ''
+        kind = '-'
+        if a:
+            try: kind = a.split(' ')[0] + str(struct.unpack('<I', base64.b64decode(a.split(' ', 1)[1])[8:12])[0])
+            except Exception: kind = a.split(' ')[0]
+        with lock: STATS.setdefault('log', []).append(f'{id(self.connection) % 100000} {self.command} {self.path} auth={kind} -> {code}')
         self.send_response(code)
         for k, v in headers: self.send_header(k, v)
         self.send_header('Content-Type', ctype); self.send_header('Content-Length', str(len(body)))
@@ -594,8 +622,9 @@ class H(BaseHTTPRequestHandler):
         kind = struct.unpack('<I', msg[8:12])[0]
         if kind == 1:
             ch = bytes(range(8, 16)); self.connection.ntlm_challenge = ch
-            self.send(401, '', headers=[('WWW-Authenticate', f'{scheme} ' + base64.b64encode(challenge_msg(ch)).decode())]); return False
-        ok, why = verify_auth(msg, getattr(self.connection, 'ntlm_challenge', b''))
+            self.connection.ntlm_neg, self.connection.ntlm_chal = msg, challenge_msg(ch)
+            self.send(401, '', headers=[('WWW-Authenticate', f'{scheme} ' + base64.b64encode(self.connection.ntlm_chal).decode())]); return False
+        ok, why = verify_auth(msg, getattr(self.connection, 'ntlm_challenge', b''), getattr(self.connection, 'ntlm_neg', b''), getattr(self.connection, 'ntlm_chal', b''))
         with lock: STATS['auth'].append(why)
         if not ok:
             self.send(401, why, headers=[('WWW-Authenticate', 'NTLM')]); return False
@@ -648,6 +677,7 @@ STATS = {'auth': [], 'ops': []}
 
 if __name__ == '__main__':
     cert, key = sys.argv[1], sys.argv[2]
+    CERT_DER = ssl.PEM_cert_to_DER_cert(open(cert).read())
     port = int(sys.argv[3]) if len(sys.argv) > 3 else 8445
     srv = ThreadingHTTPServer(('localhost', port), H)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(cert, key)

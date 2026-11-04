@@ -106,6 +106,9 @@ html { background: #d0d8df; filter: invert(1) hue-rotate(180deg); }
 img, video, picture, svg, canvas, [style*="background-image"], [background] { filter: invert(1) hue-rotate(180deg); }
 `
 
+/** WebView2 (Chromium): обработчики окна в песочнице-рамке работают. */
+const FRAME_SANDBOX = /Windows/.test(navigator.userAgent) && /Chrome\//.test(navigator.userAgent) ? 'allow-same-origin' : undefined
+
 const FRAME_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; script-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; connect-src 'none'"
 
 function HtmlFrame({ html, scale, dark, onHover, onLink }: { html: string; scale: number; dark: boolean; onHover: (href: string) => void; onLink: (href: string, text: string) => void }) {
@@ -116,8 +119,12 @@ function HtmlFrame({ html, scale, dark, onHover, onLink }: { html: string; scale
   const [height, setHeight] = useState(200)
   // Своя политика CSP рамки письма — строже, чем у окна: никаких скриптов, сети, форм,
   // встраивания; картинки — только data: (внешние программа подставляет сама).
-  // Атрибут sandbox не используется: в WebKitGTK с ним не срабатывают обработчики
-  // щелчков, и ссылки из писем нельзя было бы проверить и открыть в браузере.
+  // Рамка — в песочнице (sandbox без allow-scripts: скрипты письма не выполняются,
+  // даже если что-то проскочит мимо очистки HTML и CSP). allow-same-origin нужен, чтобы
+  // программа сама ловила щелчки по ссылкам и наведение. В WebKit (Linux, macOS)
+  // обработчики программы в такой рамке не срабатывают — там песочницы нет, а защиту
+  // дают очистка HTML и CSP рамки и окна (их проверяет E2E с набором XSS-приёмов).
+  // В WebView2 (Windows) песочница проверена: щелчки и наведение работают.
   const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}"><style>${FRAME_CSS}${dark ? FRAME_DARK_CSS : ''} html { zoom: ${scale}; }</style></head><body>${html}</body></html>`
 
   useEffect(() => {
@@ -167,6 +174,7 @@ function HtmlFrame({ html, scale, dark, onHover, onLink }: { html: string; scale
       ref={frame}
       className={`message-html ${dark ? 'dark' : ''}`}
       title="Текст письма"
+      sandbox={FRAME_SANDBOX}
       srcDoc={doc}
       style={{ height }}
     />

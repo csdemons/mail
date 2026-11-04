@@ -32,6 +32,10 @@ pub struct Target {
     pub uid: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub msg_id: Option<String>,
+    /// UIDVALIDITY папки, когда действие ставилось в очередь: сменилась (папку
+    /// пересоздали) — старый UID может принадлежать другому письму.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -224,12 +228,23 @@ pub fn decode(s: &str) -> Result<Vec<u8>> {
 /// Где письмо теперь: UID в папке `folder` по сохранённому UID и Message-ID.
 /// `found` — UID и Message-ID писем папки, которые вернул сервер для исходных UID;
 /// `search` — UID найденного по Message-ID (если искали).
-pub fn resolve(t: &Target, found: &[(u32, Option<String>)], search: Option<u32>) -> Option<u32> {
-    let same = |a: &Option<String>, b: &Option<String>| match (a, b) {
-        (Some(x), Some(y)) => norm_id(x) == norm_id(y),
+/// `validity` — текущий UIDVALIDITY папки (если известен).
+///
+/// По UID письмо принимается, только если UID ещё значит то же самое (UIDVALIDITY не
+/// сменился) и Message-ID совпадает. У письма в очереди был Message-ID, а у письма на
+/// сервере его нет — это другое письмо. Без Message-ID и при сменившемся UIDVALIDITY
+/// письмо не находится: действие уходит в конфликты, а не применяется наугад.
+pub fn resolve(t: &Target, found: &[(u32, Option<String>)], search: Option<u32>, validity: Option<u32>) -> Option<u32> {
+    let uid_means_same = match (t.validity, validity) {
+        (Some(a), Some(b)) => a == b,
         _ => true,
     };
-    if found.iter().any(|(u, id)| *u == t.uid && same(id, &t.msg_id)) {
+    let same = |server: &Option<String>| match (&t.msg_id, server) {
+        (Some(x), Some(y)) => norm_id(x) == norm_id(y),
+        (Some(_), None) => false,
+        (None, _) => true,
+    };
+    if uid_means_same && found.iter().any(|(u, id)| *u == t.uid && same(id)) {
         return Some(t.uid);
     }
     search
@@ -246,7 +261,7 @@ mod tests {
     #[test]
     fn queue_round_trip_and_limits() {
         let mut q = Queue::default();
-        let id = q.push(Op::Flag { folder: "INBOX".into(), targets: vec![Target { uid: 5, msg_id: Some("<a@b>".into()) }], flag: "seen".into(), value: true }).unwrap();
+        let id = q.push(Op::Flag { folder: "INBOX".into(), targets: vec![Target { uid: 5, msg_id: Some("<a@b>".into()), validity: None }], flag: "seen".into(), value: true }).unwrap();
         q.push(Op::Send { raw: encode(b"Subject: x\r\n\r\nbody"), subject: "Отчёт".into(), to: vec!["a@b.ru".into()] }).unwrap();
         q.conflict("Переместить".into(), "письма нет".into(), None);
         let back = Queue::from_bytes(Some(q.to_bytes()));
@@ -276,21 +291,37 @@ mod tests {
 
     #[test]
     fn describes_folders_decoded() {
-        let op = Op::Move { folder: "INBOX".into(), targets: vec![Target { uid: 1, msg_id: None }, Target { uid: 2, msg_id: None }], target: "&BBAEQARFBDgEMg-".into() };
+        let op = Op::Move { folder: "INBOX".into(), targets: vec![Target { uid: 1, msg_id: None, validity: None }, Target { uid: 2, msg_id: None, validity: None }], target: "&BBAEQARFBDgEMg-".into() };
         assert_eq!(op.describe(), "Переместить писем: 2 из «INBOX» в «Архив»");
     }
 
     #[test]
+    fn uid_reused_after_folder_recreated_is_not_trusted() {
+        let t = Target { uid: 7, msg_id: Some("<a@b>".into()), validity: Some(100) };
+        // UIDVALIDITY тот же, Message-ID совпадает — то самое письмо.
+        assert_eq!(resolve(&t, &[(7, Some("a@b".into()))], None, Some(100)), Some(7));
+        // Папку пересоздали: тот же UID ничего не значит, даже при совпавшем Message-ID берём найденное поиском.
+        assert_eq!(resolve(&t, &[(7, Some("a@b".into()))], None, Some(200)), None);
+        assert_eq!(resolve(&t, &[(7, Some("a@b".into()))], Some(3), Some(200)), Some(3));
+        // У письма в очереди был Message-ID, у письма с этим UID на сервере — нет: другое письмо.
+        assert_eq!(resolve(&t, &[(7, None)], None, Some(100)), None);
+        // Письмо без Message-ID: по UID — только пока UIDVALIDITY не сменился.
+        let bare = Target { uid: 4, msg_id: None, validity: Some(100) };
+        assert_eq!(resolve(&bare, &[(4, None)], None, Some(100)), Some(4));
+        assert_eq!(resolve(&bare, &[(4, None)], None, Some(101)), None);
+    }
+
+    #[test]
     fn resolves_moved_messages() {
-        let t = Target { uid: 7, msg_id: Some("<X@host>".into()) };
+        let t = Target { uid: 7, msg_id: Some("<X@host>".into()), validity: None };
         // на месте
-        assert_eq!(resolve(&t, &[(7, Some("x@host".into()))], None), Some(7));
+        assert_eq!(resolve(&t, &[(7, Some("x@host".into()))], None, None), Some(7));
         // UID занят другим письмом (папку пересоздали) — берём найденное по Message-ID
-        assert_eq!(resolve(&t, &[(7, Some("other@host".into()))], Some(12)), Some(12));
+        assert_eq!(resolve(&t, &[(7, Some("other@host".into()))], Some(12), None), Some(12));
         // письма нет
-        assert_eq!(resolve(&t, &[], None), None);
+        assert_eq!(resolve(&t, &[], None, None), None);
         // без Message-ID — только по UID
-        let bare = Target { uid: 3, msg_id: None };
-        assert_eq!(resolve(&bare, &[(3, Some("q@w".into()))], None), Some(3));
+        let bare = Target { uid: 3, msg_id: None, validity: None };
+        assert_eq!(resolve(&bare, &[(3, Some("q@w".into()))], None, None), Some(3));
     }
 }

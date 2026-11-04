@@ -360,7 +360,12 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const lastOpened = useRef<MessageSummary | null>(saved?.selected ?? null)
   const viewBase = useRef<ViewContext>({ module: 'mail', folderId: 'INBOX', unified: null, unifiedFilters: NO_FILTERS, filter: 'Все', catFilter: '', query: '', searchScope: 'current', selected: null, scrollTop: 0 })
   const [notifyPolicy, setNotifyPolicy] = useState<'full' | 'sender' | 'none'>('full')
-  useEffect(() => { api.getPolicy().then((p) => setNotifyPolicy(p.notificationContent ?? 'full')).catch(() => undefined) }, [])
+  useEffect(() => {
+    api.getPolicy().then((p) => {
+      setNotifyPolicy(p.notificationContent ?? 'full')
+      if (p.policyError) setNotice(`Политика администратора не принята (${p.policyError}) — включены строгие ограничения: внешние картинки и текст уведомлений скрыты, пароль не запоминается. Сообщите администратору.`)
+    }).catch(() => undefined)
+  }, [])
   // Значок в трее: непрочитанные во «Входящих» всех учётных записей.
   const othersUnseen = Object.values(acc.unread).reduce<number>((a, n) => a + (n ?? 0), 0)
   useEffect(() => { void api.setUnread(inboxUnseen + othersUnseen).catch(() => undefined) }, [inboxUnseen, othersUnseen])

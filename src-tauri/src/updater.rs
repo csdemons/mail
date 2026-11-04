@@ -518,6 +518,72 @@ fn mac_bundle() -> Option<PathBuf> {
     (bundle.extension().is_some_and(|e| e == "app") && exe.parent()?.ends_with("Contents/MacOS")).then_some(bundle)
 }
 
+/// Наибольший распакованный размер программы и число файлов в архиве обновления macOS.
+const MAX_APP_UNPACKED: u64 = 1024 * 1024 * 1024;
+const MAX_APP_ENTRIES: usize = 50_000;
+
+/// Архив обновления macOS (`.app.tar.gz`): ровно одна папка `*.app` верхнего уровня;
+/// только файлы, папки и символьные ссылки; ни абсолютных путей, ни `..`; ссылки — внутри
+/// `.app`; ограничены суммарный размер и число записей. Проверка — до распаковки
+/// системным `tar`, хотя архив и так подписан (SHA-256 из подписанного latest.json).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn check_app_archive(path: &Path) -> std::result::Result<(), String> {
+    use std::path::Component;
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(f));
+    let mut top: Option<std::ffi::OsString> = None;
+    let (mut total, mut count) = (0u64, 0usize);
+    for entry in ar.entries().map_err(|e| format!("архив не читается: {e}"))? {
+        let entry = entry.map_err(|e| format!("архив не читается: {e}"))?;
+        count += 1;
+        if count > MAX_APP_ENTRIES {
+            return Err("слишком много файлов".into());
+        }
+        let p = entry.path().map_err(|e| e.to_string())?.into_owned();
+        let mut depth: Vec<std::ffi::OsString> = Vec::new();
+        for c in p.components() {
+            match c {
+                Component::Normal(n) => depth.push(n.to_os_string()),
+                Component::CurDir => {}
+                _ => return Err(format!("недопустимый путь {}", p.display())),
+            }
+        }
+        let Some(first) = depth.first() else { continue };
+        if !Path::new(first).extension().is_some_and(|e| e == "app") {
+            return Err(format!("файл вне папки программы: {}", p.display()));
+        }
+        match &top {
+            None => top = Some(first.clone()),
+            Some(t) if t != first => return Err("в архиве больше одной программы".into()),
+            _ => {}
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_symlink() {
+            let target = entry.link_name().map_err(|e| e.to_string())?.ok_or("ссылка без цели")?.into_owned();
+            // Цель относительно папки, где лежит ссылка, не выходит за пределы .app.
+            let mut at: i64 = depth.len() as i64 - 1;
+            for c in target.components() {
+                match c {
+                    Component::Normal(_) => at += 1,
+                    Component::CurDir => {}
+                    Component::ParentDir => at -= 1,
+                    _ => return Err(format!("ссылка наружу: {} → {}", p.display(), target.display())),
+                }
+                if at < 1 {
+                    return Err(format!("ссылка наружу: {} → {}", p.display(), target.display()));
+                }
+            }
+        } else if !(kind.is_file() || kind.is_dir()) {
+            return Err(format!("недопустимый тип записи: {}", p.display()));
+        }
+        total = total.saturating_add(entry.header().size().unwrap_or(0));
+        if total > MAX_APP_UNPACKED {
+            return Err("распакованная программа слишком большая".into());
+        }
+    }
+    top.map(|_| ()).ok_or_else(|| "в архиве нет программы (.app)".into())
+}
+
 /// macOS: архив с новой `.app` распаковывается рядом со скачанным файлом, затем
 /// старая программа заменяется новой (переименованием в той же папке) и запускается.
 fn install_mac(file: &Path) -> Result<InstallResult> {
@@ -526,6 +592,10 @@ fn install_mac(file: &Path) -> Result<InstallResult> {
         let _ = std::process::Command::new("/usr/bin/open").arg("-R").arg(file).spawn();
         Ok(InstallResult { restarting: false, manual: Some(format!("{why}. Архив с новой версией открыт в Finder: распакуйте его и перетащите программу в «Программы». Файл: {}", file.display())) })
     };
+    // Состав архива проверяется до распаковки: одна папка .app, без выхода за её пределы.
+    if let Err(e) = check_app_archive(file) {
+        return reveal(format!("Архив обновления отклонён: {e}"));
+    }
     let dir = file.parent().ok_or_else(|| AppError::Other("Каталог загрузки неизвестен".into()))?.join("unpacked");
     std::fs::create_dir(&dir)?;
     let ok = std::process::Command::new("/usr/bin/tar").arg("-xzf").arg(file).arg("-C").arg(&dir).status().map(|s| s.success()).unwrap_or(false);
@@ -610,6 +680,47 @@ mod tests {
         assert!(!is_newer("0.3.6", "0.3.6~astra1.7"));
         assert!(is_newer("0.4", "0.3.99"));
         assert!(!is_newer("0.3.5", "0.3.6"));
+    }
+
+    #[test]
+    fn mac_update_archive_is_checked_before_unpacking() {
+        fn archive(entries: &[(&str, Option<&str>)]) -> std::path::PathBuf {
+            let path = std::env::temp_dir().join(format!("mac-upd-{}-{}.tar.gz", std::process::id(), entries.len() * 31 + entries.first().map_or(0, |e| e.0.len())));
+            let gz = flate2::write::GzEncoder::new(std::fs::File::create(&path).unwrap(), flate2::Compression::fast());
+            let mut b = tar::Builder::new(gz);
+            for (name, link) in entries {
+                let mut h = tar::Header::new_gnu();
+                match link {
+                    Some(t) => {
+                        h.set_entry_type(tar::EntryType::Symlink);
+                        h.set_size(0);
+                        h.set_cksum();
+                        b.append_link(&mut h, name, t).unwrap();
+                    }
+                    None => {
+                        h.set_size(2);
+                        h.set_mode(0o644);
+                        h.set_cksum();
+                        b.append_data(&mut h, name, &b"ok"[..]).unwrap();
+                    }
+                }
+            }
+            b.into_inner().unwrap().finish().unwrap();
+            path
+        }
+        let good = archive(&[("RRCKI Mail.app/Contents/Info.plist", None), ("RRCKI Mail.app/Contents/MacOS/rrcki-mail", None), ("RRCKI Mail.app/Contents/Frameworks/Current", Some("A"))]);
+        assert_eq!(check_app_archive(&good), Ok(()));
+        let outside = archive(&[("RRCKI Mail.app/Contents/Info.plist", None), ("evil.sh", None)]);
+        assert!(check_app_archive(&outside).is_err());
+        let link_out = archive(&[("RRCKI Mail.app/Contents/Info.plist", None), ("RRCKI Mail.app/x", Some("../../etc"))]);
+        assert!(check_app_archive(&link_out).is_err());
+        let link_abs = archive(&[("RRCKI Mail.app/Contents/Info.plist", None), ("RRCKI Mail.app/y", Some("/etc/passwd"))]);
+        assert!(check_app_archive(&link_abs).is_err());
+        let two = archive(&[("A.app/f", None), ("B.app/f", None)]);
+        assert!(check_app_archive(&two).is_err());
+        for p in [good, outside, link_out, link_abs, two] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     #[test]

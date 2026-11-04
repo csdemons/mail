@@ -88,7 +88,7 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
         onLoggedIn(result)
       } catch (err) {
         const text = errorText(err)
-        if (text.includes('не найден автоматически')) setShowServer(true)
+        if (text.includes('не найден автоматически') || text.includes('укажите его адрес вручную')) setShowServer(true)
         setError(text)
       } finally {
         setBusy(false)

@@ -1868,11 +1868,12 @@ pub async fn locate(conn: &mut Connection, folder: &str, targets: &[crate::offli
     if targets.is_empty() {
         return Ok(Vec::new());
     }
-    match conn.ensure_selected(folder).await {
-        Ok(()) => {}
+    // Свежий SELECT: нужен текущий UIDVALIDITY — сравнить с тем, что был при постановке в очередь.
+    let validity = match conn.select(folder).await {
+        Ok(mb) => mb.uid_validity,
         Err(AppError::NotFound) => return Ok(vec![None; targets.len()]),
         Err(e) => return Err(e),
-    }
+    };
     let uids: Vec<u32> = targets.iter().map(|t| t.uid).filter(|u| *u > 0).collect();
     let fetches: Vec<Fetch> = if uids.is_empty() {
         Vec::new()
@@ -1889,7 +1890,7 @@ pub async fn locate(conn: &mut Connection, folder: &str, targets: &[crate::offli
         .collect();
     let mut out = Vec::with_capacity(targets.len());
     for t in targets {
-        let direct = crate::offline::resolve(t, &found, None);
+        let direct = crate::offline::resolve(t, &found, None, validity);
         if direct.is_some() {
             out.push(direct);
             continue;

@@ -9,7 +9,8 @@
 //!   "rememberPassword": true,            // состояние галочки «Запомнить пароль» по умолчанию
 //!   "allowRememberPassword": true,       // false — запоминать пароль нельзя
 //!   "shareLinkDays": 30,                 // срок публичных ссылок «Отправить ссылкой»; 0 — без срока
-//!   "notificationContent": "full"        // "full" | "sender" | "none" — что видно в уведомлениях ОС
+//!   "notificationContent": "full",       // "full" | "sender" | "none" — что видно в уведомлениях ОС
+//!   "exchangeHosts": ["rrcki.ru"]        // серверы Exchange вне домена почты, которые Autodiscover может предложить
 //! }
 //! ```
 //! Реестр (HKLM\SOFTWARE\Policies\RRCKI Mail): RemoteImages (REG_SZ), InternalNetworks
@@ -60,6 +61,13 @@ pub struct Policy {
     /// Наибольший срок хранения писем на компьютере, дней (0 — только индекс заголовков).
     pub offline_days: Option<u32>,
     pub notification_content: NotificationContent,
+    /// Серверы Exchange (имя или домен), которым можно доверить пароль, если Autodiscover
+    /// предложил сервер вне домена почты.
+    pub exchange_hosts: Vec<String>,
+    /// Файл политики есть, но прочитать его нельзя или он доступен на запись не только
+    /// администратору: применены строгие ограничения (текст — для показа).
+    #[serde(skip)]
+    pub broken: Option<String>,
 }
 
 /// То, что нужно интерфейсу.
@@ -73,6 +81,8 @@ pub struct UiPolicy {
     pub local_store: bool,
     pub max_offline_days: u32,
     pub notification_content: NotificationContent,
+    /// Политика администратора повреждена — применены строгие ограничения.
+    pub policy_error: Option<String>,
 }
 
 impl Policy {
@@ -86,6 +96,7 @@ impl Policy {
             local_store: self.local_store(),
             max_offline_days: self.max_offline_days(),
             notification_content: self.notification_content,
+            policy_error: self.broken.clone(),
         }
     }
 
@@ -125,12 +136,46 @@ pub fn admin_dir() -> Option<PathBuf> {
     }
 }
 
+/// Строгие ограничения, когда политика администратора есть, но ей нельзя доверять
+/// (повреждена, не читается, её может изменить обычный пользователь): лучше закрыть
+/// лишнее, чем молча вернуться к настройкам по умолчанию.
+pub fn strict(why: String) -> Policy {
+    Policy {
+        remote_images: RemoteImages::Off,
+        remember_password: Some(false),
+        allow_remember_password: Some(false),
+        share_link_days: Some(7),
+        notification_content: NotificationContent::None,
+        broken: Some(why),
+        ..Policy::default()
+    }
+}
+
+/// Файл политики: нет файла — настройки по умолчанию; файл есть, но плохой — строгие.
+pub fn from_file(path: &std::path::Path) -> Policy {
+    let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Policy::default(),
+        Err(e) => return strict(format!("файл {} не читается: {e}", path.display())),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(m) = std::fs::metadata(path) {
+            if m.mode() & 0o022 != 0 || m.uid() != 0 {
+                return strict(format!("файл {} может изменить не только администратор (нужны владелец root и права 644)", path.display()));
+            }
+        }
+    }
+    match serde_json::from_slice::<Policy>(&raw) {
+        Ok(p) => p,
+        Err(e) => strict(format!("ошибка в файле {}: {e}", path.display())),
+    }
+}
+
 pub fn load() -> Policy {
     #[allow(unused_mut)]
-    let mut p: Policy = admin_dir()
-        .and_then(|d| std::fs::read(d.join("policy.json")).ok())
-        .and_then(|raw| serde_json::from_slice(&raw).ok())
-        .unwrap_or_default();
+    let mut p: Policy = admin_dir().map(|d| from_file(&d.join("policy.json"))).unwrap_or_default();
     #[cfg(windows)]
     {
         if let Some(v) = registry::string("RemoteImages") {
@@ -158,6 +203,9 @@ pub fn load() -> Policy {
         }
         if let Some(v) = registry::dword("OfflineDays") {
             p.offline_days = Some(v);
+        }
+        if let Some(v) = registry::string("ExchangeHosts") {
+            p.exchange_hosts = v.split([',', ';', ' ']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
         }
         if let Some(v) = registry::string("NotificationContent") {
             match v.trim().to_ascii_lowercase().as_str() {
@@ -238,6 +286,38 @@ pub mod registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn broken_or_writable_policy_is_strict_missing_is_default() {
+        let dir = std::env::temp_dir().join(format!("policy-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = from_file(&dir.join("nope.json"));
+        assert!(missing.broken.is_none() && missing.remote_images == RemoteImages::Direct);
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, b"{ \"remoteImages\": \"off\", ").unwrap();
+        let p = from_file(&bad);
+        assert!(p.broken.is_some());
+        assert_eq!(p.remote_images, RemoteImages::Off);
+        assert_eq!(p.notification_content, NotificationContent::None);
+        assert!(!p.ui().allow_remember_password && p.ui().policy_error.is_some());
+        // Файл обычного пользователя (в тестах — не root) не считается политикой администратора.
+        let good = dir.join("good.json");
+        std::fs::write(&good, br#"{"remoteImages": "proxy", "exchangeHosts": ["rrcki.ru"]}"#).unwrap();
+        let p = from_file(&good);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if std::fs::metadata(&good).unwrap().uid() != 0 {
+                assert!(p.broken.is_some() && p.remote_images == RemoteImages::Off);
+            } else {
+                assert!(p.broken.is_none() && p.remote_images == RemoteImages::Proxy && p.exchange_hosts == ["rrcki.ru"]);
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o666)).unwrap();
+                assert!(from_file(&good).broken.is_some(), "world-writable policy must not be trusted");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn notification_content_policy() {

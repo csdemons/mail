@@ -35,6 +35,10 @@ keyring = { version = "3", features = ["windows-native", "sync-secret-service", 
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-native-tls", "hostname"] }
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "charset", "json", "stream", "multipart"] }
 bytes = "1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+http = "1"
 roxmltree = "0.20"
 ical = { version = "0.11", default-features = false, features = ["ical", "vcard"] }
 rrule = "0.13"
@@ -43,6 +47,8 @@ mime_guess = "2"
 ammonia = "4"
 percent-encoding = "2"
 sha2 = "0.10"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
 hmac = "0.12"
 md4 = "0.10"
 md-5 = "0.10"

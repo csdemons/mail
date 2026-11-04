@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use chrono::{DateTime, TimeZone, Utc};
-use reqwest::StatusCode;
+use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -160,7 +160,8 @@ struct EwsFolder {
 }
 
 pub struct EwsSession {
-    http: reqwest::Client,
+    /// Своё соединение (не пул): вход NTLM действует на сокете, где он прошёл.
+    conn: Option<Pinned>,
     url: Url,
     login: String,
     password: String,
@@ -174,17 +175,112 @@ pub struct EwsSession {
     map: Shared,
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(120))
-        .connect_timeout(Duration::from_secs(15))
-        .pool_max_idle_per_host(1)
-        .http1_only()
-        .tls_info(true)
-        .user_agent(concat!("AtomMail/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| AppError::Other(format!("HTTP-клиент: {e}")))
+// ---------------------------------------------------------------- соединение
+
+/// Одно соединение HTTP/1.1 поверх TLS. Вход NTLM (как и в Outlook) привязан к TCP-
+/// соединению: IIS помнит его на сокете. Пул соединений общего HTTP-клиента мог
+/// отправить третий шаг входа по другому соединению — тогда вход «не проходил»
+/// при верном пароле. Здесь все запросы сеанса идут по одному соединению.
+struct Pinned {
+    sender: hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>>,
+    /// Сертификат сервера (DER) — для привязки входа к TLS-каналу.
+    cert: Option<Vec<u8>>,
+    used: std::time::Instant,
+}
+
+/// Ответ сервера целиком (с ограничением размера).
+struct Resp {
+    status: StatusCode,
+    headers: http::HeaderMap,
+    body: Vec<u8>,
+}
+
+impl Resp {
+    fn text(self) -> String {
+        match String::from_utf8(self.body) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        }
+    }
+}
+
+/// Простаивающее соединение IIS закрывает (по умолчанию через 2 минуты) — раньше этого
+/// открываем новое сами, а не узнаём об обрыве посреди запроса.
+const IDLE_REOPEN: Duration = Duration::from_secs(50);
+
+fn tls_error(e: &dyn std::error::Error, host: &str) -> AppError {
+    let chain = error_chain(e);
+    let low = chain.to_lowercase();
+    if low.contains("certificate") || low.contains("сертификат") || low.contains("unknownissuer") || low.contains("cert_") || low.contains("self signed") || low.contains("self-signed") || low.contains("untrusted") {
+        AppError::Tls(format!("сертификат сервера {host} не принят системой ({chain}). Если сервер использует сертификат внутреннего центра сертификации организации, его нужно установить в доверенные корневые сертификаты компьютера"))
+    } else {
+        AppError::Tls(format!("{host}: {chain}"))
+    }
+}
+
+async fn open_pinned(url: &Url) -> Result<Pinned> {
+    let host = url.host_str().unwrap_or_default().to_string();
+    let port = url.port_or_known_default().unwrap_or(443);
+    let tcp = tokio::time::timeout(Duration::from_secs(15), tokio::net::TcpStream::connect((host.as_str(), port)))
+        .await
+        .map_err(|_| AppError::Timeout)?
+        .map_err(|e| AppError::Unreachable(host.clone(), e.to_string()))?;
+    let _ = tcp.set_nodelay(true);
+    let connector = native_tls::TlsConnector::builder().build().map_err(|e| tls_error(&e, &host))?;
+    let tls = tokio::time::timeout(Duration::from_secs(15), tokio_native_tls::TlsConnector::from(connector).connect(&host, tcp))
+        .await
+        .map_err(|_| AppError::Timeout)?
+        .map_err(|e| tls_error(&e, &host))?;
+    let cert = tls.get_ref().peer_certificate().ok().flatten().and_then(|c| c.to_der().ok());
+    let (sender, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tls))
+        .await
+        .map_err(|e| AppError::Other(format!("Exchange: {}", error_chain(&e))))?;
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    Ok(Pinned { sender, cert, used: std::time::Instant::now() })
+}
+
+/// POST по соединению; тело ответа — не больше `limit` байт.
+async fn send_pinned(p: &mut Pinned, url: &Url, body: &str, auth: Option<&str>, limit: usize) -> Result<Resp> {
+    use http_body_util::BodyExt as _;
+    let host = match (url.host_str(), url.port()) {
+        (Some(h), Some(port)) => format!("{h}:{port}"),
+        (Some(h), None) => h.to_string(),
+        _ => String::new(),
+    };
+    let path = match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().to_string(),
+    };
+    let mut req = http::Request::post(path)
+        .header(http::header::HOST, host)
+        .header(http::header::CONTENT_TYPE, "text/xml; charset=utf-8")
+        .header(http::header::CONTENT_LENGTH, body.len())
+        .header(http::header::USER_AGENT, concat!("AtomMail/", env!("CARGO_PKG_VERSION")));
+    if let Some(a) = auth {
+        req = req.header(http::header::AUTHORIZATION, a);
+    }
+    let req = req.body(http_body_util::Full::new(bytes::Bytes::from(body.to_owned()))).map_err(|e| AppError::Other(e.to_string()))?;
+    let work = async {
+        p.sender.ready().await.map_err(|_| AppError::ConnectionLost)?;
+        let resp = p.sender.send_request(req).await.map_err(|_| AppError::ConnectionLost)?;
+        let (parts, b) = resp.into_parts();
+        if parts.headers.get(http::header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()).is_some_and(|n| n > limit as u64) {
+            return Err(too_large(limit));
+        }
+        let collected = http_body_util::Limited::new(b, limit).collect().await.map_err(|e| {
+            if e.downcast_ref::<http_body_util::LengthLimitError>().is_some() { too_large(limit) } else { AppError::ConnectionLost }
+        })?;
+        Ok(Resp { status: parts.status, headers: parts.headers, body: collected.to_bytes().to_vec() })
+    };
+    let out = tokio::time::timeout(Duration::from_secs(120), work).await.map_err(|_| AppError::Timeout)?;
+    p.used = std::time::Instant::now();
+    out
+}
+
+fn too_large(max: usize) -> AppError {
+    AppError::Other(format!("Ответ сервера слишком большой (больше {} МБ) — загрузка прервана", max / (1024 * 1024)))
 }
 
 /// Адрес EWS из того, что ввёл пользователь: `mail.corp.ru` → `https://mail.corp.ru/EWS/Exchange.asmx`.
@@ -214,8 +310,8 @@ fn envelope(version: &str, body: &str) -> String {
     )
 }
 
-fn www_auth(resp: &reqwest::Response) -> Vec<String> {
-    resp.headers().get_all("www-authenticate").iter().filter_map(|v| v.to_str().ok().map(str::to_string)).collect()
+fn www_auth(resp: &Resp) -> Vec<String> {
+    resp.headers.get_all("www-authenticate").iter().filter_map(|v| v.to_str().ok().map(str::to_string)).collect()
 }
 
 fn ntlm_token(headers: &[String], scheme: &str) -> Option<Vec<u8>> {
@@ -228,7 +324,7 @@ fn ntlm_token(headers: &[String], scheme: &str) -> Option<Vec<u8>> {
     })
 }
 
-/// Полный текст ошибки запроса (с причинами): reqwest прячет главное в `source()`.
+/// Полный текст ошибки (с причинами): главное часто спрятано в `source()`.
 fn error_chain(e: &dyn std::error::Error) -> String {
     let mut out = e.to_string();
     let mut cur = e.source();
@@ -243,48 +339,47 @@ fn error_chain(e: &dyn std::error::Error) -> String {
     out
 }
 
-/// Ошибка запроса к Exchange для пользователя. Непринятый сертификат — не «нет связи»:
-/// иначе программа ушла бы в работу без сети, а пользователь искал бы проблему в сети.
-fn send_error(e: &reqwest::Error, url: &Url) -> AppError {
-    let host = url.host_str().unwrap_or_default().to_string();
-    let chain = error_chain(e);
-    let low = chain.to_lowercase();
-    if low.contains("certificate") || low.contains("сертификат") || low.contains("unknownissuer") || low.contains("cert_") || low.contains("self signed") || low.contains("self-signed") {
-        AppError::Tls(format!("сертификат сервера {host} не принят системой ({chain}). Если сервер использует сертификат внутреннего центра сертификации организации, его нужно установить в доверенные корневые сертификаты компьютера"))
-    } else if e.is_timeout() {
-        AppError::Timeout
-    } else if e.is_connect() {
-        AppError::Unreachable(host, chain)
-    } else {
-        AppError::ConnectionLost
-    }
-}
-
 impl EwsSession {
-    async fn http_send(&self, body: &str, auth: Option<String>) -> Result<reqwest::Response> {
-        let mut req = self.http.post(self.url.clone()).header("Content-Type", "text/xml; charset=utf-8").body(body.to_string());
-        if let Some(a) = auth {
-            req = req.header("Authorization", a);
+    /// Соединение сеанса: открыть, если его нет, сервер его закрыл или оно долго
+    /// простаивало. Новое соединение — без входа NTLM.
+    async fn ensure_conn(&mut self) -> Result<()> {
+        let stale = self.conn.as_ref().is_none_or(|p| p.sender.is_closed() || p.used.elapsed() > IDLE_REOPEN);
+        if stale {
+            self.conn = None;
+            self.authed = false;
+            self.conn = Some(open_pinned(&self.url).await?);
         }
-        req.send().await.map_err(|e| send_error(&e, &self.url))
+        Ok(())
+    }
+
+    async fn http_send(&mut self, body: &str, auth: Option<String>, limit: usize) -> Result<Resp> {
+        self.ensure_conn().await?;
+        let p = self.conn.as_mut().ok_or(AppError::ConnectionLost)?;
+        let r = send_pinned(p, &self.url, body, auth.as_deref(), limit).await;
+        if r.is_err() {
+            // Соединение в неизвестном состоянии — следующий запрос откроет новое.
+            self.conn = None;
+            self.authed = false;
+        }
+        r
     }
 
     /// Выполнить запрос SOAP, при необходимости войти (NTLM или Basic).
     async fn post_raw(&mut self, body: &str, limit: usize) -> Result<String> {
         let mut tried_basic = false;
         for _ in 0..4 {
+            self.ensure_conn().await?;
             let resp = match self.auth {
                 Auth::Basic => {
                     let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", self.login, self.password));
-                    self.http_send(body, Some(format!("Basic {token}"))).await?
+                    self.http_send(body, Some(format!("Basic {token}")), limit).await?
                 }
-                Auth::Ntlm(scheme) if !self.authed => self.ntlm(body, scheme).await?,
-                _ => self.http_send(body, None).await?,
+                Auth::Ntlm(scheme) if !self.authed => self.ntlm(body, scheme, limit).await?,
+                _ => self.http_send(body, None, limit).await?,
             };
-            match resp.status() {
+            match resp.status {
                 StatusCode::UNAUTHORIZED => {
                     let offered = www_auth(&resp);
-                    let _ = crate::netio::read_limited(resp, crate::netio::SMALL_LIMIT).await;
                     let has = |s: &str| offered.iter().any(|h| h.split_whitespace().next().is_some_and(|x| x.eq_ignore_ascii_case(s)));
                     match self.auth {
                         Auth::Unknown => {
@@ -312,8 +407,8 @@ impl EwsSession {
                     if matches!(self.auth, Auth::Ntlm(_)) {
                         self.authed = true;
                     }
-                    let ok = resp.status() == StatusCode::OK;
-                    let text = crate::netio::text_limited(resp, limit).await?;
+                    let ok = resp.status == StatusCode::OK;
+                    let text = resp.text();
                     if !ok && !text.contains("Envelope") {
                         return Err(AppError::Other("Сервер Exchange ответил ошибкой (HTTP 500)".into()));
                     }
@@ -329,34 +424,36 @@ impl EwsSession {
     }
 
     /// Вход NTLM: NEGOTIATE → CHALLENGE → AUTHENTICATE на одном соединении.
-    async fn ntlm(&mut self, body: &str, scheme: &'static str) -> Result<reqwest::Response> {
+    async fn ntlm(&mut self, body: &str, scheme: &'static str, limit: usize) -> Result<Resp> {
         let neg = crate::ntlm::negotiate();
         let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
         // Первый шаг — без тела: большое письмо не передаётся дважды.
-        let first = self
-            .http
-            .post(self.url.clone())
-            .header("Content-Type", "text/xml; charset=utf-8")
-            .header("Authorization", format!("{scheme} {}", b64(&neg)))
-            .header(reqwest::header::CONTENT_LENGTH, "0").body("")
-            .send()
-            .await
-            .map_err(|e| send_error(&e, &self.url))?;
-        let cert = first.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()).map(<[u8]>::to_vec);
-        let headers = www_auth(&first);
-        let status = first.status();
-        let _ = crate::netio::read_limited(first, crate::netio::SMALL_LIMIT).await;
+        let first = self.http_send("", Some(format!("{scheme} {}", b64(&neg))), crate::netio::SMALL_LIMIT).await?;
         // Не 401 с вызовом NTLM — это не отказ в пароле, а ответ сервера, который надо показать.
-        if status != StatusCode::UNAUTHORIZED {
-            return Err(AppError::Other(format!("Сервер Exchange ответил HTTP {status} на начало входа NTLM")));
+        if first.status != StatusCode::UNAUTHORIZED {
+            return Err(AppError::Other(format!("Сервер Exchange ответил HTTP {} на начало входа NTLM", first.status)));
         }
-        let challenge = ntlm_token(&headers, scheme).and_then(|t| crate::ntlm::parse_challenge(&t)).ok_or(AppError::AuthFailed)?;
+        let closes = first.headers.get(http::header::CONNECTION).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("close"));
+        let challenge = ntlm_token(&www_auth(&first), scheme).and_then(|t| crate::ntlm::parse_challenge(&t)).ok_or(AppError::AuthFailed)?;
+        if closes {
+            return Err(AppError::Other("Сервер Exchange закрывает соединение посреди входа NTLM — вход по NTLM через этот адрес невозможен (возможно, мешает прокси)".into()));
+        }
+        let cert = self.conn.as_ref().and_then(|p| p.cert.clone());
         let (user, domain) = crate::ntlm::split_login(&self.login);
         let mut cc = [0u8; 8];
         getrandom::getrandom(&mut cc).map_err(|e| AppError::Other(e.to_string()))?;
         let spn = format!("HTTP/{}", self.url.host_str().unwrap_or_default());
         let auth = crate::ntlm::authenticate(&challenge, &neg, &user, &domain, &self.password, "", cert.as_deref(), Some(&spn), cc, crate::ntlm::filetime_now());
-        self.http_send(body, Some(format!("{scheme} {}", b64(&auth)))).await
+        // Третий шаг — по тому же соединению (если сервер его закрыл, новое без вызова бесполезно).
+        if self.conn.as_ref().is_none_or(|p| p.sender.is_closed()) {
+            return Err(AppError::ConnectionLost);
+        }
+        let p = self.conn.as_mut().ok_or(AppError::ConnectionLost)?;
+        let r = send_pinned(p, &self.url, body, Some(&format!("{scheme} {}", b64(&auth))), limit).await;
+        if r.is_err() {
+            self.conn = None;
+        }
+        r
     }
 
     /// Запрос EWS: тело операции без конверта; разобранный ответ.
@@ -531,7 +628,7 @@ impl EwsSession {
 pub async fn connect(url: &str, login: &str, password: &str, key: &str) -> Result<EwsSession> {
     let url = normalize_url(url)?;
     let mut s = EwsSession {
-        http: http_client()?,
+        conn: None,
         url,
         login: login.to_string(),
         password: password.to_string(),
@@ -1771,7 +1868,7 @@ pub async fn autodiscover(email: &str, login: &str, password: &str) -> Result<St
     for c in candidates {
         let Ok(url) = Url::parse(&c) else { continue };
         let mut s = EwsSession {
-            http: http_client()?,
+            conn: None,
             url,
             login: login.to_string(),
             password: password.to_string(),
@@ -1786,6 +1883,21 @@ pub async fn autodiscover(email: &str, login: &str, password: &str) -> Result<St
         match tokio::time::timeout(Duration::from_secs(25), s.post_raw(&body, crate::netio::SMALL_LIMIT)).await {
             Ok(Ok(text)) => {
                 if let Some(url) = ews_url_of(&text) {
+                    // Пароль уйдёт по этому адресу — только в домене почты или на сервер,
+                    // который администратор разрешил в политике (exchangeHosts).
+                    let host = Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_lowercase)).unwrap_or_default();
+                    #[allow(unused_mut)]
+                    let mut allowed = crate::policy::load().exchange_hosts;
+                    // E2E (отладочная сборка): тестовый сервер на localhost.
+                    #[cfg(debug_assertions)]
+                    if let Ok(h) = std::env::var("RRCKI_E2E_EXCHANGE_HOSTS") {
+                        allowed.push(h);
+                    }
+                    if !trusted_ews_host(&host, &domain, &allowed) {
+                        return Err(AppError::Other(format!(
+                            "Autodiscover предлагает сервер {host} — он не в домене почты {domain}. Если это действительно ваш сервер Exchange, укажите его адрес вручную"
+                        )));
+                    }
                     return Ok(url);
                 }
             }
@@ -1822,6 +1934,17 @@ fn cert_names(der: &[u8]) -> Vec<String> {
     out
 }
 
+/// Сертификат узла без проверки — только для отчёта диагностики: соединение
+/// закрывается сразу после рукопожатия TLS, данные по нему не передаются.
+async fn peer_cert_unverified(host: &str, port: u16) -> Option<Vec<u8>> {
+    let tcp = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect((host, port))).await.ok()?.ok()?;
+    let connector = native_tls::TlsConnector::builder().danger_accept_invalid_certs(true).danger_accept_invalid_hostnames(true).build().ok()?;
+    let tls = tokio::time::timeout(Duration::from_secs(10), tokio_native_tls::TlsConnector::from(connector).connect(host, tcp)).await.ok()?.ok()?;
+    let der = tls.get_ref().peer_certificate().ok()??.to_der().ok();
+    drop(tls);
+    der
+}
+
 fn ntlm_info(ch: &crate::ntlm::Challenge) -> String {
     let mut parts = vec![format!("флаги {:#010x}", ch.flags)];
     for (id, v) in crate::ntlm::av_list(&ch.target_info) {
@@ -1839,10 +1962,10 @@ fn ntlm_info(ch: &crate::ntlm::Challenge) -> String {
     parts.join(", ")
 }
 
-fn header_lines(resp: &reqwest::Response) -> String {
+fn header_lines(resp: &Resp) -> String {
     let keep = ["www-authenticate", "server", "x-feserver", "x-beserver", "x-owa-version", "x-aspnet-version", "x-powered-by", "connection", "location", "persistent-auth", "request-id", "x-diaginfo"];
-    let mut out = format!("  HTTP {} ({:?})\n", resp.status(), resp.version());
-    for (k, v) in resp.headers() {
+    let mut out = format!("  HTTP {}\n", resp.status);
+    for (k, v) in &resp.headers {
         if keep.contains(&k.as_str()) {
             out.push_str(&format!("  {k}: {}\n", v.to_str().unwrap_or("?")));
         }
@@ -1901,20 +2024,23 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
     }
     // 3. TLS и первый ответ (без входа)
     r.push_str("\n## TLS и запрос без входа\n");
-    let Ok(client) = http_client() else { return r };
-    let anon = client.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header(reqwest::header::CONTENT_LENGTH, "0").body("").send().await;
-    let offered = match anon {
-        Ok(resp) => {
-            if let Some(cert) = resp.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()) {
+    let anon = match open_pinned(&url).await {
+        Ok(mut p) => {
+            if let Some(cert) = &p.cert {
                 use sha2::Digest as _;
                 let names = cert_names(cert);
                 let fp: String = sha2::Sha256::digest(cert).iter().map(|b| format!("{b:02X}")).collect();
                 r.push_str(&format!("сертификат принят системой; CN: {}; SHA-256 {}…\n", names.join(" ← "), &fp[..16]));
             }
+            send_pinned(&mut p, &url, "", None, crate::netio::SMALL_LIMIT).await
+        }
+        Err(e) => Err(e),
+    };
+    let offered = match anon {
+        Ok(resp) => {
             r.push_str(&header_lines(&resp));
             let offered = www_auth(&resp);
-            let st = resp.status();
-            let _ = crate::netio::read_limited(resp, crate::netio::SMALL_LIMIT).await;
+            let st = resp.status;
             if st.is_redirection() {
                 r.push_str("сервер перенаправляет — нужен точный адрес EWS (обычно https://сервер/EWS/Exchange.asmx)\n");
                 return r;
@@ -1925,14 +2051,13 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
             offered
         }
         Err(e) => {
-            r.push_str(&format!("ошибка: {}\n", error_chain(&e)));
-            // Сертификат не принят: посмотреть, какой он (без отправки пароля).
-            if let Ok(insecure) = reqwest::Client::builder().danger_accept_invalid_certs(true).http1_only().tls_info(true).timeout(Duration::from_secs(20)).build() {
-                if let Ok(resp) = insecure.post(url.clone()).header(reqwest::header::CONTENT_LENGTH, "0").body("").send().await {
-                    if let Some(cert) = resp.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()) {
-                        r.push_str(&format!("сертификат сервера (не принят системой): CN {}\n", cert_names(cert).join(" ← ")));
-                        r.push_str("— если это сертификат внутреннего центра сертификации, установите корневой сертификат организации в доверенные на этом компьютере\n");
-                    }
+            r.push_str(&format!("ошибка: {e}\n"));
+            // Сертификат не принят: посмотреть, какой он. Только рукопожатие TLS —
+            // ни HTTP-запроса, ни логина с паролем этому узлу не отправляется.
+            if matches!(e, AppError::Tls(_)) {
+                if let Some(cert) = peer_cert_unverified(&host, url.port_or_known_default().unwrap_or(443)).await {
+                    r.push_str(&format!("сертификат сервера (не принят системой): CN {}\n", cert_names(&cert).join(" ← ")));
+                    r.push_str("— если это сертификат внутреннего центра сертификации, установите корневой сертификат организации в доверенные на этом компьютере\n");
                 }
             }
             return r;
@@ -1954,25 +2079,30 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
     }
     for (title, sch, cbt) in tries {
         r.push_str(&format!("\n## Вход: {title}\n"));
-        let Ok(c) = http_client() else { continue };
+        // Каждый способ — на своём новом соединении (вход NTLM привязан к соединению).
+        let mut c = match open_pinned(&url).await {
+            Ok(c) => c,
+            Err(e) => {
+                r.push_str(&format!("ошибка: {e}\n"));
+                continue;
+            }
+        };
         let resp = if sch == "Basic" {
             let token = base64::engine::general_purpose::STANDARD.encode(format!("{login}:{password}"));
-            c.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header("Authorization", format!("Basic {token}")).body(probe.clone()).send().await
+            send_pinned(&mut c, &url, &probe, Some(&format!("Basic {token}")), crate::netio::SMALL_LIMIT).await
         } else {
             let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
             let neg = crate::ntlm::negotiate();
-            let first = match c.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header("Authorization", format!("{sch} {}", b64(&neg))).header(reqwest::header::CONTENT_LENGTH, "0").body("").send().await {
+            let first = match send_pinned(&mut c, &url, "", Some(&format!("{sch} {}", b64(&neg))), crate::netio::SMALL_LIMIT).await {
                 Ok(f) => f,
                 Err(e) => {
-                    r.push_str(&format!("ошибка: {}\n", error_chain(&e)));
+                    r.push_str(&format!("ошибка: {e}\n"));
                     continue;
                 }
             };
-            let cert = first.extensions().get::<reqwest::tls::TlsInfo>().and_then(|i| i.peer_certificate()).map(<[u8]>::to_vec);
             let hs = www_auth(&first);
-            let closes = first.headers().get("connection").and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("close"));
-            r.push_str(&format!("шаг 1 (NEGOTIATE): HTTP {}{}\n", first.status(), if closes { ", сервер закрывает соединение — NTLM так не пройдёт" } else { "" }));
-            let _ = crate::netio::read_limited(first, crate::netio::SMALL_LIMIT).await;
+            let closes = first.headers.get("connection").and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("close"));
+            r.push_str(&format!("шаг 1 (NEGOTIATE): HTTP {}{}\n", first.status, if closes { ", сервер закрывает соединение — NTLM так не пройдёт" } else { "" }));
             let Some(ch) = ntlm_token(&hs, sch).and_then(|t| crate::ntlm::parse_challenge(&t)) else {
                 r.push_str("сервер не прислал вызов NTLM (CHALLENGE)\n");
                 continue;
@@ -1981,15 +2111,16 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
             let mut cc = [0u8; 8];
             let _ = getrandom::getrandom(&mut cc);
             let spn = format!("HTTP/{host}");
+            let cert = c.cert.clone();
             let auth = crate::ntlm::authenticate(&ch, &neg, &user, &domain, password, "", if cbt { cert.as_deref() } else { None }, Some(&spn), cc, crate::ntlm::filetime_now());
-            c.post(url.clone()).header("Content-Type", "text/xml; charset=utf-8").header("Authorization", format!("{sch} {}", b64(&auth))).body(probe.clone()).send().await
+            send_pinned(&mut c, &url, &probe, Some(&format!("{sch} {}", b64(&auth))), crate::netio::SMALL_LIMIT).await
         };
         match resp {
-            Err(e) => r.push_str(&format!("ошибка: {}\n", error_chain(&e))),
+            Err(e) => r.push_str(&format!("ошибка: {e}\n")),
             Ok(resp) => {
-                let st = resp.status();
+                let st = resp.status;
                 r.push_str(&header_lines(&resp));
-                let text = crate::netio::text_limited(resp, crate::netio::SMALL_LIMIT).await.unwrap_or_default();
+                let text = resp.text();
                 if st == StatusCode::UNAUTHORIZED {
                     r.push_str("вход отклонён\n");
                     continue;
@@ -2021,6 +2152,20 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
     r
 }
 
+/// Сервер EWS из Autodiscover: в домене почты (`mail.corp.ru` для `@corp.ru`) или в
+/// списке администратора — точное имя или домен (`rrcki.ru` разрешает `mail.rrcki.ru`).
+pub fn trusted_ews_host(host: &str, mail_domain: &str, allowed: &[String]) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    let within = |d: &str| {
+        let d = d.trim().trim_start_matches("*.").trim_start_matches('.').trim_end_matches('.').to_ascii_lowercase();
+        !d.is_empty() && (host == d || host.ends_with(&format!(".{d}")))
+    };
+    within(mail_domain) || allowed.iter().any(|d| within(d))
+}
+
 fn ews_url_of(text: &str) -> Option<String> {
     let d = roxmltree::Document::parse(text).ok()?;
     let protocols: Vec<_> = d.descendants().filter(|n| n.tag_name().name() == "Protocol").collect();
@@ -2031,6 +2176,19 @@ fn ews_url_of(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autodiscover_server_must_be_in_mail_domain_or_allowed() {
+        assert!(trusted_ews_host("mail.corp.ru", "corp.ru", &[]));
+        assert!(trusted_ews_host("CORP.RU.", "corp.ru", &[]));
+        assert!(!trusted_ews_host("mail.corp.ru.evil.com", "corp.ru", &[]));
+        assert!(!trusted_ews_host("evilcorp.ru", "corp.ru", &[]));
+        assert!(!trusted_ews_host("mail.rrcki.ru", "nrcki.ru", &[]));
+        assert!(trusted_ews_host("mail.rrcki.ru", "nrcki.ru", &["rrcki.ru".into()]));
+        assert!(trusted_ews_host("mail.rrcki.ru", "nrcki.ru", &["*.rrcki.ru".into()]));
+        assert!(!trusted_ews_host("rrcki.ru.evil.com", "nrcki.ru", &["rrcki.ru".into()]));
+        assert!(!trusted_ews_host("", "corp.ru", &["".into()]));
+    }
 
     #[test]
     fn uids_follow_arrival_time_and_stay_unique() {
@@ -2070,7 +2228,7 @@ mod tests {
         assert!(first_error(&rs).is_none());
         let n = items_of(rs[0]).into_iter().next().unwrap();
         assert_eq!(item_id(n).as_deref(), Some("AAA="));
-        let s = EwsSession { http: http_client().unwrap(), url: normalize_url("x.ru").unwrap(), login: String::new(), password: String::new(), key: String::new(), auth: Auth::Unknown, authed: false, version: "", folders: vec![], root: None, map: Arc::new(Mutex::new(AccountMap::default())) };
+        let s = EwsSession { conn: None, url: normalize_url("x.ru").unwrap(), login: String::new(), password: String::new(), key: String::new(), auth: Auth::Unknown, authed: false, version: "", folders: vec![], root: None, map: Arc::new(Mutex::new(AccountMap::default())) };
         let m = s.summary("INBOX", 7, n);
         assert_eq!((m.subject.as_str(), m.from_name.as_str(), m.from_address.as_str()), ("Отчёт", "Петров", "petrov@corp.ru"));
         assert_eq!(m.to, ["Иванов <ivanov@corp.ru>", "Внутренний"]);

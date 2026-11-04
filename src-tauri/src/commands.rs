@@ -1794,8 +1794,10 @@ async fn enqueue(ctx: &Arc<AccountCtx>, op: Op) -> Result<()> {
 /// Письма для очереди: UID и Message-ID из индекса на компьютере.
 async fn targets(ctx: &AccountCtx, folder: &str, uids: &[u32]) -> Vec<Target> {
     let st = local(ctx).await;
+    // Exchange: номера писем привязаны к ItemId (своя таблица), UIDVALIDITY нет.
+    let validity = if ctx.creds.ews.is_some() { None } else { st.as_ref().and_then(|s| s.uid_validity(folder)) };
     uids.iter()
-        .map(|u| Target { uid: *u, msg_id: st.as_ref().and_then(|s| s.summary(folder, *u)).and_then(|m| m.message_id) })
+        .map(|u| Target { uid: *u, msg_id: st.as_ref().and_then(|s| s.summary(folder, *u)).and_then(|m| m.message_id), validity })
         .collect()
 }
 
@@ -1891,7 +1893,7 @@ async fn run_op(ctx: &Arc<AccountCtx>, op: &Op) -> Result<Option<String>> {
                 with_ctx!(ctx, c => imap::move_messages(c, folder, &uids, target))?;
             }
             // Чего нет на месте — уже в нужной папке? Тогда перемещать нечего.
-            let missing: Vec<Target> = targets.iter().zip(&found).filter(|(_, f)| f.is_none()).map(|(t, _)| Target { uid: 0, msg_id: t.msg_id.clone() }).collect();
+            let missing: Vec<Target> = targets.iter().zip(&found).filter(|(_, f)| f.is_none()).map(|(t, _)| Target { uid: 0, msg_id: t.msg_id.clone(), validity: None }).collect();
             if missing.is_empty() {
                 return Ok(None);
             }

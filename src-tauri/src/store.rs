@@ -452,6 +452,12 @@ impl Store {
         inner.dirty.insert(folder.to_string());
     }
 
+    /// UIDVALIDITY папки, с которым записан индекс (0 — индекса ещё нет).
+    pub fn uid_validity(&self, folder: &str) -> Option<u32> {
+        let mut inner = self.lock();
+        Some(self.ensure_loaded(&mut inner, folder).uid_validity).filter(|v| *v != 0)
+    }
+
     pub fn summary(&self, folder: &str, uid: u32) -> Option<MessageSummary> {
         let mut inner = self.lock();
         self.ensure_loaded(&mut inner, folder).items.get(&uid).map(|e| e.s.clone())
