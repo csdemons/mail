@@ -258,7 +258,7 @@ mod tests {
             uid: 1,
             from_name: "Петрова Анна".into(),
             from_address: "petrova@ihep.ru".into(),
-            to: vec!["Юшков Дмитрий <yushkov_do@nrcki.ru>".into()],
+            to: vec!["Юшков Дмитрий <yushkov_do@inst.test>".into()],
             subject: "План работ на ноябрь".into(),
             date: Some("2026-11-01T10:00:00+03:00".into()),
             unread: true,
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(e.from, vec!["petrova"]);
         assert!(e.unread && e.has_attachment);
         assert_eq!(e.domain.as_deref(), Some("ihep.ru"));
-        assert!(e.account_ok("second@rrcki.ru@localhost") && !e.account_ok("test@rrcki.ru@localhost"));
+        assert!(e.account_ok("second@corp.test@localhost") && !e.account_ok("test@corp.test@localhost"));
         let rel = Query::parse("после:7д папка:входящие");
         assert_eq!(rel.after, chrono::Local::now().date_naive().checked_sub_signed(chrono::Duration::days(7)));
         assert!(rel.folder_ok("INBOX") && !rel.folder_ok("Sent"));
@@ -307,7 +307,7 @@ mod tests {
         assert!(Query::parse("после:2026-11-01 до:2026-11-02").matches(&m, hay));
         assert!(!Query::parse("после:2026-11-02").matches(&m, hay));
         assert!(!Query::parse("вложение:docx").matches(&m, hay));
-        assert!(Query::parse("подразделение:nrcki.ru").matches(&m, hay), "получатель из nrcki.ru");
+        assert!(Query::parse("подразделение:inst.test").matches(&m, hay), "получатель из inst.test");
         assert!(!Query::parse("подразделение:mail.ru").matches(&m, hay));
         assert!(!Query::parse("флажок").matches(&m, hay));
     }

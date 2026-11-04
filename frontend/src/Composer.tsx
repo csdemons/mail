@@ -94,7 +94,7 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => setFocused(true)}
         onBlur={() => setTimeout(() => setFocused(false), 150)}
-        placeholder="user@nrcki.ru, Иванов Иван <ivanov@nrcki.ru>"
+        placeholder="user@организация.ru, Иванов Иван <ivanov@организация.ru>"
       />
       {focused && token.length >= 2 && (suggestions.length > 0 || searching) && (
         <div className="suggestions popover">

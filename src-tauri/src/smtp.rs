@@ -322,18 +322,18 @@ mod tests {
     #[test]
     fn splits_address_lists() {
         assert_eq!(
-            split_addresses("a@b.ru, \"Иванов, Иван\" <ivanov@nrcki.ru>; c@d.ru ,"),
-            vec!["a@b.ru", "\"Иванов, Иван\" <ivanov@nrcki.ru>", "c@d.ru"]
+            split_addresses("a@b.ru, \"Иванов, Иван\" <ivanov@inst.test>; c@d.ru ,"),
+            vec!["a@b.ru", "\"Иванов, Иван\" <ivanov@inst.test>", "c@d.ru"]
         );
     }
 
     #[test]
     fn sanitizes_outgoing_html() {
-        let clean = sanitize_html(r##"<p style="font-family: Georgia" onclick="x()"><b>Жирный</b> <font face="Courier New" size="5" color="#ff0000">шрифт</font></p><script>alert(1)</script><img src="https://t/x.png"><a href="javascript:alert(1)">a</a><a href="https://nrcki.ru">b</a><iframe src="https://x"></iframe>"##);
+        let clean = sanitize_html(r##"<p style="font-family: Georgia" onclick="x()"><b>Жирный</b> <font face="Courier New" size="5" color="#ff0000">шрифт</font></p><script>alert(1)</script><img src="https://t/x.png"><a href="javascript:alert(1)">a</a><a href="https://inst.test">b</a><iframe src="https://x"></iframe>"##);
         assert!(clean.contains(r#"<p style="font-family: Georgia"><b>Жирный</b>"#), "{clean}");
         assert!(clean.contains(r##"<font face="Courier New" size="5" color="#ff0000">"##), "{clean}");
         assert!(!clean.contains("onclick") && !clean.contains("script") && !clean.contains("<img") && !clean.contains("iframe"), "{clean}");
-        assert!(!clean.contains("javascript") && clean.contains(r#"href="https://nrcki.ru""#), "{clean}");
+        assert!(!clean.contains("javascript") && clean.contains(r#"href="https://inst.test""#), "{clean}");
         assert!(html_document("<b>x</b>").contains("<meta charset=\"utf-8\">"));
     }
 
@@ -341,14 +341,14 @@ mod tests {
     fn builds_reply_with_attachment() {
         let msg = build(Outgoing {
             from_name: Some("Юшков Дмитрий".into()),
-            from_address: "yushkov_do@nrcki.ru".into(),
-            to: vec!["Коллега <colleague@nrcki.ru>".into()],
+            from_address: "yushkov_do@inst.test".into(),
+            to: vec!["Коллега <colleague@inst.test>".into()],
             cc: vec![],
             subject: "Re: Отчёт".into(),
             body: "Спасибо!\nДмитрий".into(),
             html: Some("<p><b>Спасибо!</b></p><p style=\"color: red\" onclick=\"x()\">Дмитрий</p><script>alert(1)</script><img src=\"https://track/x.png\">".into()),
-            in_reply_to: Some("<abc@nrcki.ru>".into()),
-            references: Some("<root@nrcki.ru> <abc@nrcki.ru>".into()),
+            in_reply_to: Some("<abc@inst.test>".into()),
+            references: Some("<root@inst.test> <abc@inst.test>".into()),
             read_receipt: true,
             extra_headers: vec![("X-Atom-Send-At".into(), "2030-01-01T09:00:00+03:00".into())],
             attachments: vec![OutgoingAttachment {
@@ -359,17 +359,17 @@ mod tests {
         })
         .expect("message");
         let raw = String::from_utf8(msg.formatted()).expect("utf8");
-        assert!(raw.contains("In-Reply-To: <abc@nrcki.ru>"));
-        assert!(raw.contains("References: <root@nrcki.ru> <abc@nrcki.ru>"));
+        assert!(raw.contains("In-Reply-To: <abc@inst.test>"));
+        assert!(raw.contains("References: <root@inst.test> <abc@inst.test>"));
         assert!(raw.contains("multipart/mixed") && raw.contains("multipart/alternative") && raw.contains("text/html"));
         assert!(raw.contains("=?utf-8?b?"), "non-ASCII headers must be encoded");
-        assert!(raw.contains("Disposition-Notification-To: <yushkov_do@nrcki.ru>"), "{raw}");
+        assert!(raw.contains("Disposition-Notification-To: <yushkov_do@inst.test>"), "{raw}");
         assert!(raw.contains("X-Atom-Send-At: 2030-01-01T09:00:00+03:00"));
         let fin = String::from_utf8(finalize_scheduled(raw.as_bytes(), "X-Atom-Send-At")).unwrap();
         assert!(!fin.contains("X-Atom-Send-At") && fin.starts_with("Date: ") && fin.matches("\nDate: ").count() == 0, "{}", &fin[..300]);
         assert!(fin.contains("Disposition-Notification-To") && fin.ends_with(raw.split_once("\r\n\r\n").unwrap().1));
-        let mdn = String::from_utf8(build_mdn("Тест", "me@nrcki.ru", "you@nrcki.ru", "Отчёт", Some("<abc@nrcki.ru>"))).unwrap();
-        assert!(mdn.contains("report-type=disposition-notification") && mdn.contains("Original-Message-ID: <abc@nrcki.ru>") && mdn.contains("Disposition: manual-action/MDN-sent-manually; displayed"));
+        let mdn = String::from_utf8(build_mdn("Тест", "me@inst.test", "you@inst.test", "Отчёт", Some("<abc@inst.test>"))).unwrap();
+        assert!(mdn.contains("report-type=disposition-notification") && mdn.contains("Original-Message-ID: <abc@inst.test>") && mdn.contains("Disposition: manual-action/MDN-sent-manually; displayed"));
         assert!(build(Outgoing {
             from_name: None,
             from_address: "a@b.ru".into(),

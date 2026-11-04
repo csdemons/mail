@@ -9,7 +9,7 @@ async fn main() {
     let pass = std::env::var("IMAP_PASSWORD").expect("IMAP_PASSWORD");
 
     if let Some(rcpt) = std::env::args().nth(1) {
-        let (host, port) = (env("SMTP_HOST", "rp.rrcki.ru"), env("SMTP_PORT", "465").parse().unwrap());
+        let (host, port) = (env("SMTP_HOST", "rupost"), env("SMTP_PORT", "465").parse().unwrap());
         let msg = smtp::build(smtp::Outgoing {
             from_name: Some("Проверка RRCKI Mail".into()),
             from_address: user.clone(),

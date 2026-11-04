@@ -413,31 +413,31 @@ mod tests {
     #[test]
     fn parses_sogo_search_variants() {
         let v = json!({"contacts": [
-            {"c_name": "ivanov", "c_cn": "Иванов Иван", "c_mail": "ivanov@nrcki.ru", "c_o": "НИЦ КИ", "sourceid": "gal"},
-            {"id": "p1", "c_cn": "Петрова Анна", "c_mail": ["petrova@nrcki.ru", "anna@nrcki.ru"], "isGroup": false},
-            {"c_cn": "Все сотрудники", "c_mail": "all@nrcki.ru", "isGroup": true},
+            {"c_name": "ivanov", "c_cn": "Иванов Иван", "c_mail": "ivanov@inst.test", "c_o": "НИЦ КИ", "sourceid": "gal"},
+            {"id": "p1", "c_cn": "Петрова Анна", "c_mail": ["petrova@inst.test", "anna@inst.test"], "isGroup": false},
+            {"c_cn": "Все сотрудники", "c_mail": "all@inst.test", "isGroup": true},
             {"c_cn": "Без почты"},
-            {"cn": "Сидоров", "emails": [{"type": "work", "value": "sidorov@nrcki.ru"}]}
+            {"cn": "Сидоров", "emails": [{"type": "work", "value": "sidorov@inst.test"}]}
         ]});
         let c = parse_search(&v);
         assert_eq!(c.len(), 3);
-        assert_eq!((c[0].full_name.as_str(), c[0].emails[0].as_str(), c[0].org.as_deref()), ("Иванов Иван", "ivanov@nrcki.ru", Some("НИЦ КИ")));
-        assert_eq!(c[1].emails, vec!["petrova@nrcki.ru", "anna@nrcki.ru"]);
-        assert_eq!(c[2].emails, vec!["sidorov@nrcki.ru"]);
+        assert_eq!((c[0].full_name.as_str(), c[0].emails[0].as_str(), c[0].org.as_deref()), ("Иванов Иван", "ivanov@inst.test", Some("НИЦ КИ")));
+        assert_eq!(c[1].emails, vec!["petrova@inst.test", "anna@inst.test"]);
+        assert_eq!(c[2].emails, vec!["sidorov@inst.test"]);
         assert!(c.iter().all(|x| !x.editable && x.href.starts_with("sogo:")));
     }
 
     #[test]
     fn parses_sogo_view() {
-        let base = parse_search(&json!({"contacts": [{"c_name": "ivanov", "c_cn": "Иванов", "c_mail": "ivanov@nrcki.ru"}]})).remove(0);
+        let base = parse_search(&json!({"contacts": [{"c_name": "ivanov", "c_cn": "Иванов", "c_mail": "ivanov@inst.test"}]})).remove(0);
         let c = parse_view(&json!({
-            "c_cn": "Иванов Иван Иванович", "emails": [{"type": "work", "value": "ivanov@nrcki.ru"}],
+            "c_cn": "Иванов Иван Иванович", "emails": [{"type": "work", "value": "ivanov@inst.test"}],
             "phones": [{"type": "work", "value": "+7 495 000-00-01"}, {"type": "cell", "value": "+7 900 000-00-00"}],
             "title": "Ведущий инженер", "orgs": [{"value": "УИТ"}], "c_o": "НИЦ КИ",
             "addresses": [{"street": "пл. Курчатова, 1", "locality": "Москва"}]
         }), base);
         assert_eq!(c.full_name, "Иванов Иван Иванович");
-        assert_eq!(c.emails, vec!["ivanov@nrcki.ru"]);
+        assert_eq!(c.emails, vec!["ivanov@inst.test"]);
         assert_eq!(c.phones.len(), 2);
         assert_eq!((c.title.as_deref(), c.org.as_deref()), (Some("Ведущий инженер"), Some("НИЦ КИ, УИТ")));
         assert_eq!(c.address.as_deref(), Some("пл. Курчатова, 1, Москва"));
@@ -447,23 +447,23 @@ mod tests {
     fn parses_real_rupost_search_and_lists() {
         // Фрагмент реального ответа RuPost (allContactSearch).
         let c = parse_search(&json!({"contacts": [{"hasPhoto": 0, "c_cn": "Dmitry O. Yushkov", "c_component": "vcard", "sourceID": "gal",
-            "containerName": "Корпоративная адресная книга", "id": "flay@nrcki.ru", "c_uid": "flay@nrcki.ru", "phones": [{"type": "pref", "value": ""}],
-            "c_sn": "Yushkov", "c_telephonenumber": "", "c_name": "flay@nrcki.ru", "fn": "Dmitry O. Yushkov", "org": "", "c_o": "",
-            "emails": [{"type": "pref", "value": "flay@nrcki.ru"}]}]}));
+            "containerName": "Корпоративная адресная книга", "id": "flay@inst.test", "c_uid": "flay@inst.test", "phones": [{"type": "pref", "value": ""}],
+            "c_sn": "Yushkov", "c_telephonenumber": "", "c_name": "flay@inst.test", "fn": "Dmitry O. Yushkov", "org": "", "c_o": "",
+            "emails": [{"type": "pref", "value": "flay@inst.test"}]}]}));
         assert_eq!(c.len(), 1);
-        assert_eq!((c[0].full_name.as_str(), c[0].id.as_str()), ("Dmitry O. Yushkov", "sogo:gal:flay@nrcki.ru"));
+        assert_eq!((c[0].full_name.as_str(), c[0].id.as_str()), ("Dmitry O. Yushkov", "sogo:gal:flay@inst.test"));
         assert!(c[0].phones.is_empty() && c[0].org.is_none());
-        let h = parse_list(&json!({"headers": [["c_name", "c_cn", "c_mail", "c_o"], ["ivanov", "Иванов Иван", "ivanov@nrcki.ru", "УИТ"], ["petrova", "Петрова Анна", "petrova@nrcki.ru", ""]]}), "gal");
+        let h = parse_list(&json!({"headers": [["c_name", "c_cn", "c_mail", "c_o"], ["ivanov", "Иванов Иван", "ivanov@inst.test", "УИТ"], ["petrova", "Петрова Анна", "petrova@inst.test", ""]]}), "gal");
         assert_eq!(h.iter().map(|x| x.full_name.as_str()).collect::<Vec<_>>(), vec!["Иванов Иван", "Петрова Анна"]);
         assert_eq!(h[0].org.as_deref(), Some("УИТ"));
         assert_eq!(h[0].id, "sogo:gal:ivanov");
-        assert_eq!(parse_list(&json!({"cards": [{"c_name": "x", "c_cn": "X", "c_mail": "x@nrcki.ru"}]}), "gal").len(), 1);
+        assert_eq!(parse_list(&json!({"cards": [{"c_name": "x", "c_cn": "X", "c_mail": "x@inst.test"}]}), "gal").len(), 1);
     }
 
     #[test]
     fn validates_filters() {
         let good = json!([{"name": "Мониторинг", "active": 1, "match": "any",
-            "rules": [{"field": "from", "operator": "contains", "value": "zabbix@nrcki.ru"}],
+            "rules": [{"field": "from", "operator": "contains", "value": "zabbix@inst.test"}],
             "actions": [{"method": "fileinto", "argument": "INBOX/Сервера/Monitoring"}, {"method": "stop"}]}]);
         assert!(validate_filters(&good).is_ok());
         assert!(validate_filters(&json!([{"name": "x", "match": "all", "rules": [], "actions": []}])).is_err());

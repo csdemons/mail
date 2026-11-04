@@ -177,7 +177,7 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
         <label className="login-field">
           <span>Адрес почты</span>
           <input autoFocus required autoComplete="username" value={username}
-            onChange={(e) => setUsername(e.target.value)} placeholder="ivanov@nrcki.ru" />
+            onChange={(e) => setUsername(e.target.value)} placeholder="ivanov@организация.ru" />
         </label>
         <label className="login-field">
           <span>Пароль</span>

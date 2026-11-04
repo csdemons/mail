@@ -21,7 +21,7 @@ filesystem_folder = $D/collections
 [logging]
 level = warning
 CONF
-echo "test@rrcki.ru:Secret-123" > "$D/users"
+echo "test@corp.test:Secret-123" > "$D/users"
 nohup python3 -m radicale --config "$D/config" >"$D/radicale.log" 2>&1 </dev/null &
 # Ждём, пока Radicale начнёт принимать соединения (на загруженной машине — дольше).
 for _ in $(seq 30); do (echo >/dev/tcp/127.0.0.1/5232) 2>/dev/null && break; sleep 0.5; done

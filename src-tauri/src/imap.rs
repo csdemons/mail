@@ -2285,12 +2285,12 @@ mod tests {
     #[test]
     fn repairs_encoded_from() {
         assert_eq!(
-            repair_display_address("Робот <robot@rrcki.ru>".into(), String::new()),
-            ("Робот".into(), "robot@rrcki.ru".into())
+            repair_display_address("Робот <robot@corp.test>".into(), String::new()),
+            ("Робот".into(), "robot@corp.test".into())
         );
         assert_eq!(
-            repair_display_address("\"Иванов И.\" <ivanov@nrcki.ru>".into(), String::new()),
-            ("Иванов И.".into(), "ivanov@nrcki.ru".into())
+            repair_display_address("\"Иванов И.\" <ivanov@inst.test>".into(), String::new()),
+            ("Иванов И.".into(), "ivanov@inst.test".into())
         );
         assert_eq!(
             repair_display_address("Имя".into(), "a@b.ru".into()),
@@ -2319,11 +2319,11 @@ mod tests {
         let list = vec![
             raw("INBOX", None, true),
             raw("shared", None, false),
-            raw("shared/noc@nrcki.ru", None, false),
-            raw("shared/noc@nrcki.ru/INBOX", None, true),
-            raw("shared/noc@nrcki.ru/Sent", None, true),
-            raw("shared/noc@nrcki.ru/imap", None, true),
-            raw("shared/_soc@nrcki.ru/INBOX/MaxPatrol", None, true),
+            raw("shared/noc@inst.test", None, false),
+            raw("shared/noc@inst.test/INBOX", None, true),
+            raw("shared/noc@inst.test/Sent", None, true),
+            raw("shared/noc@inst.test/imap", None, true),
+            raw("shared/_soc@inst.test/INBOX/MaxPatrol", None, true),
             raw("Archives", None, false),
             raw("Archives/Archives", Some(FolderRole::Archive), true),
         ];
@@ -2337,10 +2337,10 @@ mod tests {
                 (0, "Archives", FolderRole::Archive, false),
                 (1, "Archives", FolderRole::Archive, false),
                 (0, "Подключённые ящики", FolderRole::Other, false),
-                (1, "_soc@nrcki.ru", FolderRole::Other, false),
+                (1, "_soc@inst.test", FolderRole::Other, false),
                 (2, "INBOX", FolderRole::Inbox, false),
                 (3, "MaxPatrol", FolderRole::Other, false),
-                (1, "noc@nrcki.ru", FolderRole::Other, false),
+                (1, "noc@inst.test", FolderRole::Other, false),
                 (2, "INBOX", FolderRole::Inbox, true),
                 (2, "Sent", FolderRole::Sent, true),
                 (2, "imap", FolderRole::Other, false),

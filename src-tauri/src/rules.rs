@@ -298,8 +298,8 @@ mod tests {
             folder: "INBOX".into(),
             uid: 7,
             from_name: "Мониторинг".into(),
-            from_address: "zabbix@noc.nrcki.ru".into(),
-            to: vec!["Юшков Дмитрий <yushkov_do@nrcki.ru>".into()],
+            from_address: "zabbix@noc.inst.test".into(),
+            to: vec!["Юшков Дмитрий <yushkov_do@inst.test>".into()],
             subject: "PROBLEM: диск заполнен на srv-12".into(),
             date: None,
             unread: true,
@@ -328,8 +328,8 @@ mod tests {
         assert!(cond_matches(&c("attachment", "contains", ".xlsx"), &m, None));
         assert!(!cond_matches(&c("attachment", "contains", ".pdf"), &m, None));
         assert!(cond_matches(&c("has_attachment", "is", ""), &m, None));
-        assert!(cond_matches(&c("domain", "is", "nrcki.ru"), &m, None), "subdomain counts");
-        assert!(cond_matches(&c("domain", "is", "@noc.nrcki.ru"), &m, None));
+        assert!(cond_matches(&c("domain", "is", "inst.test"), &m, None), "subdomain counts");
+        assert!(cond_matches(&c("domain", "is", "@noc.inst.test"), &m, None));
         assert!(!cond_matches(&c("domain", "is", "ihep.ru"), &m, None));
         assert!(cond_matches(&c("to", "contains", "yushkov"), &m, None));
         assert!(cond_matches(&c("size", "over", "100"), &m, None) && !cond_matches(&c("size", "under", "100"), &m, None));

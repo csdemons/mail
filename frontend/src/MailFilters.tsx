@@ -368,7 +368,7 @@ function FilterEditor({ initial, folders, categories, serverOk, label, folderNam
             {a.method === 'addflag' && <select aria-label="Пометка" value={a.argument ?? 'seen'} onChange={(e) => setAction(i, { argument: e.target.value })}>
               {FLAGS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>}
-            {a.method === 'redirect' && <input aria-label="Адрес" value={a.argument ?? ''} onChange={(e) => setAction(i, { argument: e.target.value })} placeholder="ivanov@nrcki.ru" />}
+            {a.method === 'redirect' && <input aria-label="Адрес" value={a.argument ?? ''} onChange={(e) => setAction(i, { argument: e.target.value })} placeholder="ivanov@организация.ru" />}
             {a.method === 'category' && <select aria-label="Категория" value={a.argument ?? ''} onChange={(e) => setAction(i, { argument: e.target.value })}>
               {categories.length === 0 && <option value="">нет категорий</option>}
               {categories.map((c) => <option key={c.keyword} value={c.keyword}>{c.name}</option>)}

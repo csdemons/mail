@@ -72,7 +72,7 @@ export default function ContactEditor({ contact, prefill, books, defaultBook, on
           </label>
         )}
         <div className="editor-row">
-          <label className="login-field"><span>E-mail (по одному в строке)</span><textarea rows={2} value={emails} onChange={(e) => setEmails(e.target.value)} placeholder="ivanov@nrcki.ru" /></label>
+          <label className="login-field"><span>E-mail (по одному в строке)</span><textarea rows={2} value={emails} onChange={(e) => setEmails(e.target.value)} placeholder="ivanov@организация.ru" /></label>
           <label className="login-field"><span>Телефоны</span><textarea rows={2} value={phones} onChange={(e) => setPhones(e.target.value)} placeholder="+7 495 000-00-00" /></label>
         </div>
         <div className="editor-row">

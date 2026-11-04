@@ -36,7 +36,7 @@ cat > "$ROOT/DEBIAN/control" <<CONTROL
 Package: rrcki-mail
 Version: $VER~astra1.7
 Architecture: amd64
-Maintainer: RRCKI <noreply@rrcki.ru>
+Maintainer: Atom Mail <noreply@atom-mail.invalid>
 Installed-Size: $SIZE
 Depends: $DEPS
 Recommends: hunspell-ru | myspell-ru, hunspell-en-us

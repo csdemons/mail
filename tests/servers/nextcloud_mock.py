@@ -10,7 +10,7 @@ import json, ssl, sys, threading, time, base64, itertools
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
 
-LOGIN, APP_PASSWORD, UID = 'test@rrcki.ru', 'app-pass-123', 'test'
+LOGIN, APP_PASSWORD, UID = 'test@corp.test', 'app-pass-123', 'test'
 lock = threading.Condition()
 ids = itertools.count(100)
 
@@ -99,10 +99,10 @@ def push_update(token, kind, msg):
         lock.notify_all()
 
 
-USERS = [{'id': 'ivanov', 'label': 'Иванов Иван', 'subline': 'ivanov@nrcki.ru'},
-         {'id': 'petrova', 'label': 'Петрова Анна', 'subline': 'petrova@nrcki.ru'},
-         {'id': 'sidorov', 'label': 'Сидоров Олег', 'subline': 'sidorov@nrcki.ru'}]
-HIDDEN_USER = {'id': 'smirnov', 'label': 'Смирнов Пётр', 'subline': 'smirnov@nrcki.ru'}
+USERS = [{'id': 'ivanov', 'label': 'Иванов Иван', 'subline': 'ivanov@inst.test'},
+         {'id': 'petrova', 'label': 'Петрова Анна', 'subline': 'petrova@inst.test'},
+         {'id': 'sidorov', 'label': 'Сидоров Олег', 'subline': 'sidorov@inst.test'}]
+HIDDEN_USER = {'id': 'smirnov', 'label': 'Смирнов Пётр', 'subline': 'smirnov@inst.test'}
 
 
 def room_view(r):
@@ -167,7 +167,7 @@ class H(BaseHTTPRequestHandler):
             state.setdefault('unsubscribed', []).append({'id': p.split('/')[-1], 'body': self.rfile.read(int(self.headers.get('Content-Length', 0))).decode()})
             return self.send(200, {})
         if method == 'GET' and p == '/autoconfig/mail/config-v1.1.xml':
-            xml = ('<?xml version="1.0"?><clientConfig version="1.1"><emailProvider id="rrcki.ru">'
+            xml = ('<?xml version="1.0"?><clientConfig version="1.1"><emailProvider id="corp.test">'
                    '<incomingServer type="imap"><hostname>localhost</hostname><port>10993</port><socketType>SSL</socketType><username>%EMAILADDRESS%</username></incomingServer>'
                    '<outgoingServer type="smtp"><hostname>localhost</hostname><port>465</port><socketType>SSL</socketType><username>%EMAILADDRESS%</username></outgoingServer>'
                    '</emailProvider></clientConfig>').encode()

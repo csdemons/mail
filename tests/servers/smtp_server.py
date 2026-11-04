@@ -5,7 +5,7 @@ import asyncio, ssl, sys, time, os
 from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import AuthResult, LoginPassword
 
-USERS = {'test@rrcki.ru': 'Secret-123', 'second@rrcki.ru': 'Secret-456'}
+USERS = {'test@corp.test': 'Secret-123', 'second@corp.test': 'Secret-456'}
 
 class Auth:
     def __call__(self, server, session, envelope, mechanism, auth_data):

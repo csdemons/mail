@@ -56,7 +56,7 @@ tests/e2e/           сквозные тесты приложения через
 
 ```bash
 cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings
-sudo bash tests/imap-server/setup.sh      # IMAPS localhost:10993 (test@rrcki.ru / Secret-123)
+sudo bash tests/imap-server/setup.sh      # IMAPS localhost:10993 (test@corp.test / Secret-123)
 sudo bash tests/servers/start.sh          # SMTPS :465, CalDAV/CardDAV :5232, Nextcloud :8443, SOGo :8444, EWS :8445
 npx tauri build --debug --no-bundle
 dbus-run-session -- tests/e2e/run.sh tests/e2e/e2e.py /tmp/shots   # ~10 минут

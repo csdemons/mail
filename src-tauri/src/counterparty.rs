@@ -384,18 +384,18 @@ mod tests {
 
     #[test]
     fn counterparties_and_people() {
-        let me = "yushkov_do@nrcki.ru";
+        let me = "yushkov_do@inst.test";
         let msgs = vec![
-            m("petrov@ihep.ru", &["Юшков <yushkov_do@nrcki.ru>"], "2026-10-01T10:00:00+03:00"),
-            m("yushkov_do@nrcki.ru", &["Петров П. <petrov@ihep.ru>", "sidorov@jinr.ru"], "2026-10-05T10:00:00+03:00"),
-            m("kolya@nrcki.ru", &["yushkov_do@nrcki.ru"], "2026-09-01T10:00:00+03:00"),
-            m("noc@lab.ihep.ru", &["yushkov_do@nrcki.ru"], "2026-08-01T10:00:00+03:00"),
+            m("petrov@ihep.ru", &["Юшков <yushkov_do@inst.test>"], "2026-10-01T10:00:00+03:00"),
+            m("yushkov_do@inst.test", &["Петров П. <petrov@ihep.ru>", "sidorov@jinr.ru"], "2026-10-05T10:00:00+03:00"),
+            m("kolya@inst.test", &["yushkov_do@inst.test"], "2026-09-01T10:00:00+03:00"),
+            m("noc@lab.ihep.ru", &["yushkov_do@inst.test"], "2026-08-01T10:00:00+03:00"),
         ];
         let mut dossiers = BTreeMap::new();
         dossiers.insert("cern.ch".to_string(), Dossier { name: Some("ЦЕРН".into()), ..Default::default() });
         let list = list(&msgs, me, &dossiers);
         let names: Vec<&str> = list.iter().map(|c| c.domain.as_str()).collect();
-        assert_eq!(names, ["ihep.ru", "jinr.ru", "nrcki.ru", "lab.ihep.ru", "cern.ch"]);
+        assert_eq!(names, ["ihep.ru", "jinr.ru", "inst.test", "lab.ihep.ru", "cern.ch"]);
         let ihep = &list[0];
         assert_eq!((ihep.messages, ihep.incoming, ihep.outgoing), (2, 1, 1));
         assert!(list[2].own && !ihep.own);

@@ -14,4 +14,4 @@ setsid python3 "$HERE/sogo_mock.py" "$T/srv.crt" "$T/srv.key" 8444 >"$T/sogo.log
 setsid python3 "$HERE/ews_mock.py" "$T/srv.crt" "$T/srv.key" 8445 >"$T/ews.log" 2>&1 </dev/null &
 "$HERE/setup-dav.sh" >/dev/null
 sleep 1
-echo "SMTPS: localhost:465, CalDAV/CardDAV: https://localhost:5232/ (test@rrcki.ru / Secret-123), Nextcloud mock: https://localhost:8443/, SOGo mock: https://localhost:8444/, Exchange (EWS) mock: https://localhost:8445/"
+echo "SMTPS: localhost:465, CalDAV/CardDAV: https://localhost:5232/ (test@corp.test / Secret-123), Nextcloud mock: https://localhost:8443/, SOGo mock: https://localhost:8444/, Exchange (EWS) mock: https://localhost:8445/"

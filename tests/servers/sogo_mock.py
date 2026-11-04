@@ -4,10 +4,10 @@ import json, ssl, sys
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 
-USER, PASS = 'test@rrcki.ru', 'Secret-123'
+USER, PASS = 'test@corp.test', 'Secret-123'
 PEOPLE = [
-    {'c_name': 'ivanov', 'c_cn': 'Иванов Иван', 'c_mail': 'ivanov@nrcki.ru', 'c_o': 'НИЦ КИ', 'sourceid': 'gal'},
-    {'c_name': 'sidorov', 'c_cn': 'Сидоров Олег', 'c_mail': ['sidorov@nrcki.ru'], 'c_title': 'Аналитик', 'sourceid': 'gal'},
+    {'c_name': 'ivanov', 'c_cn': 'Иванов Иван', 'c_mail': 'ivanov@inst.test', 'c_o': 'НИЦ КИ', 'sourceid': 'gal'},
+    {'c_name': 'sidorov', 'c_cn': 'Сидоров Олег', 'c_mail': ['sidorov@inst.test'], 'c_title': 'Аналитик', 'sourceid': 'gal'},
 ]
 
 # Настройки пользователя: фильтры почты хранятся в SOGoSieveFilters, остальное должно сохраниться.

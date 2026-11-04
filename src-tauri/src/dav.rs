@@ -1535,11 +1535,11 @@ mod tests {
 
     #[test]
     fn parses_vcard_with_cyrillic_and_n_fallback() {
-        let data = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Иванов;Иван;Иванович;;\r\nEMAIL;TYPE=work:ivanov@nrcki.ru\r\nTEL:+7 495 000-00-00\r\nORG:НИЦ КИ;УИТ\r\nTITLE:Инженер\r\nEND:VCARD\r\n";
+        let data = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Иванов;Иван;Иванович;;\r\nEMAIL;TYPE=work:ivanov@inst.test\r\nTEL:+7 495 000-00-00\r\nORG:НИЦ КИ;УИТ\r\nTITLE:Инженер\r\nEND:VCARD\r\n";
         let c = parse_vcards(data, "Личные", &Origin { href: "/c/1.vcf".into(), etag: None, editable: true });
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].full_name, "Иванов Иван Иванович");
-        assert_eq!(c[0].emails, vec!["ivanov@nrcki.ru"]);
+        assert_eq!(c[0].emails, vec!["ivanov@inst.test"]);
         assert_eq!(c[0].org.as_deref(), Some("НИЦ КИ, УИТ"));
     }
 
@@ -1584,12 +1584,12 @@ mod tests {
         assert_eq!(parsed[0].description.as_deref(), Some("Строка 1\nСтрока 2"));
 
         // Серия с напоминанием и переносом: меняем только текст, время и VALARM не трогаем.
-        let series = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:s\r\nSUMMARY:Старое\r\nDTSTART:20261005T070000Z\r\nRRULE:FREQ=WEEKLY\r\nSEQUENCE:3\r\nATTENDEE;CN=Иванов:mailto:ivanov@nrcki.ru\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Напоминание\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:s\r\nRECURRENCE-ID:20261012T070000Z\r\nSUMMARY:Перенос\r\nDTSTART:20261012T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let series = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:s\r\nSUMMARY:Старое\r\nDTSTART:20261005T070000Z\r\nRRULE:FREQ=WEEKLY\r\nSEQUENCE:3\r\nATTENDEE;CN=Иванов:mailto:ivanov@inst.test\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Напоминание\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:s\r\nRECURRENCE-ID:20261012T070000Z\r\nSUMMARY:Перенос\r\nDTSTART:20261012T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         // Участники встречи — для истории контрагента (адреса без mailto:, без повторов).
         let with_people = series.replace("SEQUENCE:3\r\n", "SEQUENCE:3\r\nORGANIZER;CN=Петров:MAILTO:Petrov@IHEP.ru\r\nATTENDEE:mailto:petrov@ihep.ru\r\n");
         let occ = parse_events(&with_people, &cal(), Utc.with_ymd_and_hms(2026, 10, 4, 0, 0, 0).unwrap(),
             Utc.with_ymd_and_hms(2026, 10, 6, 0, 0, 0).unwrap(), &Origin::default());
-        assert_eq!(occ[0].participants, ["petrov@ihep.ru", "ivanov@nrcki.ru"]);
+        assert_eq!(occ[0].participants, ["petrov@ihep.ru", "ivanov@inst.test"]);
         let upd = update_event_ics(series, &EventInput { title: "Новое".into(), location: None, description: None,
             start: "2030-01-01T00:00:00Z".into(), end: "2030-01-01T01:00:00Z".into(), all_day: false }, false).unwrap();
         assert!(upd.contains("SUMMARY:Новое") && upd.contains("SUMMARY:Перенос"));
@@ -1606,7 +1606,7 @@ mod tests {
     fn builds_and_updates_vcard() {
         let input = ContactInput {
             full_name: "Сидоров Пётр Ильич".into(),
-            emails: vec!["sidorov@nrcki.ru".into(), " ".into()],
+            emails: vec!["sidorov@inst.test".into(), " ".into()],
             phones: vec!["+7 495 000-00-02".into()],
             org: Some("НИЦ КИ, УИТ".into()),
             title: Some("Инженер".into()),
@@ -1617,7 +1617,7 @@ mod tests {
         let parsed = parse_vcards(&card, "b", &Origin::default());
         assert_eq!(parsed[0].full_name, "Сидоров Пётр Ильич");
         assert_eq!(parsed[0].org.as_deref(), Some("НИЦ КИ, УИТ"));
-        assert_eq!(parsed[0].emails, vec!["sidorov@nrcki.ru"]);
+        assert_eq!(parsed[0].emails, vec!["sidorov@inst.test"]);
 
         let with_photo = card.replace("END:VCARD", "PHOTO;ENCODING=b;TYPE=JPEG:AAAA\r\nEND:VCARD");
         let upd = update_vcard(&with_photo, &ContactInput { phones: vec![], ..input.clone() }).unwrap();

@@ -52,21 +52,21 @@ def dav_get(path):
     import base64, urllib.request
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
     r = urllib.request.Request('https://localhost:5232' + path, method='PROPFIND', headers={
-        'Authorization': 'Basic ' + base64.b64encode(b'test@rrcki.ru:Secret-123').decode(), 'Depth': '1'})
+        'Authorization': 'Basic ' + base64.b64encode(b'test@corp.test:Secret-123').decode(), 'Depth': '1'})
     return urllib.request.urlopen(r, context=ctx).read().decode()
 
 def dav_delete(path):
     import base64, urllib.request
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
     r = urllib.request.Request('https://localhost:5232' + path, method='DELETE', headers={
-        'Authorization': 'Basic ' + base64.b64encode(b'test@rrcki.ru:Secret-123').decode()})
+        'Authorization': 'Basic ' + base64.b64encode(b'test@corp.test:Secret-123').decode()})
     return urllib.request.urlopen(r, context=ctx).status
 
 def dav_put(path, body):
     import base64, urllib.request
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
     r = urllib.request.Request('https://localhost:5232' + path, data=body.encode(), method='PUT', headers={
-        'Authorization': 'Basic ' + base64.b64encode(b'test@rrcki.ru:Secret-123').decode(), 'Content-Type': 'text/vcard; charset=utf-8'})
+        'Authorization': 'Basic ' + base64.b64encode(b'test@corp.test:Secret-123').decode(), 'Content-Type': 'text/vcard; charset=utf-8'})
     return urllib.request.urlopen(r, context=ctx).status
 
 def nc_mock(method, path):
@@ -85,13 +85,13 @@ def wait(d, css, t=20):
 
 def server_flags(uid):
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
-    M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('test@rrcki.ru', 'Secret-123')
+    M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('test@corp.test', 'Secret-123')
     M.select('INBOX'); _, data = M.uid('FETCH', str(uid), '(FLAGS)'); M.logout(); return data[0].decode()
 
 def login(d, password):
     wait(d, '.login-card')
     clear(d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]'))
-    d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').send_keys('test@rrcki.ru')
+    d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').send_keys('test@corp.test')
     d.find_element(By.CSS_SELECTOR, 'input[type=password]').send_keys(password)
     toggles = d.find_elements(By.CSS_SELECTOR, '.login-server-toggle')
     if toggles: toggles[0].click()
@@ -197,7 +197,7 @@ try:
     assert bg in ('rgb(34, 50, 75)', 'rgba(34, 50, 75, 1)'), bg
     time.sleep(0.5); d.save_screenshot(f'{OUT}/14-dark-inbox.png')
     d.find_element(By.CSS_SELECTOR, '.compose-top').click()
-    to = wait(d, '.compose-modal .recipient-field input'); to.send_keys('Иванов Иван <ivanov@nrcki.ru>')
+    to = wait(d, '.compose-modal .recipient-field input'); to.send_keys('Иванов Иван <ivanov@inst.test>')
     assert d.execute_script("return getComputedStyle(arguments[0]).color", to) == 'rgb(244, 247, 252)'
     sel = d.find_element(By.CSS_SELECTOR, '.compose-modal .rt-font')
     assert d.execute_script("return getComputedStyle(arguments[0]).backgroundColor", sel) == 'rgb(28, 35, 48)'
@@ -226,13 +226,13 @@ try:
     assert names == ['Дежурная смена NOC', 'Иванов Иван Иванович', 'Петрова Анна'], names; ok(f'contacts {names}')
     [r for r in d.find_elements(By.CSS_SELECTOR, '.contact-row') if 'Иванов' in r.get_attribute('textContent')][0].click()
     card = wait(d, '.contact-card').get_attribute('textContent')
-    assert 'ivanov@nrcki.ru' in card and 'Ведущий инженер' in card and 'НИЦ КИ, УИТ' in card, card; ok('contact card')
-    assert dav_put('/test@rrcki.ru/contacts/kuznetsova.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:kuznetsova\r\nFN:Кузнецова Мария\r\nEMAIL:kuznetsova@nrcki.ru\r\nEND:VCARD\r\n') in (200, 201, 204)
+    assert 'ivanov@inst.test' in card and 'Ведущий инженер' in card and 'НИЦ КИ, УИТ' in card, card; ok('contact card')
+    assert dav_put('/test@corp.test/contacts/kuznetsova.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:kuznetsova\r\nFN:Кузнецова Мария\r\nEMAIL:kuznetsova@inst.test\r\nEND:VCARD\r\n') in (200, 201, 204)
     search = d.find_element(By.CSS_SELECTOR, '.contacts-view .search-box input') if d.find_elements(By.CSS_SELECTOR, '.contacts-view .search-box input') else d.find_element(By.CSS_SELECTOR, 'input[placeholder="Имя, e-mail, телефон, отдел"]')
     search.send_keys('кузнец')
     W(d, 10).until(lambda d: any('Кузнецова Мария' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.contact-row')))
     ok('contacts search finds entries on the server')
-    clear(search); dav_delete('/test@rrcki.ru/contacts/kuznetsova.vcf')
+    clear(search); dav_delete('/test@corp.test/contacts/kuznetsova.vcf')
     d.save_screenshot(f'{OUT}/06-contacts.png')
 
     # 9. письмо из карточки контакта (SMTP + копия в «Отправленные»)
@@ -240,7 +240,7 @@ try:
     [b for b in d.find_elements(By.CSS_SELECTOR, '.contact-card button') if 'Написать' in b.text][0].click()
     wait(d, '.compose-modal')
     to = d.find_element(By.CSS_SELECTOR, '.recipient-field input').get_attribute('value')
-    assert 'ivanov@nrcki.ru' in to, to
+    assert 'ivanov@inst.test' in to, to
     subj = d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'); subj.send_keys('Проверка отправки из RRCKI Mail')
     body = d.find_element(By.CSS_SELECTOR, '.compose-body')
     body.send_keys('Добрый день!'); body.send_keys(Keys.ENTER); body.send_keys('Это тест.')
@@ -256,7 +256,7 @@ try:
     W(d, 30).until(lambda d: 'Письмо отправлено' in (d.find_elements(By.CSS_SELECTOR, '.toast') or [None])[0].get_attribute('textContent') if d.find_elements(By.CSS_SELECTOR, '.toast') else False)
     W(d, 10).until(lambda d: len(outbox()) == before + 1)
     s1, raw1 = subject_of(outbox()[-1])
-    assert s1 == 'Проверка отправки из RRCKI Mail' and b'ivanov@nrcki.ru' in raw1, s1; ok('sent via SMTP, Cyrillic subject intact')
+    assert s1 == 'Проверка отправки из RRCKI Mail' and b'ivanov@inst.test' in raw1, s1; ok('sent via SMTP, Cyrillic subject intact')
     m1 = email.message_from_bytes(raw1)
     parts = {p.get_content_type(): p.get_payload(decode=True).decode(p.get_content_charset() or 'utf-8') for p in m1.walk() if not p.is_multipart()}
     assert m1.get_content_type() == 'multipart/alternative' and set(parts) == {'text/plain', 'text/html'}, (m1.get_content_type(), list(parts))
@@ -265,7 +265,7 @@ try:
     assert 'Georgia' in h and ('bold' in h or '<b>' in h) and ('x-large' in h or 'size="5"' in h) and 'Добрый день!' in h, h
     ok('formatted mail: multipart/alternative, Georgia + bold + size in HTML, clean plain text')
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
-    M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('test@rrcki.ru', 'Secret-123')
+    M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('test@corp.test', 'Secret-123')
     typ, data = M.select('Sent'); M.logout()
     assert int(data[0]) >= 1, data; ok(f'copy saved to Sent ({int(data[0])})')
 
@@ -278,31 +278,31 @@ try:
     [b for b in d.find_elements(By.CSS_SELECTOR, '.reader-actions button') if 'Ответить' in b.text][0].click()
     wait(d, '.compose-modal')
     fields = d.find_elements(By.CSS_SELECTOR, '.recipient-field input')
-    assert 'yushkov_do@nrcki.ru' in fields[0].get_attribute('value'); 
+    assert 'yushkov_do@inst.test' in fields[0].get_attribute('value'); 
     assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Re: Отчёт с вложением'
     d.find_element(By.CSS_SELECTOR, '.add-cc').click()
     # Запись «как в корпоративной книге»: появилась на сервере после загрузки списка,
     # клиент о ней не знает — найти её можно только поиском на сервере.
-    assert dav_put('/test@rrcki.ru/contacts/sidorov.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:sidorov\r\nFN:Сидоров Олег\r\nN:Сидоров;Олег;;;\r\nEMAIL:sidorov@nrcki.ru\r\nORG:НИЦ КИ\\, ОИБ\r\nTITLE:Аналитик\r\nEND:VCARD\r\n') in (200, 201, 204)
+    assert dav_put('/test@corp.test/contacts/sidorov.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:sidorov\r\nFN:Сидоров Олег\r\nN:Сидоров;Олег;;;\r\nEMAIL:sidorov@inst.test\r\nORG:НИЦ КИ\\, ОИБ\r\nTITLE:Аналитик\r\nEND:VCARD\r\n') in (200, 201, 204)
     cc = d.find_elements(By.CSS_SELECTOR, '.recipient-field input')[1]; cc.send_keys('Сидор')
-    sug = W(d, 10).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.suggestions button') if 'sidorov@nrcki.ru' in b.get_attribute('textContent')])
+    sug = W(d, 10).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.suggestions button') if 'sidorov@inst.test' in b.get_attribute('textContent')])
     assert 'Аналитик' in sug[0].get_attribute('textContent'); ok('recipient found by server-side address book search (GAL-like)')
-    clear(cc); dav_delete('/test@rrcki.ru/contacts/sidorov.vcf')
+    clear(cc); dav_delete('/test@corp.test/contacts/sidorov.vcf')
     cc.send_keys('Петр')
     sug = W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.suggestions button'))
     labels = [b.get_attribute('textContent') for b in sug]
-    assert any('petrova@nrcki.ru' in l for l in labels), labels
+    assert any('petrova@inst.test' in l for l in labels), labels
     sug[0].click(); time.sleep(0.3)
-    assert 'Петрова Анна <petrova@nrcki.ru>' in cc.get_attribute('value'), cc.get_attribute('value'); ok('address autocomplete from contacts')
+    assert 'Петрова Анна <petrova@inst.test>' in cc.get_attribute('value'), cc.get_attribute('value'); ok('address autocomplete from contacts')
     d.save_screenshot(f'{OUT}/07-reply.png')
     before = len(outbox())
     d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
     W(d, 30).until(lambda d: len(outbox()) == before + 1)
     s2, raw2 = subject_of(outbox()[-1])
-    assert s2 == 'Re: Отчёт с вложением' and b'petrova@nrcki.ru' in raw2, (s2, raw2[:400])
+    assert s2 == 'Re: Отчёт с вложением' and b'petrova@inst.test' in raw2, (s2, raw2[:400])
     html2 = [p for p in email.message_from_bytes(raw2).walk() if p.get_content_type() == 'text/html'][0].get_payload(decode=True).decode()
     assert '<blockquote' in html2, html2; ok('reply quote sent as blockquote')
-    assert b'In-Reply-To: <report-oct@nrcki.ru>' in raw2 and b'References: <thread-root@nrcki.ru> <report-oct@nrcki.ru>' in raw2, raw2[:700]
+    assert b'In-Reply-To: <report-oct@inst.test>' in raw2 and b'References: <thread-root@inst.test> <report-oct@inst.test>' in raw2, raw2[:700]
     ok('reply has In-Reply-To, References and Cc')
 
     # 11. календарь (CalDAV)
@@ -335,7 +335,7 @@ try:
     set_value(d, field(d, 'Место'), 'Каб. 101')
     d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
     W(d, 20).until(lambda d: any('Тестовое совещание' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')))
-    assert 'SUMMARY:Тестовое совещание' in ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/work/*.ics'))
+    assert 'SUMMARY:Тестовое совещание' in ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@corp.test/work/*.ics'))
     ok('event created (UI + server)')
     ev = [b for b in d.find_elements(By.CSS_SELECTOR, '.event-block') if 'Тестовое совещание' in b.get_attribute('textContent')][0]
     # Блок может частично перекрываться линией «сейчас» — клик напрямую.
@@ -352,7 +352,7 @@ try:
     [b for b in wait(d, '.event-details').find_elements(By.TAG_NAME, 'button') if 'Удалить' in b.text][0].click()
     accept_confirm(d)
     W(d, 20).until(lambda d: not any('Совещание перенесено' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')))
-    assert 'Совещание перенесено' not in ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/work/*.ics'))
+    assert 'Совещание перенесено' not in ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@corp.test/work/*.ics'))
     ok('event deleted (UI + server)')
 
     # 13. повторяющееся событие: время заблокировано, место меняется у всей серии
@@ -363,7 +363,7 @@ try:
     set_value(d, field(d, 'Место'), 'Переговорная 305')
     d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
     W(d, 20).until(lambda d: sum('Переговорная 305' in (b.get_attribute('title') or '') + b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')) >= 0 and not d.find_elements(By.CSS_SELECTOR, '.editor-modal'))
-    ics = open('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/work/planerka.ics').read()
+    ics = open('/srv/imaptest/dav/collections/collection-root/test@corp.test/work/planerka.ics').read()
     assert 'LOCATION:Переговорная 305' in ics and 'RRULE:FREQ=WEEKLY;BYDAY=MO,TH' in ics and 'ORGANIZER' in ics and 'SEQUENCE:1' in ics, ics
     ok('recurring series: time locked, location updated, RRULE/ORGANIZER kept')
     d.save_screenshot(f'{OUT}/09-calendar-edit.png')
@@ -374,7 +374,7 @@ try:
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Новый контакт"]').click()
     wait(d, '.editor-modal')
     set_value(d, field(d, 'Фамилия Имя Отчество'), 'Сидоров Пётр Ильич')
-    set_value(d, field(d, 'E-mail (по одному в строке)'), 'sidorov@nrcki.ru')
+    set_value(d, field(d, 'E-mail (по одному в строке)'), 'sidorov@inst.test')
     set_value(d, field(d, 'Организация, отдел'), 'НИЦ КИ, УИТ')
     d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
     W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.contact-row')) == 4)
@@ -386,7 +386,7 @@ try:
     set_value(d, field(d, 'Должность'), 'Инженер')
     d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
     W(d, 20).until(lambda d: '+7 495 000-00-02' in d.find_element(By.CSS_SELECTOR, '.contact-card').get_attribute('textContent'))
-    vcf = ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@rrcki.ru/contacts/*.vcf'))
+    vcf = ''.join(open(f).read() for f in glob.glob('/srv/imaptest/dav/collections/collection-root/test@corp.test/contacts/*.vcf'))
     assert 'N:Сидоров;Пётр;Ильич;;' in vcf and 'TITLE:Инженер' in vcf and 'ORG:НИЦ КИ;УИТ' in vcf, vcf
     ok('contact edited (server vCard N/ORG/TITLE correct)')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.contact-card button') if 'Удалить' in b.text][0].click()
@@ -645,12 +645,12 @@ try:
     W(d, 10).until(lambda d: any('Петрова Анна' in b.text for b in d.find_elements(By.CSS_SELECTOR, '.talk-mentions button')))
     box.send_keys(Keys.ENTER)
     W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == '@Петрова Анна ')
-    box.send_keys('посмотри **срочно** https://nrcki.ru/doc'); box.send_keys(Keys.ENTER)
-    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw') == '@"petrova" посмотри **срочно** https://nrcki.ru/doc')
+    box.send_keys('посмотри **срочно** https://inst.test/doc'); box.send_keys(Keys.ENTER)
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw') == '@"petrova" посмотри **срочно** https://inst.test/doc')
     mm = W(d, 15).until(lambda d: talk_msg('посмотри'))
     W(d, 10).until(lambda d: talk_msg('посмотри').find_elements(By.CSS_SELECTOR, '.talk-mention'))
     assert talk_msg('посмотри').find_element(By.CSS_SELECTOR, 'b').text == 'срочно'
-    assert talk_msg('посмотри').find_element(By.CSS_SELECTOR, 'a').get_attribute('href') == 'https://nrcki.ru/doc'
+    assert talk_msg('посмотри').find_element(By.CSS_SELECTOR, 'a').get_attribute('href') == 'https://inst.test/doc'
     ok('mention autocomplete (@"id"), bold and link rendered')
 
     # Эмодзи из панели.
@@ -681,7 +681,7 @@ try:
 
     # Поиск сотрудников из списка бесед: в том числе тех, кого Nextcloud не подсказывает
     # (ограничение автодополнения), — через корпоративную адресную книгу по e-mail.
-    assert dav_put('/test@rrcki.ru/contacts/smirnov.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:smirnov\r\nFN:Смирнов Пётр\r\nEMAIL:smirnov@nrcki.ru\r\nEND:VCARD\r\n') in (200, 201, 204)
+    assert dav_put('/test@corp.test/contacts/smirnov.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:smirnov\r\nFN:Смирнов Пётр\r\nEMAIL:smirnov@inst.test\r\nEND:VCARD\r\n') in (200, 201, 204)
     rooms_search = d.find_element(By.CSS_SELECTOR, '.talk-rooms .search-box input')
     rooms_search.send_keys('Петров')
     W(d, 15).until(lambda d: any('Петрова Анна' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.talk-people .person-row')))
@@ -689,7 +689,7 @@ try:
     W(d, 20).until(lambda d: any('Смирнов Пётр' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.talk-people .person-row')))
     [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-people .person-row') if 'Смирнов Пётр' in r.get_attribute('textContent')][0].click()
     W(d, 15).until(lambda d: 'Смирнов Пётр' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').get_attribute('textContent'))
-    dav_delete('/test@rrcki.ru/contacts/smirnov.vcf')
+    dav_delete('/test@corp.test/contacts/smirnov.vcf')
     ok('chat search finds employees in Nextcloud, including via the address book (exact e-mail)')
 
     # 20. Файлы Nextcloud: папки, публичная ссылка, ссылка в письме, доступ сотруднику, загрузка, удаление.
@@ -803,7 +803,7 @@ try:
     from selenium.webdriver.common.action_chains import ActionChains
     def imap():
         ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
-        M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('test@rrcki.ru', 'Secret-123'); return M
+        M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('test@corp.test', 'Secret-123'); return M
     def subjects(folder):
         M = imap(); M.select(f'"{folder}"')
         _, ids = M.search(None, 'ALL'); out = []
@@ -813,7 +813,7 @@ try:
         M.logout(); return out
     M = imap()
     for subj in ('E2E перенос A', 'E2E перенос B', 'E2E удалить C', 'E2E тащить D'):
-        msg = EmailMessage(); msg['From'] = 'Робот <robot@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = subj; msg.set_content('тест')
+        msg = EmailMessage(); msg['From'] = 'Робот <robot@inst.test>'; msg['To'] = 'test@corp.test'; msg['Subject'] = subj; msg.set_content('тест')
         M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
     M.logout()
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
@@ -859,7 +859,7 @@ try:
         if not ids[0]: M.logout(); return None
         _, data = M.fetch(ids[0].split()[-1], '(FLAGS)'); M.logout(); return data[0].decode()
     # Письмо, помеченное к удалению «другим клиентом», не должно исчезнуть при нашем удалении.
-    msg = EmailMessage(); msg['From'] = 'x@nrcki.ru'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = 'E2E other client deleted'; msg.set_content('x')
+    msg = EmailMessage(); msg['From'] = 'x@inst.test'; msg['To'] = 'test@corp.test'; msg['Subject'] = 'E2E other client deleted'; msg.set_content('x')
     M = imap(); M.append('Trash', '(\\Deleted)', imaplib.Time2Internaldate(time.time()), msg.as_bytes()); M.logout()
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Корзина' in f.get_attribute('textContent')][0].click()
     W(d, 20).until(lambda d: row('E2E удалить C'))
@@ -877,8 +877,8 @@ try:
     # Ответить всем, «Важное», архив, отдельное окно письма.
     M = imap()
     for subj in ('E2E reply-all', 'E2E window'):
-        msg = EmailMessage(); msg['From'] = 'Начальник <boss@nrcki.ru>'; msg['To'] = 'test@rrcki.ru, Петров <petrov@nrcki.ru>'
-        msg['Cc'] = 'Сидоров <sidorov@nrcki.ru>, test@rrcki.ru'; msg['Subject'] = subj; msg['Message-ID'] = f'<{subj.replace(" ", "-")}@nrcki.ru>'; msg.set_content('Длинный текст письма.\n' * 200)
+        msg = EmailMessage(); msg['From'] = 'Начальник <boss@inst.test>'; msg['To'] = 'test@corp.test, Петров <petrov@inst.test>'
+        msg['Cc'] = 'Сидоров <sidorov@inst.test>, test@corp.test'; msg['Subject'] = subj; msg['Message-ID'] = f'<{subj.replace(" ", "-")}@inst.test>'; msg.set_content('Длинный текст письма.\n' * 200)
         M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
     M.logout()
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Входящие' in f.get_attribute('textContent')][0].click()
@@ -889,8 +889,8 @@ try:
     wait(d, '.compose-modal')
     fields = d.find_elements(By.CSS_SELECTOR, '.compose-modal .recipient-field input')
     to_v, cc_v = fields[0].get_attribute('value'), fields[1].get_attribute('value')
-    assert 'boss@nrcki.ru' in to_v and 'petrov@nrcki.ru' in to_v and 'test@rrcki.ru' not in to_v, to_v
-    assert 'sidorov@nrcki.ru' in cc_v and 'test@rrcki.ru' not in cc_v, cc_v
+    assert 'boss@inst.test' in to_v and 'petrov@inst.test' in to_v and 'test@corp.test' not in to_v, to_v
+    assert 'sidorov@inst.test' in cc_v and 'test@corp.test' not in cc_v, cc_v
     assert 'Re: E2E reply-all' == d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value')
     ok('reply all: sender + recipients, own address excluded, Cc kept')
     d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
@@ -919,7 +919,7 @@ try:
     W(d, 10).until(lambda d: '\\Flagged' in (flags_of('INBOX', 'E2E window') or ''))
     [b for b in d.find_elements(By.CSS_SELECTOR, '.message-window-toolbar button') if 'Всем' in b.text][0].click()
     to_v = wait(d, '.compose-modal .recipient-field input').get_attribute('value')
-    assert 'boss@nrcki.ru' in to_v and 'petrov@nrcki.ru' in to_v, to_v
+    assert 'boss@inst.test' in to_v and 'petrov@inst.test' in to_v, to_v
     d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
     ok('message window: opens separately, font size, flag, reply all')
     d.find_element(By.CSS_SELECTOR, '.message-window button[aria-label="Архивировать"]').click()
@@ -933,7 +933,7 @@ try:
     # Контекстное меню письма (правая кнопка), как в Outlook.
     M = imap()
     for subj in ('E2E ctx one', 'E2E ctx two'):
-        msg = EmailMessage(); msg['From'] = 'Коллега <colleague@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = subj; msg.set_content('текст')
+        msg = EmailMessage(); msg['From'] = 'Коллега <colleague@inst.test>'; msg['To'] = 'test@corp.test'; msg['Subject'] = subj; msg.set_content('текст')
         M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes())
     M.logout()
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
@@ -951,7 +951,7 @@ try:
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.context-menu'))
     menu_pick(row('E2E ctx one')[0], 'Ответить')
     W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Re: E2E ctx one')
-    assert 'colleague@nrcki.ru' in d.find_element(By.CSS_SELECTOR, '.compose-modal .recipient-field input').get_attribute('value')
+    assert 'colleague@inst.test' in d.find_element(By.CSS_SELECTOR, '.compose-modal .recipient-field input').get_attribute('value')
     d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
     menu_pick(row('E2E ctx one')[0], 'Пометить как важное')
     W(d, 10).until(lambda d: '$label1' in (flags_of('INBOX', 'E2E ctx one') or ''))
@@ -983,7 +983,7 @@ try:
         x = len(out)
         out += b'xref\n0 %d\n0000000000 65535 f \n' % (len(objs) + 1) + b''.join(b'%010d 00000 n \n' % o for o in offs)
         return out + b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % (len(objs) + 1, x)
-    msg = EmailMessage(); msg['From'] = 'Фотограф <photo@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = 'E2E preview'; msg.set_content('Смотрите вложения.')
+    msg = EmailMessage(); msg['From'] = 'Фотограф <photo@inst.test>'; msg['To'] = 'test@corp.test'; msg['Subject'] = 'E2E preview'; msg.set_content('Смотрите вложения.')
     msg.add_attachment(png(120, 80, (220, 40, 40)), maintype='image', subtype='png', filename='снимок.png')
     msg.add_attachment(pdf(), maintype='application', subtype='pdf', filename='схема.pdf')
     msg.add_attachment('Отчёт в кодировке 1251\nстрока 2'.encode('cp1251'), maintype='application', subtype='octet-stream', filename='отчёт.txt')
@@ -1032,10 +1032,10 @@ try:
     rel.attach(MIMEText('<html><head><style>.hdr { background: #003366; color: #ffffff; padding: 12px }</style></head><body>'
                         '<table width="600" bgcolor="#f0f0f0"><tr><td class="hdr"><img src="cid:logo@rrcki" width="120" alt="logo"> Новости НИЦ</td></tr>'
                         '<tr><td><p style="color:#990000">Вёрстка <b>рассылки</b></p><img id="remote" src="https://localhost:8443/e2e/remote.png" alt="r">'
-                        '<p><a href="https://example.org/novosti">Подробнее</a></p><p><a id="phish" href="https://evil.example/login">https://www.nrcki.ru/login</a></p></td></tr></table></body></html>', 'html', 'utf-8'))
+                        '<p><a href="https://example.org/novosti">Подробнее</a></p><p><a id="phish" href="https://evil.example/login">https://www.inst.test/login</a></p></td></tr></table></body></html>', 'html', 'utf-8'))
     logo = MIMEImage(png(120, 40, (0, 51, 102)), 'png'); logo.add_header('Content-ID', '<logo@rrcki>'); logo.add_header('Content-Disposition', 'inline', filename='logo.png')
     rel.attach(logo)
-    rel['Subject'] = 'E2E html'; rel['From'] = 'Рассылка <news@nrcki.ru>'; rel['To'] = 'test@rrcki.ru'
+    rel['Subject'] = 'E2E html'; rel['From'] = 'Рассылка <news@inst.test>'; rel['To'] = 'test@corp.test'
     M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), rel.as_bytes()); M.logout()
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
     W(d, 20).until(lambda d: row('E2E html'))
@@ -1065,7 +1065,7 @@ try:
     d.switch_to.default_content()
     modal = W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.confirm-modal[aria-label="Подозрительная ссылка"]'))
     t = modal.get_attribute('textContent')
-    assert 'nrcki.ru' in t and 'evil.example' in t, t
+    assert 'inst.test' in t and 'evil.example' in t, t
     d.save_screenshot(f'{OUT}/28-phishing-link.png')
     [b for b in modal.find_elements(By.TAG_NAME, 'button') if 'Не открывать' in b.text][0].click()
     # XSS: типовые приёмы в HTML-письме — ничего не выполняется ни в рамке письма, ни в окне программы.
@@ -1076,7 +1076,7 @@ try:
            '<object data="javascript:top.__xss=10"></object><embed src="javascript:top.__xss=11"><base href="javascript:top.__xss=12//">'
            '<style>@import "https://localhost:8443/e2e/x.css"; body{background:url("javascript:top.__xss=13")}</style>'
            '<math><mtext><table><mglyph><style><img src=x onerror="top.__xss=14"></style></mglyph></table></mtext></math>')
-    xm = MIMEText(f'<html><body>{xss}</body></html>', 'html', 'utf-8'); xm['Subject'] = 'E2E xss'; xm['From'] = 'Злоумышленник <bad@evil.example>'; xm['To'] = 'test@rrcki.ru'
+    xm = MIMEText(f'<html><body>{xss}</body></html>', 'html', 'utf-8'); xm['Subject'] = 'E2E xss'; xm['From'] = 'Злоумышленник <bad@evil.example>'; xm['To'] = 'test@corp.test'
     M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), xm.as_bytes()); M.logout()
     title0 = d.title
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
@@ -1138,7 +1138,7 @@ try:
     def notified():
         return open(notify_log, encoding='utf-8').read() if os.path.exists(notify_log) else ''
     def new_mail(subj):
-        m = EmailMessage(); m['From'] = 'Коллега <colleague@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj; m.set_content('x')
+        m = EmailMessage(); m['From'] = 'Коллега <colleague@inst.test>'; m['To'] = 'test@corp.test'; m['Subject'] = subj; m.set_content('x')
         M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), m.as_bytes()); M.logout()
     # После закрытых окон редактора в Xvfb (без оконного менеджера) фокус не возвращается — задаём явно.
     d.execute_script('document.hasFocus = () => true')
@@ -1187,7 +1187,7 @@ try:
     set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Название правила"]'), 'От Иванова')
     from selenium.webdriver.support.ui import Select
     Select(d.find_element(By.CSS_SELECTOR, '.filter-row select[aria-label="Поле"]')).select_by_visible_text('От')
-    set_value(d, d.find_element(By.CSS_SELECTOR, '.filter-row input[aria-label="Значение"]'), 'ivanov@nrcki.ru')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.filter-row input[aria-label="Значение"]'), 'ivanov@inst.test')
     d.find_element(By.CSS_SELECTOR, '.filter-folder').click()
     wait(d, '.folder-picker input').send_keys('2026')
     W(d, 5).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.folder-picker-list .folder-item')) == 1)
@@ -1200,7 +1200,7 @@ try:
     saved = _j.loads(_u.urlopen('https://localhost:8444/__defaults', context=ctx).read())
     f2 = saved['SOGoSieveFilters'][1]
     assert saved['SOGoMailSignature'] == 'С уважением', saved
-    assert f2['name'] == 'От Иванова' and f2['rules'] == [{'field': 'from', 'operator': 'contains', 'value': 'ivanov@nrcki.ru'}], f2
+    assert f2['name'] == 'От Иванова' and f2['rules'] == [{'field': 'from', 'operator': 'contains', 'value': 'ivanov@inst.test'}], f2
     assert f2['actions'] == [{'method': 'fileinto', 'argument': 'Проекты/2026'}], f2
     ok('filters: new rule saved to SOGo, other preferences kept')
     d.find_element(By.CSS_SELECTOR, '.filter-item .switch input').click()
@@ -1251,7 +1251,7 @@ try:
     d.find_element(By.CSS_SELECTOR, '.filters-modal button[aria-label="Закрыть"]').click()
     # Новые письма после сохранения правил: обработчик сначала запоминает папки (один проход), потом применяет.
     time.sleep(12)
-    rm = EmailMessage(); rm['From'] = 'Плановый отдел <plan@ihep.ru>'; rm['To'] = 'test@rrcki.ru'; rm['Subject'] = 'E2E правило отчёт'
+    rm = EmailMessage(); rm['From'] = 'Плановый отдел <plan@ihep.ru>'; rm['To'] = 'test@corp.test'; rm['Subject'] = 'E2E правило отчёт'
     rm.set_content('см. вложение'); rm.add_attachment('цифры'.encode(), maintype='text', subtype='plain', filename='Отчёт за ноябрь.txt')
     M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), rm.as_bytes()); M.logout()
     W(d, 60).until(lambda d: 'Правило «Отчёты»\tПлановый отдел: E2E правило отчёт' in notified())
@@ -1275,7 +1275,7 @@ try:
     fid = mutf7('INBOX/Рассылки')
     assert 'ok' in inv('create_folder', {'name': fid})
     time.sleep(12)
-    nm = EmailMessage(); nm['From'] = 'NOC <noc@nrcki.ru>'; nm['To'] = 'test@rrcki.ru'; nm['Subject'] = '[noc] плановые работы'; nm.set_content('x')
+    nm = EmailMessage(); nm['From'] = 'NOC <noc@inst.test>'; nm['To'] = 'test@corp.test'; nm['Subject'] = '[noc] плановые работы'; nm.set_content('x')
     M = imap(); M.append(f'"{fid}"', None, imaplib.Time2Internaldate(time.time()), nm.as_bytes()); M.logout()
     W(d, 60).until(lambda d: 'Правило «Рассылка»\tNOC: [noc] плановые работы' in notified())
     ok('server rule extension: notification for mail the server sorted into its folder')
@@ -1298,7 +1298,7 @@ try:
     store_files = [f for f in glob.glob(os.environ['XDG_DATA_HOME'] + '/**/mailstore/**/*', recursive=True) if os.path.isfile(f)]
     assert len(store_files) > 70, len(store_files)
     blob = b''.join(open(f, 'rb').read() for f in store_files)
-    for secret in ['Тестовое письмо'.encode(), 'robot@rrcki.ru'.encode(), 'Отчёт с вложением'.encode(), 'Содержимое отчёта'.encode()]:
+    for secret in ['Тестовое письмо'.encode(), 'robot@corp.test'.encode(), 'Отчёт с вложением'.encode(), 'Содержимое отчёта'.encode()]:
         assert secret not in blob, secret
     ok('local store on disk is encrypted (no subjects, addresses or bodies in plaintext)')
     page = inv('cached_messages', {'folder': 'INBOX', 'beforeUid': None, 'limit': 5})['ok']
@@ -1408,43 +1408,43 @@ try:
     # адрес отправителя: копировать, в контакты
     [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'Отчёт с вложением' in r.get_attribute('textContent')][0].click()
     chip = wait(d, '.sender-line .address-chip')
-    assert chip.get_attribute('data-address') == 'yushkov_do@nrcki.ru', chip.get_attribute('data-address')
+    assert chip.get_attribute('data-address') == 'yushkov_do@inst.test', chip.get_attribute('data-address')
     assert d.execute_script("const s = getComputedStyle(arguments[0]); return s.userSelect || s.webkitUserSelect", chip) in ('text', 'auto'), 'not selectable'
     chip.click()
     [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if b.text == 'Копировать адрес'][0].click()
-    W(d, 5).until(lambda d: 'Скопировано: yushkov_do@nrcki.ru' in d.find_element(By.CSS_SELECTOR, '.toast').get_attribute('textContent'))
+    W(d, 5).until(lambda d: 'Скопировано: yushkov_do@inst.test' in d.find_element(By.CSS_SELECTOR, '.toast').get_attribute('textContent'))
     chip.click()
     [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if 'Добавить в контакты' in b.text][0].click()
     ed = wait(d, '.editor-modal', 20)
     assert field(d, 'Фамилия Имя Отчество').get_attribute('value') == 'Юшков Дмитрий'
-    assert 'yushkov_do@nrcki.ru' in field(d, 'E-mail (по одному в строке)').get_attribute('value')
+    assert 'yushkov_do@inst.test' in field(d, 'E-mail (по одному в строке)').get_attribute('value')
     d.save_screenshot(f'{OUT}/43-add-contact.png')
     ed.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()
     W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.editor-modal'))
-    W(d, 10).until(lambda d: any('yushkov_do@nrcki.ru' in c['emails'] for c in (inv('list_contacts').get('ok') or {}).get('contacts', [])))
+    W(d, 10).until(lambda d: any('yushkov_do@inst.test' in c['emails'] for c in (inv('list_contacts').get('ok') or {}).get('contacts', [])))
     ok('sender address: copy and add to contacts (prefilled)')
 
     # история взаимодействия с организацией (домен jinr.ru): письма, вложения, встречи, контакты, договорённости
     import base64 as _b64m, datetime as _dt, urllib.request as _ur
     M = imap()
     for subj, frm, to, folder, files in (
-        ('ОИЯИ: проект договора', 'Петров П. <petrov@jinr.ru>', 'test@rrcki.ru', 'INBOX', ['Договор ОИЯИ.pdf']),
-        ('ОИЯИ: сроки поставки', 'petrov@jinr.ru', 'test@rrcki.ru', 'INBOX', []),
-        ('Re: ОИЯИ: проект договора', 'test@rrcki.ru', 'Петров П. <petrov@jinr.ru>', 'Sent', []),
-        ('ОИЯИ: удалённое', 'petrov@jinr.ru', 'test@rrcki.ru', 'Trash', []),
+        ('ОИЯИ: проект договора', 'Петров П. <petrov@jinr.ru>', 'test@corp.test', 'INBOX', ['Договор ОИЯИ.pdf']),
+        ('ОИЯИ: сроки поставки', 'petrov@jinr.ru', 'test@corp.test', 'INBOX', []),
+        ('Re: ОИЯИ: проект договора', 'test@corp.test', 'Петров П. <petrov@jinr.ru>', 'Sent', []),
+        ('ОИЯИ: удалённое', 'petrov@jinr.ru', 'test@corp.test', 'Trash', []),
     ):
         m = EmailMessage(); m['From'] = frm; m['To'] = to; m['Subject'] = subj; m['Date'] = email.utils.formatdate(localtime=True); m.set_content('Текст про договор')
         for f in files:
             m.add_attachment(b'%PDF-1.4 test', maintype='application', subtype='pdf', filename=f)
         M.append(folder, None, imaplib.Time2Internaldate(time.time()), m.as_bytes())
     M.logout()
-    dav_auth = 'Basic ' + _b64m.b64encode(b'test@rrcki.ru:Secret-123').decode()
+    dav_auth = 'Basic ' + _b64m.b64encode(b'test@corp.test:Secret-123').decode()
     dav_ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
     def dav_put(path, body, ctype):
-        r = _ur.Request('https://localhost:5232/test@rrcki.ru/' + path, data=body.encode(), method='PUT', headers={'Authorization': dav_auth, 'Content-Type': ctype})
+        r = _ur.Request('https://localhost:5232/test@corp.test/' + path, data=body.encode(), method='PUT', headers={'Authorization': dav_auth, 'Content-Type': ctype})
         assert _ur.urlopen(r, context=dav_ctx).status in (200, 201, 204)
     meet = (_dt.date.today() - _dt.timedelta(days=10)).strftime('%Y%m%d')
-    dav_put('work/jinr-meet.ics', f'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:jinr-meet\r\nSUMMARY:Совещание с ОИЯИ\r\nLOCATION:Дубна\r\nDTSTART:{meet}T090000Z\r\nDTEND:{meet}T100000Z\r\nORGANIZER;CN=Юшков:mailto:test@rrcki.ru\r\nATTENDEE;CN=Петров:mailto:petrov@jinr.ru\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n', 'text/calendar; charset=utf-8')
+    dav_put('work/jinr-meet.ics', f'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\nUID:jinr-meet\r\nSUMMARY:Совещание с ОИЯИ\r\nLOCATION:Дубна\r\nDTSTART:{meet}T090000Z\r\nDTEND:{meet}T100000Z\r\nORGANIZER;CN=Юшков:mailto:test@corp.test\r\nATTENDEE;CN=Петров:mailto:petrov@jinr.ru\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n', 'text/calendar; charset=utf-8')
     dav_put('contacts/jinr-ivan.vcf', 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:jinr-ivan\r\nFN:Иван Сидоренко\r\nEMAIL:ivan@jinr.ru\r\nORG:ОИЯИ\r\nTITLE:Главный инженер\r\nEND:VCARD\r\n', 'text/vcard; charset=utf-8')
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
     jinr = lambda: [c for c in (inv('counterparties').get('ok') or []) if c['domain'] == 'jinr.ru']
@@ -1452,7 +1452,7 @@ try:
     c = jinr()[0]
     assert (c['incoming'], c['outgoing'], c['own']) == (2, 1, False), c
     own = [x for x in inv('counterparties')['ok'] if x['own']]
-    assert own and own[0]['domain'] == 'rrcki.ru', own
+    assert own and own[0]['domain'] == 'corp.test', own
     ok('counterparties: organizations by address domain from local mail (trash skipped, own domain marked)')
 
     W(d, 20).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'ОИЯИ: проект договора' in r.get_attribute('textContent') and 'Re:' not in r.get_attribute('textContent')])
@@ -1493,7 +1493,7 @@ try:
     assert 'просрочено' in d.find_element(By.CSS_SELECTOR, '.agreement-row').get_attribute('textContent')
     assert d.find_elements(By.CSS_SELECTOR, '.timeline-agreement')
     cp_file = os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/counterparties.json'
-    cp_acc = lambda: [v for k, v in json.load(open(cp_file))['accounts'].items() if k.startswith('test@rrcki.ru')][0]
+    cp_acc = lambda: [v for k, v in json.load(open(cp_file))['accounts'].items() if k.startswith('test@corp.test')][0]
     saved = cp_acc()['jinr.ru']['agreements'][0]
     assert saved['text'] == 'Поставка оборудования до 1 декабря' and saved['subject'] == 'ОИЯИ: сроки поставки' and saved['uid'] and not saved['done'], saved
     assert os.stat(cp_file).st_mode & 0o077 == 0
@@ -1650,7 +1650,7 @@ try:
     from selenium.webdriver.support.ui import Select
     Select(wait(d, 'select[aria-label="Отмена отправки"]')).select_by_value('5')
     d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
-    compose('colleague@nrcki.ru', 'E2E отмена отправки', 'Текст для отмены')
+    compose('colleague@inst.test', 'E2E отмена отправки', 'Текст для отмены')
     d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
     toast = wait(d, '.outbox-toast', 10)
     assert 'уйдёт через' in toast.get_attribute('textContent'), toast.get_attribute('textContent')
@@ -1669,12 +1669,12 @@ try:
     [b for b in toast.find_elements(By.TAG_NAME, 'button') if 'Отправить сейчас' in b.text][0].click()
     W(d, 15).until(lambda d: sent_with('E2E отмена отправки'))
     raw = subject_of(sent_with('E2E отмена отправки')[0])[1].decode('utf-8', 'replace')
-    assert 'Disposition-Notification-To: <test@rrcki.ru>' in raw, raw[:600]
+    assert 'Disposition-Notification-To: <test@corp.test>' in raw, raw[:600]
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.outbox-toast'))
     ok('send now from the undo bar; read receipt requested (Disposition-Notification-To)')
 
     # Отложенная отправка: письмо ждёт в «Черновиках» и уходит в срок.
-    compose('colleague@nrcki.ru', 'E2E отложенное', 'Уйдёт позже')
+    compose('colleague@inst.test', 'E2E отложенное', 'Уйдёт позже')
     d.find_element(By.CSS_SELECTOR, '.send-more').click()
     pop = wait(d, '.schedule-pop')
     at = time.localtime(time.time() + 100)
@@ -1687,7 +1687,7 @@ try:
     assert not sent_with('E2E отложенное')
     ok('scheduled send: waits in Drafts, listed as scheduled')
     # Второе — на час вперёд, затем отмена: остаётся обычным черновиком.
-    compose('colleague@nrcki.ru', 'E2E отложенное отменить', 'Не уйдёт')
+    compose('colleague@inst.test', 'E2E отложенное отменить', 'Не уйдёт')
     d.find_element(By.CSS_SELECTOR, '.send-more').click()
     pop = wait(d, '.schedule-pop')
     set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 3600)))
@@ -1709,7 +1709,7 @@ try:
     assert len(sent_with('E2E отложенное')) == 1
     ok('scheduled mail sent on time once, removed from Drafts, service header stripped')
     # Связь оборвалась после передачи письма: результат неизвестен — повторно само не уходит.
-    compose('colleague@nrcki.ru', 'E2E отложенное обрыв [drop]', 'Связь оборвётся после передачи')
+    compose('colleague@inst.test', 'E2E отложенное обрыв [drop]', 'Связь оборвётся после передачи')
     d.find_element(By.CSS_SELECTOR, '.send-more').click()
     pop = wait(d, '.schedule-pop')
     set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 100)))
@@ -1730,8 +1730,8 @@ try:
     ok('scheduled mail: connection dropped after sending -> «result unknown», never resent automatically')
 
     # Уведомление о прочтении: запрос во входящем письме.
-    msg = EmailMessage(); msg['From'] = 'Начальник <boss@nrcki.ru>'; msg['To'] = 'test@rrcki.ru'; msg['Subject'] = 'E2E MDN request'
-    msg['Message-ID'] = '<mdn-request@nrcki.ru>'; msg['Disposition-Notification-To'] = 'boss@nrcki.ru'; msg.set_content('Подтвердите прочтение')
+    msg = EmailMessage(); msg['From'] = 'Начальник <boss@inst.test>'; msg['To'] = 'test@corp.test'; msg['Subject'] = 'E2E MDN request'
+    msg['Message-ID'] = '<mdn-request@inst.test>'; msg['Disposition-Notification-To'] = 'boss@inst.test'; msg.set_content('Подтвердите прочтение')
     M = imap(); M.append('INBOX', '', imaplib.Time2Internaldate(time.time()), msg.as_bytes()); M.logout()
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
     W(d, 20).until(lambda d: any('E2E MDN request' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
@@ -1739,7 +1739,7 @@ try:
     bar = wait(d, '.mdn-bar', 15)
     [b for b in bar.find_elements(By.TAG_NAME, 'button') if b.text == 'Отправить'][0].click()
     W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.mdn-bar'))
-    W(d, 15).until(lambda d: any(b'disposition-notification' in open(p, 'rb').read() and b'<mdn-request@nrcki.ru>' in open(p, 'rb').read() for p in outbox()))
+    W(d, 15).until(lambda d: any(b'disposition-notification' in open(p, 'rb').read() and b'<mdn-request@inst.test>' in open(p, 'rb').read() for p in outbox()))
     assert '$MDNSent' in flags_of('INBOX', 'E2E MDN request'), flags_of('INBOX', 'E2E MDN request')
     ok('read receipt request: bar shown, MDN sent (RFC 8098), $MDNSent set so it is not asked again')
 
@@ -1779,7 +1779,7 @@ try:
     rowt = lambda t: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if t in r.get_attribute('textContent')]
     # пересылка письма с вложениями: вложения исходного письма уходят вместе с ним
     M = imap()
-    fm = EmailMessage(); fm['From'] = 'Петрова Анна <petrova@nrcki.ru>'; fm['To'] = 'test@rrcki.ru'; fm['Subject'] = 'E2E пересылка'; fm.set_content('Смета во вложении')
+    fm = EmailMessage(); fm['From'] = 'Петрова Анна <petrova@inst.test>'; fm['To'] = 'test@corp.test'; fm['Subject'] = 'E2E пересылка'; fm.set_content('Смета во вложении')
     fm.add_attachment(b'SMETA-DATA-2027', maintype='application', subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename='Смета 2027.xlsx')
     fm.add_attachment(b'%PDF-1.4 plan', maintype='application', subtype='pdf', filename='plan.pdf')
     M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), fm.as_bytes()); M.logout()
@@ -1790,7 +1790,7 @@ try:
     d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Переслать"]').click()
     W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.compose-files') and 'Смета 2027.xlsx' in d.find_element(By.CSS_SELECTOR, '.compose-files').get_attribute('textContent') and 'plan.pdf' in d.find_element(By.CSS_SELECTOR, '.compose-files').get_attribute('textContent'))
     assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Fwd: E2E пересылка'
-    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@nrcki.ru')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@inst.test')
     d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
     W(d, 20).until(lambda d: sent_with('Fwd: E2E пересылка'))
     fwd = email.message_from_bytes(subject_of(sent_with('Fwd: E2E пересылка')[0])[1])
@@ -1803,7 +1803,7 @@ try:
     ics = ('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//RU\r\nMETHOD:PUBLISH\r\n'
            f'BEGIN:VEVENT\r\nUID:e2e-sched-1\r\nSUMMARY:Планёрка по проекту\r\nDTSTART;TZID=Europe/Moscow:{d1:%Y%m%d}T100000\r\nDTEND;TZID=Europe/Moscow:{d1:%Y%m%d}T110000\r\nRRULE:FREQ=WEEKLY;COUNT=3\r\nLOCATION:Переговорная 214\r\nEND:VEVENT\r\n'
            f'BEGIN:VEVENT\r\nUID:e2e-sched-2\r\nSUMMARY:Выездное совещание\r\nDTSTART;VALUE=DATE:{d1 + _dtc.timedelta(days=2):%Y%m%d}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n')
-    im = EmailMessage(); im['From'] = 'Секретарь <secretary@nrcki.ru>'; im['To'] = 'test@rrcki.ru'; im['Subject'] = 'E2E расписание совещаний'; im.set_content('Расписание во вложении')
+    im = EmailMessage(); im['From'] = 'Секретарь <secretary@inst.test>'; im['To'] = 'test@corp.test'; im['Subject'] = 'E2E расписание совещаний'; im.set_content('Расписание во вложении')
     im.add_attachment(ics.encode(), maintype='text', subtype='calendar', filename='Расписание.ics')
     M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), im.as_bytes()); M.logout()
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
@@ -1862,7 +1862,7 @@ try:
       t.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt}));""")
     W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.compose-modal') and any('План работ.docx' in c.get_attribute('textContent') for c in d.find_elements(By.CSS_SELECTOR, '.compose-files .file-chip')))
     assert d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'План работ.docx'
-    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@nrcki.ru')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@inst.test')
     d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
     W(d, 20).until(lambda d: sent_with('План работ.docx'))
     fm2 = email.message_from_bytes(subject_of(sent_with('План работ.docx')[0])[1])
@@ -1870,7 +1870,7 @@ try:
     ok('files dropped onto the mail window open a new mail with them attached')
     M = imap()
     for n, subj in enumerate(('E2E без сети флажок', 'E2E без сети удалить', 'E2E без сети конфликт')):
-        m = EmailMessage(); m['From'] = 'Робот <robot@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj; m['Message-ID'] = f'<offline-{n}-{int(time.time())}@e2e>'; m.set_content(f'Текст: {subj}')
+        m = EmailMessage(); m['From'] = 'Робот <robot@inst.test>'; m['To'] = 'test@corp.test'; m['Subject'] = subj; m['Message-ID'] = f'<offline-{n}-{int(time.time())}@e2e>'; m.set_content(f'Текст: {subj}')
         M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), m.as_bytes())
     M.logout()
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
@@ -1919,7 +1919,7 @@ try:
         panel.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
         ok('offline actions and outgoing mail queued (encrypted on disk), listed in the queue')
         # пока связи нет, письмо удалили в другом месте (веб-почта) — будет конфликт
-        subprocess.run(['doveadm', '-c', '/srv/imaptest/dovecot.conf', 'expunge', '-u', 'test@rrcki.ru', 'mailbox', 'INBOX', 'header', 'Subject', 'E2E без сети конфликт'], check=True)
+        subprocess.run(['doveadm', '-c', '/srv/imaptest/dovecot.conf', 'expunge', '-u', 'test@corp.test', 'mailbox', 'INBOX', 'header', 'Subject', 'E2E без сети конфликт'], check=True)
     finally:
         block_servers(False)
     W(d, 60).until(lambda d: (lambda q: q['online'] and not q['items'])(inv('offline_queue')['ok']))
@@ -1990,8 +1990,8 @@ try:
         [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if label in b.get_attribute('textContent')][0].click()
 
     # Цепочка: письмо и ответ на него сворачиваются в одну строку.
-    for subj, extra in (('E2E тред начало', {'Message-ID': '<t1@nrcki.ru>'}), ('Re: E2E тред начало', {'Message-ID': '<t2@nrcki.ru>', 'In-Reply-To': '<t1@nrcki.ru>', 'References': '<t1@nrcki.ru>'})):
-        m = EmailMessage(); m['From'] = 'Коллега <colleague@nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj
+    for subj, extra in (('E2E тред начало', {'Message-ID': '<t1@inst.test>'}), ('Re: E2E тред начало', {'Message-ID': '<t2@inst.test>', 'In-Reply-To': '<t1@inst.test>', 'References': '<t1@inst.test>'})):
+        m = EmailMessage(); m['From'] = 'Коллега <colleague@inst.test>'; m['To'] = 'test@corp.test'; m['Subject'] = subj
         for k, v in extra.items(): m[k] = v
         m.set_content('тред'); M = imap(); M.append('INBOX', '', imaplib.Time2Internaldate(time.time()), m.as_bytes()); M.logout(); time.sleep(1.1)
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click()
@@ -2083,7 +2083,7 @@ try:
     def menu_click(label):
         [b for b in wait(d, '.context-menu').find_elements(By.TAG_NAME, 'button') if label in b.get_attribute('textContent')][0].click()
     def add_mail(subj, headers=None, text='x'):
-        m = EmailMessage(); m['From'] = 'Рассылка <news@lists.nrcki.ru>'; m['To'] = 'test@rrcki.ru'; m['Subject'] = subj
+        m = EmailMessage(); m['From'] = 'Рассылка <news@lists.inst.test>'; m['To'] = 'test@corp.test'; m['Subject'] = subj
         for k, v in (headers or {}).items(): m[k] = v
         m.set_content(text); M = imap(); M.append('INBOX', '', imaplib.Time2Internaldate(time.time()), m.as_bytes()); M.logout()
     def refresh():
@@ -2093,7 +2093,7 @@ try:
     before = len(outbox())
     d.find_element(By.CSS_SELECTOR, '.compose-top').click()
     wait(d, '.compose-modal')
-    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@nrcki.ru')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'colleague@inst.test')
     set_value(d, d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'), 'E2E перетаскивание')
     d.execute_script("""
       const dt = new DataTransfer(); dt.items.add(new File(['перетащенный файл'], 'Смета.txt', {type: 'text/plain'}));
@@ -2112,7 +2112,7 @@ try:
     d.execute_script('window.__E2E_PRINT = []')
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Печать"]').click()
     printed = W(d, 5).until(lambda d: d.execute_script('return window.__E2E_PRINT'))[0]
-    assert 'Отчёт с вложением' in printed and 'yushkov_do@nrcki.ru' in printed and 'Во вложении отчёт' in printed and 'Отчёт за октябрь.txt' in printed, printed[:500]
+    assert 'Отчёт с вложением' in printed and 'yushkov_do@inst.test' in printed and 'Во вложении отчёт' in printed and 'Отчёт за октябрь.txt' in printed, printed[:500]
     ok('print: headers, body and attachment names in the print document')
 
     # «Это спам» и обратно.
@@ -2132,8 +2132,8 @@ try:
     ok('spam: moved to Junk with $Junk, back to Inbox with $NotJunk')
 
     # Отписка: RFC 8058 одним запросом и письмом на адрес отписки.
-    add_mail('E2E рассылка 1', {'List-Unsubscribe': '<mailto:unsub@lists.nrcki.ru?subject=unsubscribe-1>, <https://localhost:8443/unsub/42>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'})
-    add_mail('E2E рассылка 2', {'List-Unsubscribe': '<mailto:unsub@lists.nrcki.ru?subject=unsubscribe-2>'})
+    add_mail('E2E рассылка 1', {'List-Unsubscribe': '<mailto:unsub@lists.inst.test?subject=unsubscribe-1>, <https://localhost:8443/unsub/42>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'})
+    add_mail('E2E рассылка 2', {'List-Unsubscribe': '<mailto:unsub@lists.inst.test?subject=unsubscribe-2>'})
     refresh(); open_row('E2E рассылка 1')
     [b for b in wait(d, '.unsub-bar').find_elements(By.TAG_NAME, 'button') if 'Отписаться' in b.text][0].click()
     W(d, 15).until(lambda d: any(u['id'] == '42' and 'One-Click' in u['body'] for u in nc_mock('GET', '/test/state')['unsubscribed']))
@@ -2168,14 +2168,14 @@ acc = f'{H}/tb/abcd1234.default-release/Mail/Local Folders'
 os.makedirs(f'{acc}/Archives.sbd', exist_ok=True)
 open(f'{acc}/Inbox.msf', 'w').close()
 with open(f'{acc}/Inbox', 'wb') as f:
-    f.write('From - Mon Jan 15 10:00:00 2024\nX-Mozilla-Status: 0005\nX-Mozilla-Status2: 00000000\nFrom: Иванов <ivanov@example.ru>\nTo: test@rrcki.ru\nSubject: =?UTF-8?B?VEIg0L/RgNC+0YfQuNGC0LDQvdC90L7QtQ==?=\nMessage-ID: <tb-1@example.ru>\nDate: Mon, 15 Jan 2024 10:00:00 +0000\n\nПрочитанное и важное.\n>From the escaped line\n\n'.encode())
-    f.write('From - Tue Jan 16 11:00:00 2024\nX-Mozilla-Status: 0000\nFrom: Сидоров <sidorov@example.ru>\nTo: test@rrcki.ru\nSubject: TB unread\nMessage-ID: <tb-2@example.ru>\nDate: Tue, 16 Jan 2024 11:00:00 +0000\n\nНе прочитано.\n\n'.encode())
+    f.write('From - Mon Jan 15 10:00:00 2024\nX-Mozilla-Status: 0005\nX-Mozilla-Status2: 00000000\nFrom: Иванов <ivanov@example.ru>\nTo: test@corp.test\nSubject: =?UTF-8?B?VEIg0L/RgNC+0YfQuNGC0LDQvdC90L7QtQ==?=\nMessage-ID: <tb-1@example.ru>\nDate: Mon, 15 Jan 2024 10:00:00 +0000\n\nПрочитанное и важное.\n>From the escaped line\n\n'.encode())
+    f.write('From - Tue Jan 16 11:00:00 2024\nX-Mozilla-Status: 0000\nFrom: Сидоров <sidorov@example.ru>\nTo: test@corp.test\nSubject: TB unread\nMessage-ID: <tb-2@example.ru>\nDate: Tue, 16 Jan 2024 11:00:00 +0000\n\nНе прочитано.\n\n'.encode())
     f.write(b'From - Tue Jan 16 12:00:00 2024\nX-Mozilla-Status: 0009\nSubject: TB deleted\n\ngone\n')
 with open(f'{acc}/Archives.sbd/2023', 'wb') as f:
     f.write(b'From - Fri Dec 01 09:00:00 2023\nX-Mozilla-Status: 0001\nFrom: a@example.ru\nSubject: TB archive 2023\nMessage-ID: <tb-3@example.ru>\nDate: Fri, 01 Dec 2023 09:00:00 +0000\n\narchive\n')
 open(f'{H}/import/one.eml', 'wb').write('From: Почта <eml@example.ru>\nSubject: EML one\nMessage-ID: <eml-1@example.ru>\nDate: Wed, 10 Jan 2024 08:00:00 +0000\n\nПервое письмо eml.\n'.encode())
 open(f'{H}/import/two.eml', 'wb').write(b'From: eml@example.ru\r\nSubject: EML two\r\nMessage-ID: <eml-2@example.ru>\r\n\r\nsecond\r\n')
-open(f'{H}/import/contacts.csv', 'wb').write('"Имя";"Фамилия";"Адрес эл. почты";"Телефон раб."\r\n"Анна";"Импортова";"anna.import@nrcki.ru";"+7 111"\r\n"Борис";"Импортов";"boris.import@nrcki.ru";""\r\n'.encode('cp1251'))
+open(f'{H}/import/contacts.csv', 'wb').write('"Имя";"Фамилия";"Адрес эл. почты";"Телефон раб."\r\n"Анна";"Импортова";"anna.import@inst.test";"+7 111"\r\n"Борис";"Импортов";"boris.import@inst.test";""\r\n'.encode('cp1251'))
 d = session()
 try:
     wait(d, '.message-row', 30)
@@ -2234,7 +2234,7 @@ try:
     assert subjects(folder_id('Импорт/Архив Outlook/Проекты/2025')) == ['Письмо в папке проекта']
     M = imap(); M.select(f'"{pst_inbox}"'); _, data = M.fetch(b'1', '(BODY.PEEK[])'); M.logout()
     msg = email.message_from_bytes(data[0][1])
-    assert 'petrov@nrcki.ru' in msg['From'] and str(make_header(decode_header(msg['From']))).startswith('Петров'), msg['From']
+    assert 'petrov@' in msg['From'] and str(make_header(decode_header(msg['From']))).startswith('Петров'), msg['From']
     names = [str(make_header(decode_header(p.get_filename() or ''))) for p in msg.walk() if p.get_filename()]
     assert names == ['Смета 2025.txt'], names
     assert sorted(subjects(folder_id('Импорт/Письма'))) == ['EML one', 'EML two']
@@ -2250,7 +2250,7 @@ try:
     summary = W(d, 60).until(lambda d: [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход загрузки контактов"] .job-summary')] or None)[0]
     assert 'Добавлено контактов: 2' in summary, summary
     cs = inv('list_contacts')['ok']['contacts']
-    anna = [c for c in cs if 'anna.import@nrcki.ru' in c['emails']]
+    anna = [c for c in cs if 'anna.import@inst.test' in c['emails']]
     assert anna and anna[0]['fullName'] == 'Импортова Анна', anna
     tr_button('Загрузить контакты').click()
     W(d, 60).until(lambda d: any('уже были в книге: 2' in e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход загрузки контактов"] .job-summary')))
@@ -2307,10 +2307,10 @@ try:
         return wait(d, '.account-menu')
     def imap2():
         ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
-        M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('second@rrcki.ru', 'Secret-456'); return M
+        M = imaplib.IMAP4_SSL('localhost', 10993, ssl_context=ctx); M.login('second@corp.test', 'Secret-456'); return M
     [b for b in acc_menu().find_elements(By.TAG_NAME, 'button') if 'Добавить учётную запись' in b.get_attribute('textContent')][0].click()
     form = wait(d, '.add-account .login-card')
-    form.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').send_keys('second@rrcki.ru')
+    form.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').send_keys('second@corp.test')
     form.find_element(By.CSS_SELECTOR, 'input[type=password]').send_keys('Secret-456')
     form.find_element(By.CSS_SELECTOR, '.login-server-toggle').click()
     host, port, smtp_host, smtp_port = form.find_elements(By.CSS_SELECTOR, '.login-server input')
@@ -2320,17 +2320,17 @@ try:
     form.find_element(By.CSS_SELECTOR, '.login-submit').click()
     W(d, 20).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.add-account'))
     items = W(d, 10).until(lambda d: len(acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item')) == 2 and acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item'))
-    assert 'second@rrcki.ru' in items[1].get_attribute('textContent') and 'текущая' in items[0].get_attribute('textContent')
+    assert 'second@corp.test' in items[1].get_attribute('textContent') and 'текущая' in items[0].get_attribute('textContent')
     accounts_file = os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/accounts.json'
     saved = json.load(open(accounts_file))
-    assert [a['username'] for a in saved] == ['test@rrcki.ru', 'second@rrcki.ru'], saved
+    assert [a['username'] for a in saved] == ['test@corp.test', 'second@corp.test'], saved
     assert 'Secret-456' not in open(accounts_file).read() and os.stat(accounts_file).st_mode & 0o077 == 0
     ok('second account added (password checked, kept in keyring, not in accounts.json)')
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
     # Новое письмо во втором ящике: число непрочитанных на кнопке учётной записи.
     M = imap2()
     for subj in ('E2E второй ящик', 'E2E второй ящик 2'):
-        m = EmailMessage(); m['From'] = 'Коллега <colleague@nrcki.ru>'; m['To'] = 'second@rrcki.ru'; m['Subject'] = subj; m.set_content('письмо второго ящика')
+        m = EmailMessage(); m['From'] = 'Коллега <colleague@inst.test>'; m['To'] = 'second@corp.test'; m['Subject'] = subj; m.set_content('письмо второго ящика')
         M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), m.as_bytes())
     M.logout()
     W(d, 60).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.account-badge') and d.find_element(By.CSS_SELECTOR, '.account-badge').get_attribute('textContent') == '2')
@@ -2340,7 +2340,7 @@ try:
     d.find_element(By.CSS_SELECTOR, '.unified-item[data-role=inbox]').click()
     rows = W(d, 30).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')] and d.find_elements(By.CSS_SELECTOR, '.unified-row'))
     owners = {r.get_attribute('data-account') for r in rows}
-    assert owners == {'test@rrcki.ru@localhost', 'second@rrcki.ru@localhost'}, owners
+    assert owners == {'test@corp.test@localhost', 'second@corp.test@localhost'}, owners
     assert 'E2E второй ящик' in rows[0].get_attribute('textContent'), rows[0].get_attribute('textContent')
     d.save_screenshot(f'{OUT}/54-unified-inbox.png')
     ok('unified inbox: newest mail of both accounts together')
@@ -2349,15 +2349,15 @@ try:
     from selenium.webdriver.support.ui import Select
     urows = lambda: d.find_elements(By.CSS_SELECTOR, '.unified-row')
     total_rows = len(urows())
-    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Учётная запись"]')).select_by_value('second@rrcki.ru@localhost')
-    W(d, 5).until(lambda d: urows() and all(r.get_attribute('data-account') == 'second@rrcki.ru@localhost' for r in urows()))
+    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Учётная запись"]')).select_by_value('second@corp.test@localhost')
+    W(d, 5).until(lambda d: urows() and all(r.get_attribute('data-account') == 'second@corp.test@localhost' for r in urows()))
     assert len(urows()) == 2, len(urows())
     Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Учётная запись"]')).select_by_value('')
     W(d, 5).until(lambda d: len(urows()) == total_rows)
     domains = [o.get_attribute('value') for o in d.find_elements(By.CSS_SELECTOR, 'select[aria-label="Подразделение"] option') if o.get_attribute('value')]
-    assert 'nrcki.ru' in domains, domains
-    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).select_by_value('nrcki.ru')
-    W(d, 5).until(lambda d: urows() and all('· nrcki.ru' in r.find_element(By.CSS_SELECTOR, '.unified-label').get_attribute('textContent') for r in urows()))
+    assert 'inst.test' in domains, domains
+    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).select_by_value('inst.test')
+    W(d, 5).until(lambda d: urows() and all('· inst.test' in r.find_element(By.CSS_SELECTOR, '.unified-label').get_attribute('textContent') for r in urows()))
     nrcki_rows = len(urows())
     assert 0 < nrcki_rows <= total_rows
     set_value(d, d.find_element(By.CSS_SELECTOR, 'input[aria-label="Отправитель"]'), 'colleague')
@@ -2378,16 +2378,16 @@ try:
     d.find_element(By.CSS_SELECTOR, '.unified-item[data-role=inbox]').click()
     rows = W(d, 30).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-column[data-role=inbox] .unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')] and urows())
     # Фильтр «подразделение» остаётся — проверяется сохранение контекста при переключении.
-    assert Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).first_selected_option.get_attribute('value') == 'nrcki.ru'
+    assert Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).first_selected_option.get_attribute('value') == 'inst.test'
     # Письмо своей учётной записи открывается на месте, чужой — с переключением.
-    mine = [r for r in rows if r.get_attribute('data-account') == 'test@rrcki.ru@localhost'][0]
+    mine = [r for r in rows if r.get_attribute('data-account') == 'test@corp.test@localhost'][0]
     subj_mine = mine.find_element(By.CSS_SELECTOR, '.message-subject').get_attribute('textContent')
     mine.click()
     W(d, 15).until(lambda d: subj_mine in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
     # Переключение во время фоновой задачи прежней учётной записи (резервная копия).
     job = inv('backup_start', {'folders': []})['ok']
     [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')][0].click()
-    W(d, 30).until(lambda d: 'second@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    W(d, 30).until(lambda d: 'second@corp.test' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
     st = W(d, 60).until(lambda d: (inv('job_status', {'id': job}).get('ok') or {}).get('finished') and inv('job_status', {'id': job})['ok'])
     assert st['cancelled'] and 'остановлено' in (st['summary'] or ''), st
     assert st['imported'] < st['total'], st
@@ -2397,18 +2397,18 @@ try:
     W(d, 30).until(lambda d: (inv('cached_messages', {'folder': 'INBOX', 'beforeUid': None, 'limit': 50}).get('ok') or {'items': []})['items'])
     subj_b = [m['subject'] for m in inv('cached_messages', {'folder': 'INBOX', 'beforeUid': None, 'limit': 50})['ok']['items']]
     assert subj_b and all(x.startswith('E2E второй ящик') for x in subj_b), subj_b
-    assert all(r['account'] != 'test@rrcki.ru@localhost' or not r['active'] for r in (inv('unified_inbox', {'limit': 5})['ok']['items']))
+    assert all(r['account'] != 'test@corp.test@localhost' or not r['active'] for r in (inv('unified_inbox', {'limit': 5})['ok']['items']))
     ok(f"switching cancels the previous account's background job mid-way ({st['imported']} of {st['total']}); new account sees only its own folders and mail")
     W(d, 20).until(lambda d: 'E2E второй ящик 2' in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
     W(d, 20).until(lambda d: any('E2E второй ящик' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
-    assert json.load(open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/settings.json'))['username'] == 'second@rrcki.ru'
+    assert json.load(open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/settings.json'))['username'] == 'second@corp.test'
     ok('opening a message of the other account switches to it and opens the message')
     # Обратно — из меню, без ввода пароля.
-    [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'test@rrcki.ru' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.account-pick').click()
-    W(d, 30).until(lambda d: 'test@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'test@corp.test' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.account-pick').click()
+    W(d, 30).until(lambda d: 'test@corp.test' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
     # Контекст восстановлен: та же общая папка с тем же фильтром и то же открытое письмо.
     wait(d, '.unified-column[data-role=inbox]', 30)
-    assert Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).first_selected_option.get_attribute('value') == 'nrcki.ru'
+    assert Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подразделение"]')).first_selected_option.get_attribute('value') == 'inst.test'
     W(d, 20).until(lambda d: subj_mine in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
     d.save_screenshot(f'{OUT}/55-context-restored.png')
     ok('switching back restores the view: unified folder, filters and the open message')
@@ -2423,22 +2423,22 @@ try:
     W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.search-scope'))
     [b for b in d.find_elements(By.CSS_SELECTOR, '.search-scope button') if b.text == 'Все ящики'][0].click()
     W(d, 40).until(lambda d: len([r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if r.find_elements(By.CSS_SELECTOR, '.search-account') and 'E2E второй ящик' in r.get_attribute('textContent')]) == 2)
-    assert all('second@rrcki.ru' in r.find_element(By.CSS_SELECTOR, '.search-account').get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if r.find_elements(By.CSS_SELECTOR, '.search-account'))
+    assert all('second@corp.test' in r.find_element(By.CSS_SELECTOR, '.search-account').get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if r.find_elements(By.CSS_SELECTOR, '.search-account'))
     d.save_screenshot(f'{OUT}/55a-search-all-mailboxes.png')
     [b for b in d.find_elements(By.CSS_SELECTOR, '.search-scope button') if b.text == 'Этот ящик'][0].click()
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.search-account'))
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Очистить поиск"]').click()
     ok('search across all mailboxes: results of the other account labelled')
     # Отключение второй учётной записи.
-    item = [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'second@rrcki.ru' in i.get_attribute('textContent')][0]
-    item.find_element(By.CSS_SELECTOR, 'button[aria-label="Отключить second@rrcki.ru"]').click()
+    item = [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'second@corp.test' in i.get_attribute('textContent')][0]
+    item.find_element(By.CSS_SELECTOR, 'button[aria-label="Отключить second@corp.test"]').click()
     [b for b in wait(d, '.confirm-modal').find_elements(By.TAG_NAME, 'button') if b.text == 'Отключить'][0].click()
     W(d, 15).until(lambda d: len(acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item')) == 1)
-    assert [a['username'] for a in json.load(open(accounts_file))] == ['test@rrcki.ru']
+    assert [a['username'] for a in json.load(open(accounts_file))] == ['test@corp.test']
     import shutil
     if shutil.which('secret-tool'):
         r = subprocess.run(['secret-tool', 'search', '--all', 'service', 'ru.rrcki.mail'], capture_output=True, text=True)
-        assert 'second@rrcki.ru' not in r.stdout + r.stderr, r.stdout
+        assert 'second@corp.test' not in r.stdout + r.stderr, r.stdout
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Учётные записи"]').click()
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.unified-item'))
     ok('second account removed: list, keyring password and unified inbox gone')
@@ -2464,19 +2464,19 @@ try:
                 if ids[0].split():
                     hits.append(_re.sub(r'&([^-]*)-', lambda g: '&' if not g.group(1) else ('+' + g.group(1).replace(',', '/') + '-').encode().decode('utf-7'), name.strip('"')))
         M.logout(); return hits
-    r = inv('account_add', {'host': 'localhost', 'port': 10993, 'username': 'second@rrcki.ru', 'password': 'Secret-456', 'remember': True,
+    r = inv('account_add', {'host': 'localhost', 'port': 10993, 'username': 'second@corp.test', 'password': 'Secret-456', 'remember': True,
                             'smtpHost': 'localhost', 'smtpPort': 465, 'davUrl': None})
     assert 'ok' in r, r
-    d.execute_script("""window.__send = null; window.__TAURI_INTERNALS__.invoke('send_message', {to: 'colleague@nrcki.ru', cc: '', subject: 'E2E isolation [slow]',
+    d.execute_script("""window.__send = null; window.__TAURI_INTERNALS__.invoke('send_message', {to: 'colleague@inst.test', cc: '', subject: 'E2E isolation [slow]',
         body: 'from test', html: null, inReplyTo: null, references: null, attachments: [], readReceipt: null, delaySecs: 0, sendAt: null})
         .then((r) => { window.__send = {ok: r} }, (e) => { window.__send = {err: JSON.stringify(e)} })""")
     time.sleep(2.5)  # SMTP-сервер «думает» 6 секунд
-    assert 'ok' in inv('account_switch', {'key': 'second@rrcki.ru@localhost'})
+    assert 'ok' in inv('account_switch', {'key': 'second@corp.test@localhost'})
     res = W(d, 40).until(lambda d: d.execute_script('return window.__send'))
     assert 'ok' in res, res
-    sent_a = find_subject('test@rrcki.ru', 'Secret-123', 'E2E isolation')
+    sent_a = find_subject('test@corp.test', 'Secret-123', 'E2E isolation')
     assert sent_a and all('sent' in x.lower() or 'отправ' in x.lower() for x in sent_a), sent_a
-    assert not find_subject('second@rrcki.ru', 'Secret-456', 'E2E isolation'), 'copy saved into the other account'
+    assert not find_subject('second@corp.test', 'Secret-456', 'E2E isolation'), 'copy saved into the other account'
     ok('sending from A while switching to B: copy goes only to Sent of A')
 
     # B защищена кодом. Переход A (с Nextcloud) → B и выход с экрана блокировки B
@@ -2488,17 +2488,17 @@ try:
         return '%06d' % ((_struct.unpack('>I', h[o:o + 4])[0] & 0x7fffffff) % 1000000)
     setup = inv('totp_setup_begin')['ok']
     assert len(inv('totp_setup_confirm', {'code': code_now(setup['secret'])})['ok']) == 8
-    assert 'ok' in inv('account_switch', {'key': 'test@rrcki.ru@localhost'})
+    assert 'ok' in inv('account_switch', {'key': 'test@corp.test@localhost'})
     assert inv('nc_status')['ok']['connected'], 'precondition: Nextcloud of A connected'
-    locked = inv('account_switch', {'key': 'second@rrcki.ru@localhost'})['ok']
-    assert locked['account']['locked'] and locked['account']['username'] == 'second@rrcki.ru', locked
+    locked = inv('account_switch', {'key': 'second@corp.test@localhost'})['ok']
+    assert locked['account']['locked'] and locked['account']['username'] == 'second@corp.test', locked
     st_nc = inv('nc_status')
     assert 'err' in st_nc or not st_nc['ok']['connected'], ('Nextcloud of A still in memory while B is locked', st_nc)
     assert 'ok' in inv('logout', {'resetTotp': True})
     assert nc_mock('GET', '/test/state')['revoked'] is False, 'Nextcloud app password of A revoked by logging out of B'
-    assert 'ok' in inv('account_switch', {'key': 'test@rrcki.ru@localhost'})
+    assert 'ok' in inv('account_switch', {'key': 'test@corp.test@localhost'})
     assert inv('nc_status')['ok']['connected']
-    assert [a['username'] for a in json.load(open(accounts_file))] == ['test@rrcki.ru']
+    assert [a['username'] for a in json.load(open(accounts_file))] == ['test@corp.test']
     ok('switch to a code-protected account clears A (Nextcloud too); logging out of B does not revoke A')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
@@ -2688,8 +2688,8 @@ try:
     ok('calendar file in an Exchange mail: recurring meeting added to the Exchange calendar; added again — replaced, not doubled')
     # <<< exchange pim
     # обратно в RuPost, Exchange отключается
-    [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'test@rrcki.ru' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.account-pick').click()
-    W(d, 30).until(lambda d: 'test@rrcki.ru' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'test@corp.test' in i.get_attribute('textContent')][0].find_element(By.CSS_SELECTOR, '.account-pick').click()
+    W(d, 30).until(lambda d: 'test@corp.test' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
     item = [i for i in acc_menu().find_elements(By.CSS_SELECTOR, '.account-menu-item') if 'ivanov@exch.test' in i.get_attribute('textContent')][0]
     item.find_element(By.CSS_SELECTOR, 'button[aria-label^="Отключить"]').click()
     [b for b in wait(d, '.confirm-modal').find_elements(By.TAG_NAME, 'button') if b.text == 'Отключить'][0].click()
@@ -2723,7 +2723,7 @@ finally:
 d = session()
 try:
     wait(d, '.login-card', 30)
-    assert d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').get_attribute('value') == 'test@rrcki.ru'
+    assert d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').get_attribute('value') == 'test@corp.test'
     ok('after logout: login screen, username prefilled, password not remembered')
 finally:
     d.quit()
@@ -2734,7 +2734,7 @@ d = session()
 try:
     wait(d, '.login-card', 30)
     assert 'определятся автоматически' in d.find_element(By.CSS_SELECTOR, '.login-server-toggle').get_attribute('textContent')
-    d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').send_keys('test@rrcki.ru')
+    d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').send_keys('test@corp.test')
     d.find_element(By.CSS_SELECTOR, 'input[type=password]').send_keys('Secret-123')
     d.find_element(By.CSS_SELECTOR, '.login-submit').click()
     wait(d, '.message-row', 40)

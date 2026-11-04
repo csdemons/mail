@@ -1451,28 +1451,28 @@ mod tests {
 
     #[test]
     fn editor_window_stays_on_own_servers() {
-        let base = url::Url::parse("https://cloud.nrcki.ru/index.php/apps/onlyoffice/direct/x").unwrap();
+        let base = url::Url::parse("https://cloud.inst.test/index.php/apps/onlyoffice/direct/x").unwrap();
         let ok = |s: &str| editor_url_allowed(&base, &url::Url::parse(s).unwrap());
-        assert!(ok("https://cloud.nrcki.ru/index.php/f/5"));
-        assert!(ok("https://eurooffice.nrcki.ru/web-apps/x"));
+        assert!(ok("https://cloud.inst.test/index.php/f/5"));
+        assert!(ok("https://eurooffice.inst.test/web-apps/x"));
         assert!(ok("about:blank"));
         assert!(!ok("https://evil.example/login"));
-        assert!(!ok("https://nrcki.ru.evil.example/"));
-        assert!(!ok("http://eurooffice.nrcki.ru/"));
+        assert!(!ok("https://inst.test.evil.example/"));
+        assert!(!ok("http://eurooffice.inst.test/"));
         let local = url::Url::parse("https://localhost:8443/x").unwrap();
         assert!(!editor_url_allowed(&local, &url::Url::parse("https://example.org/").unwrap()));
         // Служебные адреса: только about:blank и blob: своих серверов.
         assert!(!ok("data:text/html,<form>login</form>"));
         assert!(!ok("javascript:alert(1)"));
         assert!(!ok("about:config"));
-        assert!(ok("blob:https://eurooffice.nrcki.ru/1234-5678"));
+        assert!(ok("blob:https://eurooffice.inst.test/1234-5678"));
         assert!(!ok("blob:https://evil.example/1234"));
         // Порт, логин в адресе, похожие имена.
-        assert!(!ok("https://eurooffice.nrcki.ru:8443/"));
-        assert!(!ok("https://cloud.nrcki.ru@evil.example/"));
-        assert!(!ok("https://evilnrcki.ru/"));
-        assert!(!ok("https://cloud.nrcki.ru.evil.example/"));
-        assert!(ok("https://NRCKI.ru/"));
+        assert!(!ok("https://eurooffice.inst.test:8443/"));
+        assert!(!ok("https://cloud.inst.test@evil.example/"));
+        assert!(!ok("https://evilinst.test/"));
+        assert!(!ok("https://cloud.inst.test.evil.example/"));
+        assert!(ok("https://INST.test/"));
         // IP-адрес и публичный домен второго уровня — только сам сервер.
         let ip = url::Url::parse("https://10.0.0.5/x").unwrap();
         assert!(editor_url_allowed(&ip, &url::Url::parse("https://10.0.0.5/y").unwrap()));
@@ -1485,21 +1485,21 @@ mod tests {
 
     #[test]
     fn encodes_path_segment() {
-        assert_eq!(seg("ivanov@nrcki.ru"), "ivanov@nrcki.ru");
+        assert_eq!(seg("ivanov@inst.test"), "ivanov@inst.test");
         assert_eq!(seg("Иван Петров/../x"), "%D0%98%D0%B2%D0%B0%D0%BD%20%D0%9F%D0%B5%D1%82%D1%80%D0%BE%D0%B2%2F..%2Fx");
     }
 
     #[test]
     fn normalizes_base_url() {
-        assert_eq!(normalize_base("next.nrcki.ru").unwrap().as_str(), "https://next.nrcki.ru/");
-        assert_eq!(normalize_base("https://next.nrcki.ru/nc").unwrap().as_str(), "https://next.nrcki.ru/nc/");
-        assert!(normalize_base("http://next.nrcki.ru").is_err());
+        assert_eq!(normalize_base("next.inst.test").unwrap().as_str(), "https://next.inst.test/");
+        assert_eq!(normalize_base("https://next.inst.test/nc").unwrap().as_str(), "https://next.inst.test/nc/");
+        assert!(normalize_base("http://next.inst.test").is_err());
     }
 
     #[test]
     fn renders_talk_parameters() {
         let v = json!({
-            "id": 7, "actorType": "users", "actorId": "yushkov_do@nrcki.ru", "actorDisplayName": "Юшков Дмитрий",
+            "id": 7, "actorType": "users", "actorId": "yushkov_do@inst.test", "actorDisplayName": "Юшков Дмитрий",
             "timestamp": 1793000000, "message": "{mention-user1}, посмотри {file}", "messageType": "comment", "systemMessage": "",
             "messageParameters": {
                 "mention-user1": { "type": "user", "id": "ivanov", "name": "Иванов Иван" },
@@ -1507,7 +1507,7 @@ mod tests {
             },
             "parent": { "id": 5, "actorDisplayName": "Иванов Иван", "message": "Где отчёт?", "messageParameters": [] }
         });
-        let m = parse_message(&v, "yushkov_do@nrcki.ru");
+        let m = parse_message(&v, "yushkov_do@inst.test");
         assert_eq!(m.text, "@Иванов Иван, посмотри");
         assert_eq!(m.files, vec![TalkFile { id: "42".into(), name: "Отчёт.docx".into(), size: 0, mimetype: String::new(), path: None, preview: false }]);
         // Сообщение «только файл»: текста нет, ID числом.
@@ -1526,7 +1526,7 @@ mod tests {
         let chat = json!([
             {"id": 10, "actorType": "users", "actorId": "test", "actorDisplayName": "Я", "timestamp": 1, "message": "Привет, {mention-user1}",
              "messageType": "comment", "systemMessage": "", "lastEditTime": 0,
-             "messageParameters": {"mention-user1": {"type": "user", "id": "ivanov@nrcki.ru", "name": "Иванов", "mention-id": "ivanov@nrcki.ru"}},
+             "messageParameters": {"mention-user1": {"type": "user", "id": "ivanov@inst.test", "name": "Иванов", "mention-id": "ivanov@inst.test"}},
              "reactions": {"👍": 2, "🎉": 1}, "reactionsSelf": ["👍"]},
             {"id": 11, "actorType": "users", "actorId": "ivanov", "actorDisplayName": "Иванов", "timestamp": 2, "message": "{actor} reacted",
              "messageType": "system", "systemMessage": "reaction",
@@ -1539,7 +1539,7 @@ mod tests {
         let m = parse_chat(&chat, me);
         assert_eq!(m.iter().map(|x| (x.id, x.update)).collect::<Vec<_>>(), vec![(10, false), (13, false), (10, true), (9, true)]);
         assert_eq!(m[0].reactions, vec![TalkReaction { emoji: "👍".into(), count: 2, own: true }, TalkReaction { emoji: "🎉".into(), count: 1, own: false }]);
-        assert_eq!(m[0].edit_text.as_deref(), Some("Привет, @\"ivanov@nrcki.ru\""));
+        assert_eq!(m[0].edit_text.as_deref(), Some("Привет, @\"ivanov@inst.test\""));
         assert!(m[2].edited && m[2].reactions[0].count == 3);
         assert!(m[3].deleted && m[3].text == "Сообщение удалено" && m[3].edit_text.is_none());
         assert!(m[1].system);
@@ -1562,11 +1562,11 @@ mod tests {
     #[test]
     fn parses_webdav_listing_and_paths() {
         let xml = r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
-          <d:response><d:href>/remote.php/dav/files/test%40rrcki.ru/Docs/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><oc:size>300</oc:size><oc:fileid>5</oc:fileid></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
-          <d:response><d:href>/remote.php/dav/files/test%40rrcki.ru/Docs/%D0%9E%D1%82%D1%87%D1%91%D1%82%20(1).pdf</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>120</d:getcontentlength><d:getcontenttype>application/pdf</d:getcontenttype><oc:fileid>7</oc:fileid><oc:permissions>RGDNVW</oc:permissions><oc:share-types><oc:share-type>3</oc:share-type></oc:share-types></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat><d:propstat><d:prop><oc:favorite/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>
-          <d:response><d:href>/remote.php/dav/files/test%40rrcki.ru/Docs/Sub/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><oc:permissions>RGD</oc:permissions></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+          <d:response><d:href>/remote.php/dav/files/test%40corp.test/Docs/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><oc:size>300</oc:size><oc:fileid>5</oc:fileid></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+          <d:response><d:href>/remote.php/dav/files/test%40corp.test/Docs/%D0%9E%D1%82%D1%87%D1%91%D1%82%20(1).pdf</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>120</d:getcontentlength><d:getcontenttype>application/pdf</d:getcontenttype><oc:fileid>7</oc:fileid><oc:permissions>RGDNVW</oc:permissions><oc:share-types><oc:share-type>3</oc:share-type></oc:share-types></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat><d:propstat><d:prop><oc:favorite/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>
+          <d:response><d:href>/remote.php/dav/files/test%40corp.test/Docs/Sub/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><oc:permissions>RGD</oc:permissions></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
         </d:multistatus>"#;
-        let f = parse_file_list(xml, "/remote.php/dav/files/test@rrcki.ru/").unwrap();
+        let f = parse_file_list(xml, "/remote.php/dav/files/test@corp.test/").unwrap();
         assert_eq!(f.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(), vec!["/Docs", "/Docs/Отчёт (1).pdf", "/Docs/Sub"]);
         assert!(f[0].is_dir && f[0].size == 300);
         assert_eq!((f[1].name.as_str(), f[1].size, f[1].file_id, f[1].shared, f[1].can_write), ("Отчёт (1).pdf", 120, Some(7), true, true));
@@ -1684,7 +1684,7 @@ pub fn editor_url_allowed(base: &url::Url, u: &url::Url) -> bool {
     if u.scheme() != "https" || u.port().is_some_and(|p| p != 443) || !u.username().is_empty() {
         return false;
     }
-    // Родительский домен Nextcloud (cloud.nrcki.ru → nrcki.ru) — только для доменных имён.
+    // Родительский домен Nextcloud (cloud.inst.test → inst.test) — только для доменных имён.
     if !matches!(base.host(), Some(url::Host::Domain(_))) {
         return false;
     }

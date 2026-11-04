@@ -1,10 +1,10 @@
 //! Проверка Nextcloud (Login Flow v2, Deck, Talk) без интерфейса.
-//! NC_URL=https://next.nrcki.ru cargo run --example nextcloud_check
+//! NC_URL=https://next.inst.test cargo run --example nextcloud_check
 use rrcki_mail_lib::nextcloud as nc;
 
 #[tokio::main]
 async fn main() {
-    let base = nc::normalize_base(&std::env::var("NC_URL").unwrap_or_else(|_| "https://next.nrcki.ru/".into())).unwrap();
+    let base = nc::normalize_base(&std::env::var("NC_URL").unwrap_or_else(|_| "https://next.inst.test/".into())).unwrap();
     let flow = nc::login_flow_start(&base).await.expect("login flow");
     println!("Откройте в браузере и войдите: {}", flow.login_url);
     let creds = loop {
