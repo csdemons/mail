@@ -1,4 +1,4 @@
-# RRCKI Mail
+# Atom Mail
 
 Корпоративный почтовый клиент для **Windows** и **Linux** (в т.ч. Astra Linux SE 1.8).
 Стек: [Tauri 2](https://tauri.app) (Rust) + React + TypeScript.
