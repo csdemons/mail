@@ -6,7 +6,7 @@ use rrcki_mail_lib::imap;
 async fn main() {
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let creds = imap::Credentials {
-        host: env("IMAP_HOST", "rp.nrcki.ru"),
+        host: env("IMAP_HOST", "rupost"),
         port: env("IMAP_PORT", "993").parse().expect("IMAP_PORT"),
         username: std::env::var("IMAP_USERNAME").expect("IMAP_USERNAME"),
         password: std::env::var("IMAP_PASSWORD").expect("IMAP_PASSWORD"),

@@ -2153,7 +2153,7 @@ pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> 
 }
 
 /// Сервер EWS из Autodiscover: в домене почты (`mail.corp.ru` для `@corp.ru`) или в
-/// списке администратора — точное имя или домен (`rrcki.ru` разрешает `mail.rrcki.ru`).
+/// списке администратора — точное имя или домен (`corp.ru` разрешает `exchange.corp.ru`).
 pub fn trusted_ews_host(host: &str, mail_domain: &str, allowed: &[String]) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty() {
@@ -2183,10 +2183,10 @@ mod tests {
         assert!(trusted_ews_host("CORP.RU.", "corp.ru", &[]));
         assert!(!trusted_ews_host("mail.corp.ru.evil.com", "corp.ru", &[]));
         assert!(!trusted_ews_host("evilcorp.ru", "corp.ru", &[]));
-        assert!(!trusted_ews_host("mail.rrcki.ru", "nrcki.ru", &[]));
-        assert!(trusted_ews_host("mail.rrcki.ru", "nrcki.ru", &["rrcki.ru".into()]));
-        assert!(trusted_ews_host("mail.rrcki.ru", "nrcki.ru", &["*.rrcki.ru".into()]));
-        assert!(!trusted_ews_host("rrcki.ru.evil.com", "nrcki.ru", &["rrcki.ru".into()]));
+        assert!(!trusted_ews_host("exchange.corp.ru", "mail.ru", &[]));
+        assert!(trusted_ews_host("exchange.corp.ru", "mail.ru", &["corp.ru".into()]));
+        assert!(trusted_ews_host("exchange.corp.ru", "mail.ru", &["*.corp.ru".into()]));
+        assert!(!trusted_ews_host("corp.ru.evil.com", "mail.ru", &["corp.ru".into()]));
         assert!(!trusted_ews_host("", "corp.ru", &["".into()]));
     }
 

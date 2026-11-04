@@ -10,7 +10,7 @@
 //!   "allowRememberPassword": true,       // false — запоминать пароль нельзя
 //!   "shareLinkDays": 30,                 // срок публичных ссылок «Отправить ссылкой»; 0 — без срока
 //!   "notificationContent": "full",       // "full" | "sender" | "none" — что видно в уведомлениях ОС
-//!   "exchangeHosts": ["rrcki.ru"]        // серверы Exchange вне домена почты, которые Autodiscover может предложить
+//!   "exchangeHosts": ["corp.ru"]        // серверы Exchange вне домена почты, которые Autodiscover может предложить
 //! }
 //! ```
 //! Реестр (HKLM\SOFTWARE\Policies\RRCKI Mail): RemoteImages (REG_SZ), InternalNetworks
@@ -302,7 +302,7 @@ mod tests {
         assert!(!p.ui().allow_remember_password && p.ui().policy_error.is_some());
         // Файл обычного пользователя (в тестах — не root) не считается политикой администратора.
         let good = dir.join("good.json");
-        std::fs::write(&good, br#"{"remoteImages": "proxy", "exchangeHosts": ["rrcki.ru"]}"#).unwrap();
+        std::fs::write(&good, br#"{"remoteImages": "proxy", "exchangeHosts": ["corp.ru"]}"#).unwrap();
         let p = from_file(&good);
         #[cfg(unix)]
         {
@@ -310,7 +310,7 @@ mod tests {
             if std::fs::metadata(&good).unwrap().uid() != 0 {
                 assert!(p.broken.is_some() && p.remote_images == RemoteImages::Off);
             } else {
-                assert!(p.broken.is_none() && p.remote_images == RemoteImages::Proxy && p.exchange_hosts == ["rrcki.ru"]);
+                assert!(p.broken.is_none() && p.remote_images == RemoteImages::Proxy && p.exchange_hosts == ["corp.ru"]);
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o666)).unwrap();
                 assert!(from_file(&good).broken.is_some(), "world-writable policy must not be trusted");

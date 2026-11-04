@@ -206,7 +206,7 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
   "rememberPassword": true,
   "allowRememberPassword": true,
   "shareLinkDays": 30,
-  "exchangeHosts": ["rrcki.ru"],
+  "exchangeHosts": ["corp.ru"],
   "localStore": true,
   "offlineDays": 30,
   "notificationContent": "full"

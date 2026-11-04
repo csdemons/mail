@@ -2,7 +2,7 @@
 # Локальный IMAPS-сервер (Dovecot) с тестовым ящиком для разработки и E2E.
 # Ubuntu/Debian/Astra, запуск от root: sudo tests/imap-server/setup.sh
 # Логин: test@rrcki.ru / Secret-123, сервер localhost:10993 (TLS, тестовый CA
-# добавляется в системное хранилище — как корпоративный CA для rp.nrcki.ru).
+# добавляется в системное хранилище — как корпоративный CA для rupost).
 set -euo pipefail
 T=${IMAP_TEST_DIR:-/srv/imaptest}
 HERE=$(cd "$(dirname "$0")" && pwd)

@@ -1484,12 +1484,12 @@ mod tests {
 
     #[test]
     fn password_only_to_configured_server() {
-        let base = Url::parse("https://rp.nrcki.ru/").unwrap();
+        let base = Url::parse("https://rupost/").unwrap();
         let mut c = DavClient::new("u", "p", &base).unwrap();
-        for ok in ["https://rp.nrcki.ru/SOGo/dav/u/", "https://RP.nrcki.ru:443/x"] {
+        for ok in ["https://rupost/SOGo/dav/u/", "https://RUPOST:443/x"] {
             assert!(c.check_target(&Url::parse(ok).unwrap()).is_ok(), "{ok}");
         }
-        for bad in ["https://evil.example/", "http://rp.nrcki.ru/", "https://rp.nrcki.ru:8443/", "https://rp.nrcki.ru.evil.example/"] {
+        for bad in ["https://evil.example/", "http://rupost/", "https://rupost:8443/", "https://rupost.evil.example/"] {
             assert!(c.check_target(&Url::parse(bad).unwrap()).is_err(), "{bad}");
         }
         // http в настройках: сам http-адрес не получает пароль, допустим лишь https того же сервера.
