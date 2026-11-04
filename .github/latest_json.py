@@ -29,7 +29,10 @@ for root, _, files in os.walk(folder):
         }
 notes = open(notes_path, encoding='utf-8').read().split('\n### Установка')[0].strip()
 manifest = {'version': version, 'notes': notes, 'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'assets': assets}
-missing = {v for v, _ in RULES} - set(assets)
+# Сборки, без которых релиз всё же выходит (например, macOS, когда GitHub не дал машину):
+# клиенты этой системы просто не видят обновления, пока пакет не добавят к релизу.
+optional = set(filter(None, os.environ.get('OPTIONAL_VARIANTS', '').split(',')))
+missing = {v for v, _ in RULES} - set(assets) - optional
 if missing:
     sys.exit(f'latest.json: нет файлов для сборок {sorted(missing)}')
 json.dump(manifest, open(os.path.join(folder, 'latest.json'), 'w', encoding='utf-8'), ensure_ascii=False, indent=2)

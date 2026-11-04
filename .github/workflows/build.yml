@@ -298,7 +298,12 @@ jobs:
   # для которой ещё нет релиза → пакеты прикрепляются к релизу v<версия>.
   release:
     name: GitHub Release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # macOS не обязателен: если GitHub не выделил машину с macOS, релиз выходит без
+    # пакета для неё, а пакет добавляется к уже выпущенному релизу перезапуском
+    # «Bundle (macos)» (шаг «Добавить macOS к выпущенному релизу» ниже).
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.bundle.result == 'success' && needs.bundle-win8.result == 'success' && needs.bundle-astra17.result == 'success'
     needs: [bundle, bundle-win8, bundle-astra17, bundle-macos]
     runs-on: ubuntu-22.04
     # Секрет подписи обновлений хранится в среде «release»: настройте в ней обязательное
@@ -318,16 +323,20 @@ jobs:
           draft=$(gh release view "v$v" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo none)
           if [ "$draft" = false ]; then
             echo "Релиз v$v уже опубликован — пропускаю"; echo "exists=true" >> "$GITHUB_OUTPUT"
+            has_mac=$(gh release view "v$v" --repo "$GITHUB_REPOSITORY" --json assets -q '[.assets[].name | select(endswith("_universal.app.tar.gz"))] | length')
+            if [ "$has_mac" = 0 ] && [ "${{ needs.bundle-macos.result }}" = success ]; then
+              echo "add_mac=true" >> "$GITHUB_OUTPUT"; echo "В релизе нет пакета macOS — добавлю"
+            fi
           else
             # Черновик от прерванной публикации (сбой GitHub при загрузке файлов) — убрать и выпустить заново.
             if [ "$draft" = true ]; then gh release delete "v$v" --repo "$GITHUB_REPOSITORY" --yes; echo "Удалён неполный черновик v$v"; fi
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: steps.ver.outputs.exists == 'false'
+        if: steps.ver.outputs.exists == 'false' || steps.ver.outputs.add_mac == 'true'
         with: { path: dist, merge-multiple: true }
       - name: File names without spaces
-        if: steps.ver.outputs.exists == 'false'
+        if: steps.ver.outputs.exists == 'false' || steps.ver.outputs.add_mac == 'true'
         run: |
           find dist -type f | while read -r f; do
             # Обычный deb — для Astra 1.8: в имени явно, чтобы на 1.7 не ставили его по ошибке.
@@ -349,10 +358,16 @@ jobs:
           - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+:** `rrcki-mail_*_amd64-astra1.8.deb` → `sudo apt install ./rrcki-mail_*_amd64-astra1.8.deb`
           - Узнать версию Astra: `cat /etc/astra_version`. Пакет для 1.8 на 1.7 не встанет (нет WebKitGTK 4.1) — и наоборот ставить не нужно.
           - **RED OS / ALT / Fedora:** `.rpm`; любой дистрибутив — `.AppImage` (`chmod +x` и запустить).
-          - **macOS 10.15+ (Apple Silicon и Intel):** `rrcki-mail_*_universal.dmg` → открыть и перетащить «RRCKI Mail» в «Программы». Программа без сертификата Apple: при первом запуске macOS сообщит, что не может проверить разработчика, — «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть» (или в Терминале `xattr -dr com.apple.quarantine "/Applications/RRCKI Mail.app"`). Дальше обновляется сама.
+          - MACOS_LINE **macOS 10.15+ (Apple Silicon и Intel):** `rrcki-mail_*_universal.dmg` → открыть и перетащить «RRCKI Mail» в «Программы». Программа без сертификата Apple: при первом запуске macOS сообщит, что не может проверить разработчика, — «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть» (или в Терминале `xattr -dr com.apple.quarantine "/Applications/RRCKI Mail.app"`). Дальше обновляется сама.
           TXT
+          if ls dist/*_universal.dmg >/dev/null 2>&1; then
+            sed -i 's/^- MACOS_LINE /- /' notes.md
+          else
+            sed -i 's/^- MACOS_LINE .*/- **macOS:** пакет будет добавлен к этому релизу позже (GitHub не выделил машину для сборки)./' notes.md
+          fi
       - name: latest.json (встроенное обновление)
         if: steps.ver.outputs.exists == 'false'
+        env: { OPTIONAL_VARIANTS: '${{ needs.bundle-macos.result != ''success'' && ''mac'' || '''' }}' }
         run: python3 .github/latest_json.py "${{ steps.ver.outputs.version }}" dist notes.md "$GITHUB_REPOSITORY"
       - name: SBOM (перечень компонентов) и SHA256SUMS
         if: steps.ver.outputs.exists == 'false'
@@ -391,3 +406,48 @@ jobs:
           body_path: notes.md
           files: dist/**/*
           fail_on_unmatched_files: true
+      - name: Добавить macOS к выпущенному релизу
+        if: steps.ver.outputs.add_mac == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          v="${{ steps.ver.outputs.version }}"; R="$GITHUB_REPOSITORY"
+          mkdir -p rel
+          gh release download "v$v" -R "$R" -D rel -p latest.json -p SHA256SUMS.txt
+          ls dist/*_universal.dmg dist/*_universal.app.tar.gz
+          python3 - "$v" "$R" <<'PY'
+          import hashlib, json, os, sys
+          v, repo = sys.argv[1:3]
+          m = json.load(open('rel/latest.json', encoding='utf-8'))
+          sums = open('rel/SHA256SUMS.txt').read().splitlines()
+          for name in sorted(os.listdir('dist')):
+              if not (name.endswith('_universal.dmg') or name.endswith('_universal.app.tar.gz')):
+                  continue
+              data = open(os.path.join('dist', name), 'rb').read()
+              h = hashlib.sha256(data).hexdigest()
+              sums = [l for l in sums if not l.endswith('  ' + name)] + [f'{h}  {name}']
+              if name.endswith('.app.tar.gz'):
+                  m['assets']['mac'] = {'name': name, 'url': f'https://github.com/{repo}/releases/download/v{v}/{name}', 'sha256': h, 'size': len(data)}
+          assert 'mac' in m['assets'], 'нет пакета обновления macOS'
+          json.dump(m, open('rel/latest.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+          open('rel/SHA256SUMS.txt', 'w').write('\n'.join(sorted(sums, key=lambda l: l.split('  ', 1)[1])) + '\n')
+          PY
+          [ -n "$UPDATE_SIGNING_KEY" ] || { echo "::error::Нет секрета UPDATE_SIGNING_KEY"; exit 1; }
+          umask 077
+          key="$RUNNER_TEMP/update-signing.pem"
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          pub=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)
+          grep -qF "\"$pub\"" src-tauri/src/updater.rs || { rm -f "$key"; echo "::error::Ключ подписи не соответствует открытому ключу в updater.rs"; exit 1; }
+          for f in latest.json SHA256SUMS.txt; do
+            openssl pkeyutl -sign -inkey "$key" -rawin -in "rel/$f" | base64 -w0 > "rel/$f.sig"
+            openssl pkeyutl -verify -pubin -inkey <(openssl pkey -in "$key" -pubout) -rawin -in "rel/$f" -sigfile <(base64 -d "rel/$f.sig")
+          done
+          rm -f "$key"
+          # Сначала пакеты, потом манифест: клиент не увидит обновление раньше, чем файл доступен.
+          gh release upload "v$v" -R "$R" --clobber dist/*_universal.dmg dist/*_universal.app.tar.gz
+          gh release upload "v$v" -R "$R" --clobber rel/SHA256SUMS.txt rel/SHA256SUMS.txt.sig rel/latest.json rel/latest.json.sig
+          gh release view "v$v" -R "$R" --json body -q .body > body.md
+          awk '/^- \*\*macOS:\*\* пакет будет добавлен/ { print "- **macOS 10.15+ (Apple Silicon и Intel):** `rrcki-mail_*_universal.dmg` → открыть и перетащить «RRCKI Mail» в «Программы». Программа без сертификата Apple: при первом запуске — «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть». Дальше обновляется сама."; next } { print }' body.md > body2.md
+          gh release edit "v$v" -R "$R" --notes-file body2.md
+          echo "Пакет macOS добавлен к v$v"
