@@ -315,9 +315,12 @@ jobs:
         run: |
           v=$(node -p "require('./src-tauri/tauri.conf.json').version")
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Релиз v$v уже есть — пропускаю"; echo "exists=true" >> "$GITHUB_OUTPUT"
+          draft=$(gh release view "v$v" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo none)
+          if [ "$draft" = false ]; then
+            echo "Релиз v$v уже опубликован — пропускаю"; echo "exists=true" >> "$GITHUB_OUTPUT"
           else
+            # Черновик от прерванной публикации (сбой GitHub при загрузке файлов) — убрать и выпустить заново.
+            if [ "$draft" = true ]; then gh release delete "v$v" --repo "$GITHUB_REPOSITORY" --yes; echo "Удалён неполный черновик v$v"; fi
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
