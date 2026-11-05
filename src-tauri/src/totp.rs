@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn builds_uri_and_qr() {
         let uri = otpauth_uri("GEZDGNBV", "ivanov@inst.test");
-        assert!(uri.starts_with("otpauth://totp/Atom%20Mail:ivanov@inst.test?secret=GEZDGNBV&issuer=Atom%20Mail"));
+        assert!(uri.starts_with("otpauth://totp/Atom%20Workspace:ivanov@inst.test?secret=GEZDGNBV&issuer=Atom%20Workspace"));
         assert!(qr_svg(&uri).unwrap().starts_with("<?xml") || qr_svg(&uri).unwrap().contains("<svg"));
     }
 }
