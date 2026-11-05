@@ -607,17 +607,18 @@ try:
 
     # Избранное: вторая беседа отмечается звёздочкой и встаёт первой (и на сервере тоже).
     rows = d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row:not(.person-row)')
-    second = rows[1].find_element(By.CSS_SELECTOR, '.sender-name').text
+    second = rows[1].find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent')
+    assert second, 'room name expected'
     rows[1].click()
-    W(d, 10).until(lambda d: second in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').text)
+    W(d, 10).until(lambda d: second in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').get_attribute('textContent'))
     d.find_element(By.CSS_SELECTOR, '.talk-favorite').click()
-    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row')[0].find_element(By.CSS_SELECTOR, '.sender-name').text == second
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row')[0].find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent') == second
                    and d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row')[0].find_elements(By.CSS_SELECTOR, '.room-favorite'))
     W(d, 10).until(lambda d: any(r['isFavorite'] for r in nc_mock('GET', '/test/state')['rooms'] if r['displayName'] == second or r.get('name') == second))
     d.find_element(By.CSS_SELECTOR, '.talk-favorite').click()
     W(d, 10).until(lambda d: not any(r['isFavorite'] for r in nc_mock('GET', '/test/state')['rooms']))
-    [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if 'УИТ — общий' in r.find_element(By.CSS_SELECTOR, '.sender-name').text][0].click()
-    W(d, 15).until(lambda d: 'УИТ — общий' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').text
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if 'УИТ — общий' in r.find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent')][0].click()
+    W(d, 15).until(lambda d: 'УИТ — общий' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').get_attribute('textContent')
                    and any('обновление в среду' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')))
     ok('chat favorites: star pins the conversation on top (Talk API)')
     target = [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'обновление в среду' in m.get_attribute('textContent')][0]
