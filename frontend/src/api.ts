@@ -47,10 +47,18 @@ const READ_ONLY = new Set([
   'nc_editors', 'nc_avatar', 'attachment_data', 'mail_filters_get', 'rules_get', 'counterparties', 'counterparty_timeline',
   'calendar_file_preview', 'attach_data', 'diagnostics',
 ])
+/** Опросы и служебные вызовы: ничего не меняют, разделённые запросы не сбрасывают. */
+const PASSIVE = new Set(['talk_poll', 'job_status', 'update_progress', 'nc_connect_poll', 'send_wait', 'notify', 'notify_poll_secs', 'nc_open', 'open_link'])
 const inflight = new Map<string, Promise<unknown>>()
 
 function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (!READ_ONLY.has(cmd)) return rawInvoke<T>(cmd, args)
+  if (PASSIVE.has(cmd)) return rawInvoke<T>(cmd, args)
+  if (!READ_ONLY.has(cmd)) {
+    // После изменения (перенос, флажок, отправка…) чтение должно увидеть новое состояние:
+    // уже идущие запросы больше не разделяются — ни сейчас, ни когда изменение завершится.
+    inflight.clear()
+    return rawInvoke<T>(cmd, args).finally(() => inflight.clear())
+  }
   const key = `${cmd}\u0000${JSON.stringify(args ?? {})}`
   const running = inflight.get(key)
   if (running) return running as Promise<T>

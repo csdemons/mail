@@ -2206,7 +2206,7 @@ try:
     [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if b.text == 'Отложить'][0].click()
     W(d, 15).until(lambda d: not row('E2E отложить'))
     snoozed = W(d, 10).until(lambda d: [f['id'] for f in inv('list_folders')['ok'] if 'Отложенные' in f['name']])[0]
-    assert 'E2E отложить' in subjects(snoozed) and 'atomsnooze-' in flags_u(snoozed, 'E2E отложить')
+    W(d, 15).until(lambda d: 'E2E отложить' in subjects(snoozed) and 'atomsnooze-' in flags_u(snoozed, 'E2E отложить'))
     d.save_screenshot(f'{OUT}/50-snoozed.png')
     W(d, 200).until(lambda d: 'E2E отложить' in subjects('INBOX'))
     fl = flags_u('INBOX', 'E2E отложить')
