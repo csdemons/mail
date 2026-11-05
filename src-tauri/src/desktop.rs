@@ -112,7 +112,7 @@ pub fn set_autostart(on: bool) -> Result<()> {
             let quoted = format!("\"{}\"", exe.display().to_string().replace('\\', "\\\\").replace('"', "\\\""));
             std::fs::write(
                 &file,
-                format!("[Desktop Entry]\nType=Application\nName=Atom Mail\nExec={quoted} {MINIMIZED_ARG}\nIcon=rrcki-mail\nX-GNOME-Autostart-enabled=true\nTerminal=false\n"),
+                format!("[Desktop Entry]\nType=Application\nName=Atom Workspace\nExec={quoted} {MINIMIZED_ARG}\nIcon=rrcki-mail\nX-GNOME-Autostart-enabled=true\nTerminal=false\n"),
             )?;
             Ok(())
         }
@@ -127,6 +127,8 @@ mod win {
     use crate::error::{AppError, Result};
 
     const RUN: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    /// Имя значения в реестре — прежнее (до переименования в Atom Workspace), чтобы
+    /// автозапуск, включённый в старых версиях, не задвоился и выключался.
     const NAME: &str = "Atom Mail";
 
     fn wide(s: &str) -> Vec<u16> {

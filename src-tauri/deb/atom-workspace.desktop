@@ -1,0 +1,10 @@
+[Desktop Entry]
+Categories={{categories}}
+Comment=Почта, календарь, контакты, задачи, чат и файлы НИЦ «Курчатовский институт»
+Exec={{exec}}
+StartupWMClass={{exec}}
+Icon={{icon}}
+Name=Atom Workspace
+GenericName=Рабочее пространство
+Terminal=false
+Type=Application

@@ -39,7 +39,7 @@ export default function LockScreen({ account, onUnlocked, onLogout }: {
       <form className="login-card lock-card" onSubmit={submit} aria-label="Программа заблокирована">
         <div className="login-brand">
           <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
-          <span>Atom Mail</span>
+          <span>Atom Workspace</span>
         </div>
         <h1>Программа заблокирована</h1>
         <p className="login-hint">

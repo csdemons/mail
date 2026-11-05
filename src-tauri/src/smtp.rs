@@ -129,7 +129,7 @@ pub fn build(msg: Outgoing) -> Result<Message> {
         .from(from)
         .subject(msg.subject)
         .date_now()
-        .user_agent(format!("Atom Mail {}", env!("CARGO_PKG_VERSION")));
+        .user_agent(format!("Atom Workspace {}", env!("CARGO_PKG_VERSION")));
     for to in &msg.to {
         builder = builder.to(parse_mailbox(to)?);
     }
@@ -298,7 +298,7 @@ pub fn build_mdn(from_name: &str, from: &str, to: &str, original_subject: &str, 
     }
     raw.push_str(&format!("Content-Type: multipart/report; report-type=disposition-notification; boundary=\"{boundary}\"\r\n\r\n"));
     raw.push_str(&format!("--{boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n", base64::engine::general_purpose::STANDARD.encode(text.as_bytes())));
-    raw.push_str(&format!("--{boundary}\r\nContent-Type: message/disposition-notification\r\n\r\nReporting-UA: Atom Mail {}\r\nFinal-Recipient: rfc822;{from}\r\n", env!("CARGO_PKG_VERSION")));
+    raw.push_str(&format!("--{boundary}\r\nContent-Type: message/disposition-notification\r\n\r\nReporting-UA: Atom Workspace {}\r\nFinal-Recipient: rfc822;{from}\r\n", env!("CARGO_PKG_VERSION")));
     if let Some(id) = original_id.and_then(clean_header_value) {
         raw.push_str(&format!("Original-Message-ID: {id}\r\n"));
     }

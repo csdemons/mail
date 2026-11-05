@@ -17,8 +17,9 @@ mkdir -p "$ROOT/usr/share/applications"
 cat > "$ROOT/usr/share/applications/rrcki-mail.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=RRCKI Mail
-Comment=Корпоративный почтовый клиент
+Name=Atom Workspace
+GenericName=Рабочее пространство
+Comment=Почта, календарь, контакты, задачи, чат и файлы НИЦ «Курчатовский институт»
 Exec=rrcki-mail
 Icon=rrcki-mail
 Terminal=false
@@ -36,13 +37,13 @@ cat > "$ROOT/DEBIAN/control" <<CONTROL
 Package: rrcki-mail
 Version: $VER~astra1.7
 Architecture: amd64
-Maintainer: Atom Mail <noreply@atom-mail.invalid>
+Maintainer: Atom Workspace <noreply@atom-workspace.invalid>
 Installed-Size: $SIZE
 Depends: $DEPS
 Recommends: hunspell-ru | myspell-ru, hunspell-en-us
 Section: mail
 Priority: optional
-Description: RRCKI Mail — корпоративный почтовый клиент (Astra Linux SE 1.7)
+Description: Atom Workspace — почта, календарь, задачи, чат и файлы (Astra Linux SE 1.7)
  Почта (IMAP/SMTP), календарь и контакты (CalDAV/CardDAV), задачи Deck и
  чат Talk из Nextcloud. Сборка для Debian 10 / Astra 1.7 (WebKitGTK 4.0).
 CONTROL

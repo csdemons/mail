@@ -257,6 +257,8 @@ async fn send_pinned(p: &mut Pinned, url: &Url, body: &str, auth: Option<&str>, 
         .header(http::header::HOST, host)
         .header(http::header::CONTENT_TYPE, "text/xml; charset=utf-8")
         .header(http::header::CONTENT_LENGTH, body.len())
+        // SOAP-ответы — XML, сжимается в 5–10 раз (сжатие динамического содержимого в IIS).
+        .header(http::header::ACCEPT_ENCODING, "gzip, deflate")
         .header(http::header::USER_AGENT, concat!("AtomMail/", env!("CARGO_PKG_VERSION")));
     if let Some(a) = auth {
         req = req.header(http::header::AUTHORIZATION, a);
@@ -272,11 +274,33 @@ async fn send_pinned(p: &mut Pinned, url: &Url, body: &str, auth: Option<&str>, 
         let collected = http_body_util::Limited::new(b, limit).collect().await.map_err(|e| {
             if e.downcast_ref::<http_body_util::LengthLimitError>().is_some() { too_large(limit) } else { AppError::ConnectionLost }
         })?;
-        Ok(Resp { status: parts.status, headers: parts.headers, body: collected.to_bytes().to_vec() })
+        let mut headers = parts.headers;
+        let enc = headers.remove(http::header::CONTENT_ENCODING).and_then(|v| v.to_str().ok().map(str::to_ascii_lowercase));
+        let body = decode_body(enc.as_deref(), collected.to_bytes().to_vec(), limit)?;
+        Ok(Resp { status: parts.status, headers, body })
     };
     let out = tokio::time::timeout(Duration::from_secs(120), work).await.map_err(|_| AppError::Timeout)?;
     p.used = std::time::Instant::now();
     out
+}
+
+/// Распаковать сжатый ответ (gzip/deflate), не больше `limit` байт после распаковки.
+fn decode_body(encoding: Option<&str>, body: Vec<u8>, limit: usize) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let read_all = |mut r: Box<dyn std::io::Read + '_>| -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        (&mut r).take(limit as u64 + 1).read_to_end(&mut out).map_err(|e| AppError::Other(format!("Exchange: не удалось распаковать ответ: {e}")))?;
+        if out.len() > limit { return Err(too_large(limit)); }
+        Ok(out)
+    };
+    match encoding.map(str::trim) {
+        None | Some("") | Some("identity") => Ok(body),
+        Some("gzip") | Some("x-gzip") => read_all(Box::new(flate2::read::GzDecoder::new(&body[..]))),
+        // «deflate» по HTTP — поток zlib, но некоторые серверы шлют «голый» deflate.
+        Some("deflate") => read_all(Box::new(flate2::read::ZlibDecoder::new(&body[..])))
+            .or_else(|_| read_all(Box::new(flate2::read::DeflateDecoder::new(&body[..])))),
+        Some(other) => Err(AppError::Other(format!("Exchange: неизвестное сжатие ответа «{other}»"))),
+    }
 }
 
 fn too_large(max: usize) -> AppError {
@@ -1979,7 +2003,7 @@ fn header_lines(resp: &Resp) -> String {
 pub async fn diagnose(input: &str, email: &str, login: &str, password: &str) -> String {
     let mut r = String::new();
     let (user, domain) = crate::ntlm::split_login(login);
-    r.push_str(&format!("Atom Mail {} — диагностика Exchange\nПочта: {email}\nЛогин: {login} (пользователь «{user}», домен «{domain}»)\n", env!("CARGO_PKG_VERSION")));
+    r.push_str(&format!("Atom Workspace {} — диагностика Exchange\nПочта: {email}\nЛогин: {login} (пользователь «{user}», домен «{domain}»)\n", env!("CARGO_PKG_VERSION")));
     // 1. Адрес EWS
     let input = input.trim();
     let url = if input.is_empty() || input == "auto" {
@@ -2176,6 +2200,27 @@ fn ews_url_of(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compressed_responses_are_unpacked_with_a_size_cap() {
+        use std::io::Write as _;
+        let xml = b"<s:Envelope>".repeat(500);
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&xml).unwrap();
+        let gz = gz.finish().unwrap();
+        assert!(gz.len() < xml.len() / 5);
+        assert_eq!(decode_body(Some("gzip"), gz.clone(), 1 << 20).unwrap(), xml);
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(&xml).unwrap();
+        assert_eq!(decode_body(Some("deflate"), z.finish().unwrap(), 1 << 20).unwrap(), xml);
+        let mut raw = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        raw.write_all(&xml).unwrap();
+        assert_eq!(decode_body(Some("deflate"), raw.finish().unwrap(), 1 << 20).unwrap(), xml);
+        assert_eq!(decode_body(None, xml.clone(), 1 << 20).unwrap(), xml);
+        // «Бомба»: после распаковки больше лимита — отказ, а не исчерпание памяти.
+        assert!(decode_body(Some("gzip"), gz, 1000).is_err());
+        assert!(decode_body(Some("br"), xml, 1 << 20).is_err());
+    }
 
     #[test]
     fn autodiscover_server_must_be_in_mail_domain_or_allowed() {

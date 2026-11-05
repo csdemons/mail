@@ -7,8 +7,7 @@ import {
 } from 'lucide-react'
 
 import {
-  api, editNotice, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE,
-} from './api'
+  api, editNotice, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE, TYPING_PAUSE_MS } from './api'
 import type {
   Account, Contact, Draft, PickedFile, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile, UnifiedFilters, UnifiedRole, UnifiedItem, SavedView,
 } from './types'
@@ -46,6 +45,7 @@ import { buildDraft, ensureArchive, forwardDraft, withSignature } from './mailAc
 import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
 import { appInFront, loadPrefs, notify, savePrefs } from './notifications'
 import type { NotifyPrefs } from './notifications'
+import { SkeletonReader, SkeletonRows } from './Skeleton'
 
 const ROLE_LABELS: Partial<Record<FolderRole, string>> = {
   inbox: 'Входящие',
@@ -102,6 +102,17 @@ function saveExpanded(ids: Set<string>) {
 
 function senderLabel(m: MessageSummary): string {
   return m.fromName || m.fromAddress || '(без отправителя)'
+}
+
+/** Отправленные и черновики: в списке важнее, кому письмо, а не от кого (от вас). */
+function recipientsLabel(m: MessageSummary): string {
+  const names = m.to.map((t) => {
+    const lt = t.indexOf('<')
+    const name = lt > 0 ? t.slice(0, lt).trim().replace(/^"|"$/g, '') : ''
+    return name || (lt >= 0 ? t.slice(lt + 1).replace(/>.*$/, '') : t).trim()
+  }).filter(Boolean)
+  if (names.length === 0) return 'Кому: (без получателей)'
+  return `Кому: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` и ещё ${names.length - 3}` : ''}`
 }
 
 function pluralLetters(n: number): string {
@@ -522,7 +533,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         return
       }
       for (const m of items.slice(0, 3)) {
-        notify(`Новое письмо — ${senderLabel(m)}${where}`, p.preview ? (m.subject || '(без темы)') : 'Откройте Atom Mail, чтобы прочитать')
+        notify(`Новое письмо — ${senderLabel(m)}${where}`, p.preview ? (m.subject || '(без темы)') : 'Откройте Atom Workspace, чтобы прочитать')
       }
     }
     async function tick() {
@@ -930,7 +941,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     let cancelled = false
     const timer = window.setTimeout(() => {
       api.searchMail(q).then((found) => { if (!cancelled) setLocalResults(found) }).catch(() => { if (!cancelled) setLocalResults([]) })
-    }, 200)
+    }, TYPING_PAUSE_MS)
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [query])
 
@@ -1366,7 +1377,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       <header className="topbar">
         <div className="brand">
           <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
-          <span>Atom Mail</span>
+          <span>Atom Workspace</span>
         </div>
         <button className="account-switch" aria-label="Учётные записи" onClick={() => { if (!showAccountMenu) void acc.reload(); setShowAccountMenu(!showAccountMenu) }}>
           <div className="account-avatar"><Users size={20} /></div>
@@ -1462,7 +1473,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               )
             })}
             <div className="unified-separator" />
-            {folders.length === 0 && <div className="folder-placeholder">Загрузка папок…</div>}
+            {folders.length === 0 && <SkeletonRows variant="folder" count={7} label="Загрузка папок…" />}
             {visibleFolders.map((f) => {
               const Icon = f.role === 'other' && !f.selectable ? FolderOpen : ROLE_ICONS[f.role]
               const isOpen = expanded.has(f.id)
@@ -1593,7 +1604,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <button className="icon-button soft" aria-label="Снять отметку" onClick={() => setChecked(new Set())}><X size={15} /></button>
           </div>}
           <div className="message-list" ref={listRef} onScroll={(e) => { scrollTop.current = e.currentTarget.scrollTop }}>
-            {loading && messages.length === 0 && <div className="empty-state"><span>Загрузка писем с сервера…</span></div>}
+            {loading && messages.length === 0 && <SkeletonRows variant="message" count={9} label="Загрузка писем с сервера…" />}
             {listError && (
               <div className="empty-state" role="alert">
                 <strong>Не удалось загрузить письма</strong>
@@ -1603,7 +1614,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             )}
             {listRows.map(({ m, count, child, thread }) => {
               const key = messageKey(m)
-              const sender = senderLabel(m)
+              const outgoing = ['sent', 'drafts'].includes(folders.find((f) => f.id === m.folder)?.role ?? '')
+              const sender = outgoing ? recipientsLabel(m) : senderLabel(m)
               const due = dueOf(m)
               const cats = categoriesOf(m, categories)
               const open = openThreads.has(thread)
@@ -1618,7 +1630,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
                   onPointerDown={(e) => startMessageDrag(e, m)}
                   onDragStart={(e) => e.preventDefault()}
                 >
-                  <div className={`sender-avatar avatar-${m.uid % 5}`}>{initials(sender)}</div>
+                  <div className={`sender-avatar avatar-${m.uid % 5}`}>{initials(outgoing ? sender.slice(6) : sender)}</div>
                   <div className="message-summary">
                     <div className="message-topline"><span className="sender-name">{sender}</span><time>{formatListDate(m.date)}</time></div>
                     <div className="message-subject">
@@ -1750,7 +1762,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               <button className="secondary-button" onClick={() => openComposer('forward')}><Forward size={16} /> Переслать</button>
             </div>
           </div> : <div className="empty-reader">
-            {detailLoading ? <span>Загрузка письма…</span>
+            {detailLoading ? <SkeletonReader />
               : detailError ? <><strong>Не удалось открыть письмо</strong><span>{detailError}</span></>
               : <><Mail size={42} /><strong>Выберите письмо</strong><span>Выберите сообщение в списке для просмотра.</span></>}
           </div>}
@@ -1837,7 +1849,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <label><input type="checkbox" checked={prefs.chat} onChange={(e) => updatePrefs({ chat: e.target.checked })} /> О сообщениях в чате</label>
             <label><input type="checkbox" checked={prefs.preview && notifyPolicy === 'full'} disabled={notifyPolicy !== 'full'} onChange={(e) => updatePrefs({ preview: e.target.checked })} /> Показывать тему письма и текст сообщения</label>
             {notifyPolicy !== 'full' && <span className="settings-hint">{notifyPolicy === 'none' ? 'Администратор разрешил показывать в уведомлениях только сам факт нового письма или сообщения.' : 'Администратор запретил показывать в уведомлениях тему и текст.'}</span>}
-            <button className="text-button" onClick={() => notify('Atom Mail', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
+            <button className="text-button" onClick={() => notify('Atom Workspace', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
           </div>
           <SignatureSettings signature={signature} onSaved={(text, msg) => { setSignature(text); setNotice(msg) }} />
           <SendingSettings />

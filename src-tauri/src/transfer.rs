@@ -564,7 +564,7 @@ async fn backup_inner(creds: &Credentials, folders: Vec<BackupFolder>, dir: &Pat
     job.update(|s| s.phase = "Подключение к серверу".into());
     let mut conn = imap::connect(creds).await?;
     let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M");
-    let target = dir.join(format!("Atom Mail — копия {stamp}"));
+    let target = dir.join(format!("Atom Workspace — копия {stamp}"));
     create_backup_dir(&target)?;
 
     // Сначала считаем письма, чтобы показать ход.

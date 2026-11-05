@@ -4,8 +4,9 @@ import {
   Pencil, Presentation, RefreshCw, Search, Share2, Trash2, Upload, UserPlus, X,
 } from 'lucide-react'
 
-import { api, editNotice, isOfficeFile, errorText, formatSize, NC_MAIL_DIR } from './api'
+import { api, editNotice, isOfficeFile, errorText, formatSize, NC_MAIL_DIR, TYPING_PAUSE_MS } from './api'
 import type { NcFile, NcShare, NcUser } from './types'
+import { SkeletonRows } from './Skeleton'
 
 function fileIcon(f: NcFile) {
   if (f.isDir) return <Folder size={18} className="file-ico dir" />
@@ -18,6 +19,8 @@ function when(modified: string) {
   const d = new Date(modified)
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric', hour: '2-digit', minute: '2-digit' })
 }
+
+const FILES_PAGE = 300
 
 export default function FilesView({ onNotice, onSendLinks }: {
   onNotice: (t: string) => void
@@ -58,6 +61,9 @@ export default function FilesView({ onNotice, onSendLinks }: {
     return parts.map((name, i) => ({ name, path: `/${parts.slice(0, i + 1).join('/')}` }))
   }, [path])
 
+  // Большие папки показываем страницами.
+  const [shown, setShown] = useState(FILES_PAGE)
+  useEffect(() => setShown(FILES_PAGE), [path, filter])
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase()
     return (files ?? []).filter((f) => !q || f.name.toLowerCase().includes(q))
@@ -160,7 +166,7 @@ export default function FilesView({ onNotice, onSendLinks }: {
         {busy && <div className="inline-warning files-busy">{busy}</div>}
         {error && <div className="inline-warning" role="alert">{error.includes('не найдено') && path === NC_MAIL_DIR ? 'Папки «Почта» пока нет — она появится при первом сохранении вложения или отправке файла ссылкой.' : error}</div>}
         <div className="files-list" role="list">
-          {visible.map((f) => (
+          {visible.slice(0, shown).map((f) => (
             <div key={f.path} role="listitem" className={`file-row ${selected?.path === f.path ? 'selected' : ''}`}
               onClick={() => setSelected(f)} onDoubleClick={() => (f.isDir ? setPath(f.path) : isOfficeFile(f.name) ? void edit(f) : void api.ncOpen(f.fileId ? `f/${f.fileId}` : 'apps/files'))}>
               {fileIcon(f)}
@@ -172,8 +178,9 @@ export default function FilesView({ onNotice, onSendLinks }: {
               <span className="file-date">{when(f.modified)}</span>
             </div>
           ))}
+          {visible.length > shown && <button className="text-button load-more" onClick={() => setShown((n) => n + FILES_PAGE)}>Показать ещё (показано {shown} из {visible.length})</button>}
           {files && !loading && visible.length === 0 && !error && <div className="empty-state"><Folder size={30} /><strong>{filter ? 'Ничего не найдено' : 'Папка пуста'}</strong><span>Загрузите файлы кнопкой «Загрузить».</span></div>}
-          {files === null && <div className="empty-state"><span>Загрузка…</span></div>}
+          {files === null && <SkeletonRows variant="file" count={8} />}
         </div>
         <div className="list-footer"><span>{visible.length} объектов</span><span>Nextcloud</span></div>
       </main>
@@ -221,7 +228,7 @@ function FilePanel({ file, onClose, onChanged, onOpenDir, onSendLinks, onNotice,
   useEffect(() => {
     if (userQuery.trim().length < 2) { setUsers([]); return }
     let cancelled = false
-    const t = setTimeout(() => { api.ncSearchUsers(userQuery).then((u) => { if (!cancelled) setUsers(u) }).catch(() => undefined) }, 250)
+    const t = setTimeout(() => { api.ncSearchUsers(userQuery).then((u) => { if (!cancelled) setUsers(u) }).catch(() => undefined) }, TYPING_PAUSE_MS)
     return () => { cancelled = true; clearTimeout(t) }
   }, [userQuery])
 

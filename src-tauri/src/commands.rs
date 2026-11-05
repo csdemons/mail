@@ -2247,7 +2247,7 @@ async fn rule_action(app: &AppHandle, ctx: &AccountCtx, rule: &str, a: &crate::r
             let (board, stack) = arg.split_once(':').and_then(|(b, s)| Some((b.parse::<i64>().ok()?, s.parse::<i64>().ok()?))).ok_or_else(|| AppError::Other("доска не указана".into()))?;
             let title = if m.subject.trim().is_empty() { format!("Письмо от {}", m.from_address) } else { m.subject.clone() };
             let when = m.date.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map(|d| d.with_timezone(&chrono::Local).format("%d.%m.%Y %H:%M").to_string()).unwrap_or_default();
-            let description = format!("Письмо от {} <{}>\nДата: {when}\nТема: {}\n\nСоздано правилом «{rule}» в Atom Mail.", m.from_name, m.from_address, m.subject);
+            let description = format!("Письмо от {} <{}>\nДата: {when}\nТема: {}\n\nСоздано правилом «{rule}» в Atom Workspace.", m.from_name, m.from_address, m.subject);
             nc(ctx).await?.deck_create_card(board, stack, &title, &description, None).await
         }
         _ => Ok(()),
@@ -2690,6 +2690,26 @@ pub async fn forward_attachments(state: State<'_, AppState>, folder: String, uid
         out.push(PickedFile { id, name: safe, size: data.len() as u64 });
     }
     Ok(out)
+}
+
+/// Вложение — в программе компьютера (двойной щелчок): копия в личном временном
+/// каталоге, затем открытие программой по умолчанию. Только документы, таблицы,
+/// картинки и т. п. — исполняемые файлы так не открываются.
+#[tauri::command]
+pub async fn attachment_open(app: AppHandle, state: State<'_, AppState>, folder: String, uid: u32, index: usize) -> Result<String> {
+    let ctx = state.ctx().await?;
+    let (name, data) = attachment(&ctx, &folder, uid, index).await?;
+    if !crate::dragout::openable(&name) {
+        return Err(AppError::Other(format!("«{name}» нельзя открыть прямо из письма — сохраните файл и проверьте его перед открытием")));
+    }
+    let path = tokio::task::spawn_blocking(move || crate::dragout::stage_for_open(&name, &data)).await.map_err(|e| AppError::Other(e.to_string()))??;
+    // E2E (отладочная сборка): программу не запускаем — проверяется подготовленный файл.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("RRCKI_E2E_SAVE_DIR").is_some() {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    host::open_file(&app, &path)?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Перетаскивание вложения из письма в папку компьютера: копия во временном
@@ -4193,6 +4213,12 @@ pub async fn talk_send(state: State<'_, AppState>, token: String, message: Strin
 }
 
 #[tauri::command]
+pub async fn talk_favorite(state: State<'_, AppState>, token: String, on: bool) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_favorite(&token, on).await
+}
+
+#[tauri::command]
 pub async fn talk_react(state: State<'_, AppState>, token: String, message_id: i64, emoji: String, add: bool) -> Result<()> {
     let ctx = state.ctx().await?;
     nc(&ctx).await?.talk_react(&token, message_id, &emoji, add).await
@@ -4498,7 +4524,7 @@ pub async fn open_message_window(app: AppHandle, folder: String, uid: u32, title
     // Одно окно на письмо: повторный вызов поднимает уже открытое.
     let label = format!("msg-{:x}", folder.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)) ^ u64::from(uid));
     let title: String = title.chars().take(120).collect();
-    let title = if title.trim().is_empty() { "Письмо — Atom Mail".to_string() } else { format!("{title} — Atom Mail") };
+    let title = if title.trim().is_empty() { "Письмо — Atom Workspace".to_string() } else { format!("{title} — Atom Workspace") };
     crate::host::open_window(&app, &label, &title, &format!("window.__RRCKI_MESSAGE = {params};"))
 }
 
@@ -5355,6 +5381,7 @@ macro_rules! app_commands {
             crate::commands::talk_send,
             crate::commands::talk_send_file,
             crate::commands::talk_react,
+            crate::commands::talk_favorite,
             crate::commands::talk_edit,
             crate::commands::talk_delete,
             crate::commands::talk_mentions,
@@ -5432,6 +5459,7 @@ macro_rules! app_commands {
             crate::commands::calendar_file_preview,
             crate::commands::calendar_file_import,
             crate::commands::attachment_drag_out,
+            crate::commands::attachment_open,
             crate::commands::talk_file_data,
             crate::commands::accounts_list,
             crate::commands::account_add,

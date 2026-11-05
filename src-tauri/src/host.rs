@@ -101,11 +101,11 @@ pub fn setup_tray(app: &AppHandle) -> bool {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     let build = || -> tauri::Result<()> {
-        let open = MenuItem::with_id(app, "open", "Открыть Atom Mail", true, None::<&str>)?;
+        let open = MenuItem::with_id(app, "open", "Открыть Atom Workspace", true, None::<&str>)?;
         let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
         let menu = Menu::with_items(app, &[&open, &PredefinedMenuItem::separator(app)?, &quit])?;
         let mut b = TrayIconBuilder::with_id(TRAY_ID)
-            .tooltip("Atom Mail")
+            .tooltip("Atom Workspace")
             .menu(&menu)
             .show_menu_on_left_click(false)
             .on_menu_event(|app, e| match e.id().as_ref() {
@@ -136,7 +136,7 @@ pub fn setup_tray(app: &AppHandle) -> bool {
 /// Число непрочитанных: значок в трее, подсказка, значок на панели задач.
 pub fn set_unread(app: &AppHandle, count: u32) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let tip = if count > 0 { format!("Atom Mail — непрочитанных: {count}") } else { "Atom Mail".to_string() };
+        let tip = if count > 0 { format!("Atom Workspace — непрочитанных: {count}") } else { "Atom Workspace".to_string() };
         let _ = tray.set_tooltip(Some(tip));
         if let Some(icon) = icon_with_badge(count) {
             let _ = tray.set_icon(Some(icon));
@@ -195,6 +195,13 @@ pub fn open_url(app: &AppHandle, url: &str) -> Result<()> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| AppError::Other(format!("Не удалось открыть браузер: {e}")))
+}
+
+/// Файл — в программе по умолчанию (Word, Excel, LibreOffice, просмотрщик PDF…).
+pub fn open_file(app: &AppHandle, path: &std::path::Path) -> Result<()> {
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| AppError::Other(format!("Не удалось открыть файл: {e}")))
 }
 
 /// Отдельное окно приложения (тот же интерфейс); `init` выполняется до загрузки страницы.

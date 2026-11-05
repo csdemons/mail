@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
@@ -29,6 +29,36 @@ export function errorText(error: unknown): string {
 
 export const PAGE_SIZE = 50
 
+/** Пауза после последнего нажатия клавиши, после которой ищем и показываем подсказки. */
+export const TYPING_PAUSE_MS = 300
+
+/**
+ * Команды только для чтения: одинаковый запрос, который уже выполняется, второй раз
+ * не отправляется — все вызовы получают один и тот же ответ (двойной щелчок, повторный
+ * рендер, несколько окон одного раздела). Изменяющие команды и long-poll идут как есть.
+ */
+const READ_ONLY = new Set([
+  'get_settings', 'get_profile', 'get_policy', 'get_message', 'desktop_prefs_get', 'scheduled_list', 'categories_get', 'due_list',
+  'templates_list', 'list_contacts', 'accounts_list', 'accounts_unread', 'unified_inbox', 'unified_folder', 'search_others', 'views_get',
+  'app_info', 'search_contacts', 'contact_details', 'browse_contacts', 'list_events', 'nc_status', 'deck_boards', 'deck_stacks',
+  'deck_board_details', 'deck_comments', 'deck_attachments', 'deck_activity', 'talk_rooms', 'talk_history', 'talk_mentions',
+  'nc_search_users', 'nc_files_list', 'nc_shares', 'talk_file_preview', 'talk_file_data', 'totp_status', 'cached_folders',
+  'cached_messages', 'search_mail', 'search_server', 'offline_status', 'offline_queue', 'signature_get', 'list_folders', 'list_messages',
+  'nc_editors', 'nc_avatar', 'attachment_data', 'mail_filters_get', 'rules_get', 'counterparties', 'counterparty_timeline',
+  'calendar_file_preview', 'attach_data', 'diagnostics',
+])
+const inflight = new Map<string, Promise<unknown>>()
+
+function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (!READ_ONLY.has(cmd)) return rawInvoke<T>(cmd, args)
+  const key = `${cmd}\u0000${JSON.stringify(args ?? {})}`
+  const running = inflight.get(key)
+  if (running) return running as Promise<T>
+  const p = rawInvoke<T>(cmd, args).finally(() => inflight.delete(key))
+  inflight.set(key, p)
+  return p
+}
+
 export const api = {
   getSettings: () => invoke<Settings | null>('get_settings'),
   login: ({ host, port, username, password, remember, smtpHost, smtpPort, davUrl, ewsUrl, address }: LoginParams) =>
@@ -57,6 +87,8 @@ export const api = {
   attachData: (name: string, data: string) => invoke<PickedFile>('attach_data', { name, data }),
   forwardAttachments: (folder: string, uid: number) => invoke<PickedFile[]>('forward_attachments', { folder, uid }),
   attachmentDragOut: (folder: string, uid: number, index: number) => invoke<void>('attachment_drag_out', { folder, uid, index }),
+  /** Открыть вложение программой компьютера (копия во временном каталоге); возвращает путь копии. */
+  attachmentOpen: (folder: string, uid: number, index: number) => invoke<string>('attachment_open', { folder, uid, index }),
   calendarFilePreview: (folder: string, uid: number, index: number) => invoke<CalendarFile>('calendar_file_preview', { folder, uid, index }),
   calendarFileImport: (folder: string, uid: number, index: number, calendarUrl: string, uids: string[]) =>
     invoke<CalendarImport>('calendar_file_import', { folder, uid, index, calendarUrl, uids }),
@@ -148,6 +180,7 @@ export const api = {
   talkHistory: (token: string, before: number | null = null) => invoke<TalkChunk>('talk_history', { token, before }),
   talkPoll: (token: string, lastKnown: number) => invoke<TalkChunk>('talk_poll', { token, lastKnown }),
   talkReact: (token: string, messageId: number, emoji: string, add: boolean) => invoke<void>('talk_react', { token, messageId, emoji, add }),
+  talkFavorite: (token: string, on: boolean) => invoke<void>('talk_favorite', { token, on }),
   talkEdit: (token: string, messageId: number, message: string) => invoke<void>('talk_edit', { token, messageId, message }),
   talkDelete: (token: string, messageId: number) => invoke<void>('talk_delete', { token, messageId }),
   talkMentions: (token: string, search: string) => invoke<TalkMention[]>('talk_mentions', { token, search }),

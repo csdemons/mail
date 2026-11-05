@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { BookUser, Building2, Loader2, Mail, MapPin, Pencil, Phone, Plus, RefreshCw, Search, StickyNote, Trash2 } from 'lucide-react'
 
-import { api, errorText } from './api'
+import { api, errorText, TYPING_PAUSE_MS } from './api'
 import type { Contact, ContactsResult } from './types'
 import ContactEditor from './ContactEditor'
+import { SkeletonRows } from './Skeleton'
 
 interface Props {
   onWrite: (address: string) => void
@@ -15,6 +16,8 @@ function initials(name: string) {
   const parts = name.trim().split(/\s+/)
   return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || '?'
 }
+
+const CONTACTS_PAGE = 200
 
 export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
   const [data, setData] = useState<ContactsResult | null>(null)
@@ -42,7 +45,7 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
         .then((list) => { if (!cancelled) setRemote(list) })
         .catch(() => { if (!cancelled) setRemote([]) })
         .finally(() => { if (!cancelled) setSearching(false) })
-    }, 350)
+    }, TYPING_PAUSE_MS)
     return () => { cancelled = true; clearTimeout(t) }
   }, [query])
 
@@ -83,6 +86,11 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
       (!q || found.has(c.id) || [c.fullName, c.org ?? '', c.title ?? '', ...c.emails, ...c.phones].join(' ').toLowerCase().includes(q)))
   }, [all, remote, query, book])
 
+  // Длинные книги (корпоративная — тысячи сотрудников) показываем страницами.
+  const [shown, setShown] = useState(CONTACTS_PAGE)
+  useEffect(() => setShown(CONTACTS_PAGE), [book, query])
+  const page = visible.slice(0, shown)
+
   const base = all.find((c) => c.id === selectedId)
   const extra = base ? details[base.id] : undefined
   const selected = base && extra && typeof extra === 'object' ? { ...base, ...extra, id: base.id, book: base.book } : base
@@ -96,14 +104,20 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
   }, [base, details])
   const selectedBook = data?.books.find((b) => b.name === book)
   const browseState = selectedBook ? browsed[selectedBook.url] : undefined
+  // Книги только для чтения (корпоративная SOGo/LDAP) сервер не отдаёт общим списком —
+  // загружаем их сразу после списка, чтобы «Все контакты» были полными с первого раза,
+  // а не только после захода в саму книгу.
   useEffect(() => {
-    if (!selectedBook || selectedBook.writable || browsed[selectedBook.url]) return
-    const url = selectedBook.url
-    setBrowsed((b) => ({ ...b, [url]: 'loading' }))
-    api.browseContacts(url)
-      .then((list) => setBrowsed((b) => ({ ...b, [url]: list })))
-      .catch(() => setBrowsed((b) => ({ ...b, [url]: 'error' })))
-  }, [selectedBook, browsed])
+    const pending = (data?.books ?? []).filter((b) => !b.writable && !browsed[b.url])
+    if (pending.length === 0) return
+    setBrowsed((m) => ({ ...m, ...Object.fromEntries(pending.map((b) => [b.url, 'loading' as const])) }))
+    for (const { url } of pending) {
+      api.browseContacts(url)
+        .then((list) => setBrowsed((m) => ({ ...m, [url]: list })))
+        .catch(() => setBrowsed((m) => ({ ...m, [url]: 'error' })))
+    }
+  }, [data, browsed])
+  const browsingAny = Object.values(browsed).some((v) => v === 'loading')
   const canCreate = Boolean(data?.books.some((b) => b.writable))
 
   async function remove(c: Contact) {
@@ -124,7 +138,7 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
         <div className="sidebar-heading"><span>Адресные книги</span></div>
         <div className="folder-list">
           <button className={`folder-item ${book === '' ? 'selected' : ''}`} onClick={() => setBook('')}>
-            <BookUser size={17} /><span>Все контакты</span><b className="folder-count">{data?.contacts.length ?? 0}</b>
+            <BookUser size={17} /><span>Все контакты</span><b className="folder-count">{data ? all.length : 0}</b>
           </button>
           {data?.books.map((b) => (
             <button key={b.url} className={`folder-item ${book === b.name ? 'selected' : ''}`} onClick={() => setBook(b.name)} title={b.url}>
@@ -137,11 +151,11 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
       <main className="message-column">
         <div className="list-toolbar">
           <label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя, e-mail, телефон, отдел" /></label>
-          <button className="icon-button soft" aria-label="Обновить" disabled={loading} onClick={() => void load()}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button>
+          <button className="icon-button soft" aria-label="Обновить" disabled={loading} onClick={() => { setBrowsed({}); void load() }}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button>
           <button className="icon-button soft" aria-label="Новый контакт" title={canCreate ? 'Новый контакт' : 'Нет адресной книги с правом записи'} disabled={!canCreate} onClick={() => setEditing('new')}><Plus size={18} /></button>
         </div>
         <div className="message-list">
-          {loading && !data && <div className="empty-state"><span>Загрузка контактов…</span></div>}
+          {loading && !data && <SkeletonRows variant="contact" count={9} label="Загрузка контактов…" />}
           {error && (
             <div className="empty-state" role="alert">
               <strong>Не удалось загрузить контакты</strong>
@@ -150,7 +164,7 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
             </div>
           )}
           {data?.errors.map((e) => <div key={e} className="inline-warning">{e}</div>)}
-          {visible.map((c) => (
+          {page.map((c) => (
             <button key={c.id} className={`message-row contact-row ${selectedId === c.id ? 'selected' : ''}`} onClick={() => setSelectedId(c.id)}>
               <div className="sender-avatar">{initials(c.fullName)}</div>
               <div className="message-summary">
@@ -160,13 +174,14 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
               </div>
             </button>
           ))}
+          {visible.length > shown && <button className="text-button load-more" onClick={() => setShown((n) => n + CONTACTS_PAGE)}>Показать ещё (показано {shown} из {visible.length})</button>}
           {searching && <div className="folder-placeholder">Поиск в корпоративной книге…</div>}
-          {browseState === 'loading' && <div className="folder-placeholder">Загрузка «{selectedBook?.name}»…</div>}
-          {data && !loading && !searching && browseState !== 'loading' && visible.length === 0 && (selectedBook && !selectedBook.writable && query.trim().length < 2
+          {(browseState === 'loading' || (!selectedBook && browsingAny)) && <SkeletonRows variant="contact" count={visible.length ? 3 : 8} label={`Загрузка ${selectedBook ? `«${selectedBook.name}»` : 'адресных книг'}…`} />}
+          {data && !loading && !searching && browseState !== 'loading' && !(!selectedBook && browsingAny) && visible.length === 0 && (selectedBook && !selectedBook.writable && query.trim().length < 2
             ? <div className="empty-state"><Search size={30} /><strong>{selectedBook.name}</strong><span>Сервер не отдаёт эту книгу списком — сотрудники находятся по поиску: введите фамилию, имя, e-mail или отдел.</span></div>
             : <div className="empty-state"><BookUser size={30} /><strong>Контакты не найдены</strong>{query.trim().length < 2 && <span>Корпоративная книга ищется по имени или e-mail — начните вводить.</span>}</div>)}
         </div>
-        <div className="list-footer"><span>{visible.length}{selectedBook && Array.isArray(browseState) ? '' : ` из ${data?.contacts.length ?? 0}`}</span><span>{(data?.books ?? []).some((b) => b.url.startsWith('ews:')) ? 'Exchange' : selectedBook && !selectedBook.writable ? 'SOGo' : 'CardDAV'}</span></div>
+        <div className="list-footer"><span>{visible.length}{selectedBook && Array.isArray(browseState) ? '' : ` из ${all.length}`}</span><span>{(data?.books ?? []).some((b) => b.url.startsWith('ews:')) ? 'Exchange' : selectedBook && !selectedBook.writable ? 'SOGo' : 'CardDAV'}</span></div>
       </main>
 
       <section className="reader-pane">

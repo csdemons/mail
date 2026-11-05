@@ -663,6 +663,8 @@ impl Nc {
 
 const TALK_ROOM: &str = "ocs/v2.php/apps/spreed/api/v4/room";
 const TALK_CHAT: &str = "ocs/v2.php/apps/spreed/api/v1/chat/";
+/// Порция истории беседы (более ранние — следующим запросом с lastKnownMessageId).
+const TALK_PAGE: usize = 100;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -678,6 +680,10 @@ pub struct TalkRoom {
     pub read_only: bool,
     /// Личная беседа: ID собеседника (для аватара).
     pub peer: Option<String>,
+    /// Избранная беседа (как «Избранное» в Talk) — показывается выше остальных.
+    pub favorite: bool,
+    /// Последнее сообщение, прочитанное всеми участниками (для «✓✓»); 0 — неизвестно.
+    pub last_common_read: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -710,6 +716,14 @@ pub struct TalkMessage {
 pub struct TalkChunk {
     pub messages: Vec<TalkMessage>,
     pub last_id: i64,
+    /// Заголовок X-Chat-Last-Common-Read: до какого сообщения прочитали все; 0 — нет данных.
+    pub last_common_read: i64,
+    /// История: сервер отдал полную порцию — вероятно, есть более ранние сообщения.
+    pub more: bool,
+}
+
+fn common_read(h: &reqwest::header::HeaderMap) -> i64 {
+    h.get("X-Chat-Last-Common-Read").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse().ok()).unwrap_or(0)
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -910,27 +924,31 @@ impl Nc {
             }),
             read_only: int(&r["readOnly"]) == 1,
             peer: (int(&r["type"]) == 1).then(|| text(&r["name"])).filter(|n| !n.is_empty()),
+            favorite: r["isFavorite"].as_bool().unwrap_or(false),
+            last_common_read: int(&r["lastCommonReadMessage"]),
         }).filter(|r| r.kind != 4).collect()).unwrap_or_default();
-        rooms.sort_by_key(|r| std::cmp::Reverse(r.last_activity));
+        // Как в Talk: избранные сверху, внутри — по последней активности.
+        rooms.sort_by_key(|r| (std::cmp::Reverse(r.favorite), std::cmp::Reverse(r.last_activity)));
         Ok(rooms)
     }
 
     /// История: последние сообщения (или более старые, чем `before`). Помечает беседу прочитанной.
     pub async fn talk_history(&self, token: &str, before: Option<i64>) -> Result<TalkChunk> {
-        let mut q = vec![("lookIntoFuture", "0".to_string()), ("limit", "100".to_string()), ("setReadMarker", "1".to_string())];
+        let mut q = vec![("lookIntoFuture", "0".to_string()), ("limit", TALK_PAGE.to_string()), ("setReadMarker", "1".to_string())];
         if let Some(b) = before { q.push(("lastKnownMessageId", b.to_string())); }
-        let (status, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Сообщения").await?;
-        if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0 }); }
-        Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d) })
+        let (status, h, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Сообщения").await?;
+        if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0, last_common_read: common_read(&h), more: false }); }
+        let more = d.as_array().is_some_and(|a| a.len() >= TALK_PAGE);
+        Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d), last_common_read: common_read(&h), more })
     }
 
     /// Ждёт новые сообщения до 30 с (long-poll). Пусто — новых нет.
     pub async fn talk_poll(&self, token: &str, last_known: i64) -> Result<TalkChunk> {
         let q = vec![("lookIntoFuture", "1".to_string()), ("lastKnownMessageId", last_known.to_string()),
             ("timeout", "30".to_string()), ("limit", "100".to_string()), ("setReadMarker", "1".to_string())];
-        let (status, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Новые сообщения").await?;
-        if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0 }); }
-        Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d) })
+        let (status, h, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Новые сообщения").await?;
+        if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0, last_common_read: common_read(&h), more: false }); }
+        Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d), last_common_read: common_read(&h), more: false })
     }
 
     pub async fn talk_send(&self, token: &str, message: &str, reply_to: Option<i64>) -> Result<()> {
@@ -939,6 +957,13 @@ impl Nc {
         let mut body = json!({ "message": message });
         if let Some(r) = reply_to { body["replyTo"] = json!(r); }
         self.ocs(Method::POST, &format!("{TALK_CHAT}{}", seg(token)), &[], Some(body), "Отправка сообщения").await?;
+        Ok(())
+    }
+
+    /// Отметить беседу избранной (или снять отметку) — то же, что звёздочка в Talk.
+    pub async fn talk_favorite(&self, token: &str, on: bool) -> Result<()> {
+        let path = format!("{TALK_ROOM}/{}/favorite", seg(token));
+        self.ocs(if on { Method::POST } else { Method::DELETE }, &path, &[], None, "Избранное").await?;
         Ok(())
     }
 

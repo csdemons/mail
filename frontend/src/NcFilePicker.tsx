@@ -3,6 +3,7 @@ import { ChevronRight, File, Folder, Home, Upload, X } from 'lucide-react'
 
 import { api, errorText, formatSize, NC_MAIL_DIR } from './api'
 import type { NcFile } from './types'
+import { SkeletonRows } from './Skeleton'
 
 /** Выбор файлов в Nextcloud (или загрузка с компьютера) — в письмо вставляются ссылки. */
 export default function NcFilePicker({ onClose, onPick }: { onClose: () => void; onPick: (links: { name: string; url: string }[]) => void }) {
@@ -55,7 +56,7 @@ export default function NcFilePicker({ onClose, onPick }: { onClose: () => void;
           {parts.map((name, i) => <span key={i}><ChevronRight size={14} /><button onClick={() => setPath(`/${parts.slice(0, i + 1).join('/')}`)}>{name}</button></span>)}
         </nav>
         <div className="nc-picker-list">
-          {files === null && <div className="muted">Загрузка…</div>}
+          {files === null && <SkeletonRows variant="file" count={6} />}
           {files?.map((f) => f.isDir ? (
             <button key={f.path} className="file-row" onClick={() => setPath(f.path)}><Folder size={17} className="file-ico dir" /><span className="file-name">{f.name}</span></button>
           ) : (

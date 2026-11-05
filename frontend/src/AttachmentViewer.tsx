@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  CalendarPlus, ChevronLeft, ChevronRight, Cloud, Download, File, FilePen, FileText, Image as ImageIcon, Maximize2, Minimize2, X,
+  CalendarPlus, ChevronLeft, ChevronRight, Cloud, Download, ExternalLink, File, FilePen, FileText, Image as ImageIcon, Maximize2, Minimize2, X,
 } from 'lucide-react'
 
 import { api, errorText, formatSize, isOfficeFile, onSessionReset } from './api'
@@ -19,6 +19,15 @@ export function previewKind(a: Pick<AttachmentInfo, 'name' | 'contentType'>): Pr
   if (t === 'application/pdf' || /\.pdf$/i.test(a.name)) return 'pdf'
   if (t.startsWith('text/') || t === 'application/json' || t === 'application/xml' || t === 'message/rfc822' || TEXT_EXT.test(a.name)) return 'text'
   return null
+}
+
+/** Что можно открыть программой компьютера прямо из письма (тот же список, что в программе — dragout::openable). */
+const OPENABLE_EXT = /\.(docx?|docm|dotx?|rtf|odt|ott|xlsx?|xlsm|xltx?|csv|ods|ots|pptx?|pptm|ppsx?|odp|otp|pdf|djvu|txt|log|md|xml|json|png|jpe?g|gif|bmp|tiff?|webp|svg|heic|vsdx?|odg|mpp|zip|7z|rar|eml|msg|ics|vcf|mp3|mp4|wav|avi|mkv|mov)$/i
+
+export function canOpenLocally(name: string): boolean {
+  const n = name.trim().replace(/[. ]+$/, '')
+  const dot = n.lastIndexOf('.')
+  return dot > 0 && OPENABLE_EXT.test(n)
 }
 
 function mimeFor(a: AttachmentInfo): string {
@@ -94,12 +103,24 @@ export function AttachmentList({ folder, uid, attachments, onSave, onCloud, clou
   const [open, setOpen] = useState<number | null>(null)
   const [importing, setImporting] = useState<AttachmentInfo | null>(null)
   const previewable = attachments.filter((a) => previewKind(a))
+  const opening = useRef(new Set<number>())
+  function openLocally(a: AttachmentInfo) {
+    if (opening.current.has(a.index)) return
+    opening.current.add(a.index)
+    onNotice?.(`Открываю «${a.name}» в программе компьютера…`)
+    api.attachmentOpen(folder, uid, a.index)
+      .then(() => onNotice?.(`«${a.name}» открыт в программе компьютера (это копия — чтобы сохранить изменения, используйте «Сохранить как»)`))
+      .catch((err) => onNotice?.(`Не удалось открыть «${a.name}»: ${errorText(err)}`))
+      .finally(() => setTimeout(() => opening.current.delete(a.index), 1500))
+  }
   return (
     <>
       <div className="attachment-list">
         {attachments.map((a) => {
           const kind = previewKind(a)
           const calendar = Boolean(onNotice) && isCalendarFile(a)
+          // Документы, таблицы и т. п. без просмотра в программе — сразу в программе компьютера (Office и т. д.).
+          const local = !calendar && !kind && canOpenLocally(a.name)
           return (
             <div key={a.index} className={`attachment-item ${kind === 'image' ? 'has-thumb' : ''} ${calendar ? 'calendar-file' : ''}`}>
               <button
@@ -110,11 +131,11 @@ export function AttachmentList({ folder, uid, attachments, onSave, onCloud, clou
                   e.preventDefault()
                   api.attachmentDragOut(folder, uid, a.index).catch((err) => onNotice?.(`Не удалось перетащить «${a.name}»: ${errorText(err)}`))
                 }}
-                title={calendar ? `Добавить события из ${a.name} в календарь` : kind ? `Просмотр: ${a.name}` : `Сохранить ${a.name}`}
-                onClick={() => (calendar ? setImporting(a) : kind ? setOpen(a.index) : onSave(a.index))}
+                title={calendar ? `Добавить события из ${a.name} в календарь` : kind ? `Просмотр: ${a.name}` : local ? `Открыть ${a.name} в программе компьютера` : `Сохранить ${a.name}`}
+                onClick={() => (calendar ? setImporting(a) : kind ? setOpen(a.index) : local ? openLocally(a) : onSave(a.index))}
               >
                 {calendar ? <span className="attachment-icon"><CalendarPlus size={20} /></span> : <Thumbnail folder={folder} uid={uid} a={a} />}
-                <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {calendar ? 'события календаря' : kind ? 'просмотр' : a.contentType}</span></div>
+                <div><strong>{a.name}</strong><span>{formatSize(a.size)} · {calendar ? 'события календаря' : kind ? 'просмотр' : local ? 'открыть' : a.contentType}</span></div>
               </button>
               {calendar && <button className="secondary-button attachment-calendar" aria-label={`Добавить ${a.name} в календарь`} title="Добавить события в свой календарь" onClick={() => setImporting(a)}><CalendarPlus size={15} /> В календарь</button>}
               {onEdit && isOfficeFile(a.name) && <button className="icon-button soft attachment-edit" aria-label={`Редактировать ${a.name}`} title="Редактировать в Nextcloud (Euro-Office) — копия сохранится в папку «Почта»" onClick={() => onEdit(a.index, a.name)}><FilePen size={17} /></button>}
@@ -134,6 +155,7 @@ export function AttachmentList({ folder, uid, attachments, onSave, onCloud, clou
           onIndex={setOpen}
           onClose={() => setOpen(null)}
           onSave={onSave}
+          onOpenLocal={(i) => { const x = attachments.find((y) => y.index === i); if (x) openLocally(x) }}
         />
       )}
     </>
@@ -151,9 +173,11 @@ interface ViewerProps {
   /** Откуда брать содержимое (base64); по умолчанию — вложение письма folder/uid. */
   load?: (a: AttachmentInfo) => Promise<string>
   saveTitle?: string
+  /** «Открыть в программе компьютера» (для вложений писем). */
+  onOpenLocal?: (index: number) => void
 }
 
-export default function AttachmentViewer({ folder, uid, items, index, onIndex, onClose, onSave, load, saveTitle = 'Сохранить на компьютер' }: ViewerProps) {
+export default function AttachmentViewer({ folder, uid, items, index, onIndex, onClose, onSave, load, saveTitle = 'Сохранить на компьютер', onOpenLocal }: ViewerProps) {
   const pos = Math.max(0, items.findIndex((a) => a.index === index))
   const a = items[pos]
   const kind = a ? previewKind(a) : null
@@ -191,6 +215,7 @@ export default function AttachmentViewer({ folder, uid, items, index, onIndex, o
         <span>{formatSize(a.size)}{items.length > 1 ? ` · ${pos + 1} из ${items.length}` : ''}</span>
         <div className="reader-toolbar-spacer" />
         {kind === 'image' && <button className="icon-button" aria-label={actual ? 'Вписать в окно' : 'Реальный размер'} title={actual ? 'Вписать в окно' : 'Реальный размер'} onClick={() => setActual(!actual)}>{actual ? <Minimize2 size={18} /> : <Maximize2 size={18} />}</button>}
+        {onOpenLocal && canOpenLocally(a.name) && <button className="icon-button" aria-label="Открыть в программе" title="Открыть в программе компьютера" onClick={() => onOpenLocal(a.index)}><ExternalLink size={18} /></button>}
         <button className="icon-button" aria-label="Сохранить" title={saveTitle} onClick={() => onSave(a.index)}><Download size={18} /></button>
         <button className="icon-button" aria-label="Закрыть просмотр" title="Закрыть (Esc)" onClick={onClose}><X size={20} /></button>
       </div>

@@ -44,7 +44,7 @@ pub enum NotificationContent {
     Full,
     /// Только отправитель/заголовок, без темы и текста.
     Sender,
-    /// Только сам факт: «Atom Mail — новое уведомление».
+    /// Только сам факт: «Atom Workspace — новое уведомление».
     None,
 }
 
@@ -104,8 +104,8 @@ impl Policy {
     pub fn redact_notification(&self, title: &str, body: &str) -> (String, String) {
         match self.notification_content {
             NotificationContent::Full => (title.to_string(), body.to_string()),
-            NotificationContent::Sender => (title.to_string(), "Откройте Atom Mail, чтобы прочитать".to_string()),
-            NotificationContent::None => ("Atom Mail".to_string(), "Новое уведомление — откройте программу".to_string()),
+            NotificationContent::Sender => (title.to_string(), "Откройте Atom Workspace, чтобы прочитать".to_string()),
+            NotificationContent::None => ("Atom Workspace".to_string(), "Новое уведомление — откройте программу".to_string()),
         }
     }
 
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn notification_content_policy() {
         let mut p: Policy = serde_json::from_str(r#"{"notificationContent": "sender"}"#).unwrap();
-        assert_eq!(p.redact_notification("Новое письмо — Иванов", "Тема: зарплата").1, "Откройте Atom Mail, чтобы прочитать");
+        assert_eq!(p.redact_notification("Новое письмо — Иванов", "Тема: зарплата").1, "Откройте Atom Workspace, чтобы прочитать");
         p.notification_content = NotificationContent::None;
         let (t, b) = p.redact_notification("Новое письмо — Иванов", "Тема");
         assert!(!t.contains("Иванов") && !b.contains("Тема"));

@@ -38,7 +38,7 @@ export default function ScheduledMail({ items, onClose, onChanged, onNotice }: {
     <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div className="settings-modal scheduled-modal" role="dialog" aria-label="Запланированные письма">
         <div className="compose-header">
-          <div><strong><CalendarClock size={16} /> Запланированные письма</strong><small>Уйдут в указанное время, пока Atom Mail запущен</small></div>
+          <div><strong><CalendarClock size={16} /> Запланированные письма</strong><small>Уйдут в указанное время, пока Atom Workspace запущен</small></div>
           <button className="icon-button" onClick={onClose} aria-label="Закрыть"><X size={18} /></button>
         </div>
         {items.length === 0 && <span className="settings-hint">Запланированных писем нет.</span>}

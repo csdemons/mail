@@ -242,7 +242,7 @@ export default function MailFilters({ folders, seed, categories, label, onClose,
                     <span />
                   </label>
                   <div className="filter-text">
-                    <strong>{f.name} <span className={`rule-where ${item.where}`} title={item.where === 'server' ? 'Выполняется на сервере, даже когда программа закрыта' : 'Выполняется программой, пока Atom Mail запущен'}>
+                    <strong>{f.name} <span className={`rule-where ${item.where}`} title={item.where === 'server' ? 'Выполняется на сервере, даже когда программа закрыта' : 'Выполняется программой, пока Atom Workspace запущен'}>
                       {item.where === 'server' ? <><Cloud size={11} /> сервер{f.actions.some(isProgramAction) ? ' + программа' : ''}</> : <><Monitor size={11} /> программа</>}
                     </span></strong>
                     <span>{describe(f, folderName, catName)}</span>
@@ -394,7 +394,7 @@ function FilterEditor({ initial, folders, categories, serverOk, label, folderNam
       <div className={`rule-placement ${where}`} role="note">
         {where === 'server'
           ? <><Cloud size={14} /> Выполняется на сервере — для каждого нового письма, даже когда программа закрыта.{f.actions.some(isProgramAction) && ' Уведомление и задачу добавляет программа, пока она запущена.'}</>
-          : <><Monitor size={14} /> {serverOk ? 'Условие по вложениям проверяет только программа' : 'Сервер правил недоступен'} — правило выполняется, пока Atom Mail запущен, для писем, пришедших во «Входящие».</>}
+          : <><Monitor size={14} /> {serverOk ? 'Условие по вложениям проверяет только программа' : 'Сервер правил недоступен'} — правило выполняется, пока Atom Workspace запущен, для писем, пришедших во «Входящие».</>}
       </div>
       {deckError && needsDeck && <div className="inline-warning">Deck недоступен: {deckError}</div>}
       {problem && <div className="inline-warning" role="alert">{problem}</div>}

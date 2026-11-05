@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  CornerUpLeft, Download, ExternalLink, FileText, KanbanSquare, MessageCircle, MessageSquarePlus, Paperclip, Pencil, Phone, RefreshCw,
-  Search, Send, Smile, SmilePlus, Trash2, Users, X,
+  Check, CheckCheck, CornerUpLeft, Download, ExternalLink, FileText, KanbanSquare, MessageCircle, MessageSquarePlus, Paperclip, Pencil, Phone, RefreshCw,
+  Search, Send, Smile, SmilePlus, Star, Trash2, Users, X,
 } from 'lucide-react'
 
-import { api, errorText, formatSize } from './api'
+import { api, errorText, formatSize, onSessionReset, TYPING_PAUSE_MS } from './api'
 import { EmojiPicker, QUICK_REACTIONS } from './Emoji'
 import TalkText from './TalkText'
 import Avatar from './Avatar'
 import AttachmentViewer, { previewKind } from './AttachmentViewer'
 import type { AttachmentInfo, DeckBoard, DeckStack, NcUser, PickedFile, TalkFile, TalkMention, TalkMessage, TalkRoom } from './types'
+import { SkeletonChat, SkeletonRows } from './Skeleton'
 
 /** Файл чата открывается во встроенном просмотрщике (фото, PDF, текст), если известен его путь. */
 function viewable(f: TalkFile): boolean {
@@ -67,9 +68,20 @@ function merge(list: TalkMessage[], incoming: TalkMessage[]): TalkMessage[] {
   return [...byId.values()].sort((a, b) => a.id - b.id)
 }
 
+/** Как в Talk: избранные беседы сверху, внутри — по последней активности. */
+function sortRooms(list: TalkRoom[]): TalkRoom[] {
+  return [...list].sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.lastActivity - a.lastActivity)
+}
+
+/** Недописанные сообщения по беседам и последняя открытая беседа — переживают уход в другой раздел. */
+interface Draft { text: string; mentions: [string, string][] }
+const drafts = new Map<string, Draft>()
+let lastRoom: string | null = null
+onSessionReset(() => { drafts.clear(); lastRoom = null })
+
 export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number) => void; onNotice?: (t: string) => void }) {
   const [rooms, setRooms] = useState<TalkRoom[] | null>(null)
-  const [token, setToken] = useState<string | null>(null)
+  const [token, setToken] = useState<string | null>(() => lastRoom)
   const [messages, setMessages] = useState<TalkMessage[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -85,6 +97,11 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   const [mentionSel, setMentionSel] = useState(0)
   const [cardFrom, setCardFrom] = useState<TalkMessage | null>(null)
   const [newChat, setNewChat] = useState(false)
+  // До какого сообщения беседу прочитали все: свои сообщения до него — «✓✓».
+  const [readUpTo, setReadUpTo] = useState(0)
+  // История приходит порциями по 100: более ранние — по кнопке вверху ленты.
+  const [hasOlder, setHasOlder] = useState(false)
+  const [olderBusy, setOlderBusy] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   // Показанное в поле «@Имя» → что отправить в Talk («@"id"»).
@@ -102,6 +119,20 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
       pendingCaret.current = null
     }
   })
+
+  // Чей черновик сейчас в поле ввода: сохраняем при каждом изменении (не во время правки сообщения).
+  const draftOwner = useRef<string | null>(null)
+  useEffect(() => {
+    const owner = draftOwner.current
+    if (!owner || editing) return
+    if (draft) drafts.set(owner, { text: draft, mentions: [...mentionMap.current.entries()] })
+    else drafts.delete(owner)
+  }, [draft, editing])
+  function cancelEdit() {
+    setEditing(null)
+    const saved = token ? drafts.get(token) : undefined
+    setDraft(saved?.text ?? '')
+  }
 
   const notify = useCallback((t: string) => { if (onNotice) onNotice(t); else setError(t) }, [onNotice])
 
@@ -152,10 +183,15 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     const session = ++pollSession.current
     let lastId = 0
     setMessages([])
+    setReadUpTo(0)
+    setHasOlder(false)
     setReplyTo(null)
     setEditing(null)
-    setDraft('')
-    mentionMap.current.clear()
+    lastRoom = token
+    draftOwner.current = token
+    const saved = drafts.get(token)
+    mentionMap.current = new Map(saved?.mentions ?? [])
+    setDraft(saved?.text ?? '')
     setFiles((list) => { list.forEach((f) => void api.forgetAttachment(f.id)); return [] })
     setLoading(true)
     stickToBottom.current = true
@@ -164,6 +200,8 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
         const hist = await api.talkHistory(token)
         if (pollSession.current !== session) return
         setMessages(merge([], hist.messages))
+        setHasOlder(hist.more)
+        setReadUpTo((r) => Math.max(r, hist.lastCommonRead ?? 0))
         lastId = hist.lastId
         setRooms((list) => list?.map((r) => (r.token === token ? { ...r, unread: 0 } : r)) ?? list)
       } catch (e) {
@@ -177,6 +215,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
           const fresh = await api.talkPoll(token, lastId)
           if (pollSession.current !== session) return
           if (fresh.messages.length > 0) setMessages((list) => merge(list, fresh.messages))
+          if (fresh.lastCommonRead) setReadUpTo((r) => Math.max(r, fresh.lastCommonRead))
           if (fresh.lastId > lastId) lastId = fresh.lastId
         } catch {
           await new Promise((r) => setTimeout(r, 5000))
@@ -196,17 +235,24 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   }, [rooms, token, onUnread])
 
   // Подсказка упоминаний: «@текст» перед курсором.
+  // Запрос к серверу — только когда человек перестал печатать; устаревшие ответы отбрасываются.
   const mentionQuery = useRef<string | null>(null)
+  const mentionTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(mentionTimer.current), [])
   function onDraftChange(value: string, caret: number) {
     setDraft(value)
     const before = value.slice(0, caret)
     const m = /(^|\s)@([^\s@"]{0,30})$/.exec(before)
     mentionQuery.current = m ? m[2] : null
+    window.clearTimeout(mentionTimer.current)
     if (!m || !token) { setMentions([]); return }
     const q = m[2]
-    api.talkMentions(token, q)
-      .then((list) => { if (mentionQuery.current === q) { setMentions(list); setMentionSel(0) } })
-      .catch(() => setMentions([]))
+    const room = token
+    mentionTimer.current = window.setTimeout(() => {
+      api.talkMentions(room, q)
+        .then((list) => { if (mentionQuery.current === q) { setMentions(list); setMentionSel(0) } })
+        .catch(() => setMentions([]))
+    }, TYPING_PAUSE_MS)
   }
 
   function pickMention(mn: TalkMention) {
@@ -262,6 +308,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     stickToBottom.current = true
     try {
       const text = withMentions(draft)
+      const wasEditing = Boolean(editing)
       if (editing) {
         await api.talkEdit(token, editing.id, text)
         setEditing(null)
@@ -276,9 +323,16 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
       } else {
         await api.talkSend(token, text, replyTo?.id ?? null)
       }
-      setDraft('')
+      if (wasEditing) {
+        // После правки — обратно недописанное сообщение, если оно было.
+        const saved = drafts.get(token)
+        mentionMap.current = new Map(saved?.mentions ?? [])
+        setDraft(saved?.text ?? '')
+      } else {
+        mentionMap.current.clear()
+        setDraft('')
+      }
       setReplyTo(null)
-      mentionMap.current.clear()
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -323,7 +377,40 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     requestAnimationFrame(() => inputRef.current?.focus())
   }
 
+  async function loadOlder() {
+    const first = messages[0]
+    const el = listRef.current
+    if (!token || !first || olderBusy) return
+    setOlderBusy(true)
+    const fromBottom = el ? el.scrollHeight - el.scrollTop : 0
+    try {
+      const chunk = await api.talkHistory(token, first.id)
+      stickToBottom.current = false
+      setMessages((list) => merge(list, chunk.messages))
+      setHasOlder(chunk.more && chunk.messages.length > 0)
+      // Лента остаётся на том же месте, ранние сообщения появляются выше.
+      requestAnimationFrame(() => { if (el) el.scrollTop = el.scrollHeight - fromBottom })
+    } catch (e) {
+      notify(`Не удалось загрузить ранние сообщения: ${errorText(e)}`)
+    } finally {
+      setOlderBusy(false)
+    }
+  }
+
   const room = rooms?.find((r) => r.token === token)
+  const readMark = Math.max(readUpTo, room?.lastCommonRead ?? 0)
+
+  async function toggleFavorite(r: TalkRoom) {
+    const on = !r.favorite
+    // Сразу наверх (или обратно), сервер подтвердит при следующем обновлении списка.
+    setRooms((list) => list && sortRooms(list.map((x) => (x.token === r.token ? { ...x, favorite: on } : x))))
+    try {
+      await api.talkFavorite(r.token, on)
+    } catch (e) {
+      setRooms((list) => list && sortRooms(list.map((x) => (x.token === r.token ? { ...x, favorite: !on } : x))))
+      notify(`Не удалось ${on ? 'добавить в избранное' : 'убрать из избранного'}: ${errorText(e)}`)
+    }
+  }
   const visibleRooms = useMemo(() => {
     const q = query.trim().toLowerCase()
     return (rooms ?? []).filter((r) => !q || r.name.toLowerCase().includes(q))
@@ -342,7 +429,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
         .then((list) => { if (!cancelled) setPeople(list) })
         .catch(() => { if (!cancelled) setPeople([]) })
         .finally(() => { if (!cancelled) setPeopleBusy(false) })
-    }, 300)
+    }, TYPING_PAUSE_MS)
     return () => { cancelled = true; clearTimeout(t) }
   }, [query])
   const peers = new Set((rooms ?? []).filter((r) => r.kind === 1 && r.peer).map((r) => r.peer))
@@ -366,14 +453,14 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
           <button className="icon-button soft" aria-label="Обновить" onClick={() => void loadRooms()}><RefreshCw size={17} /></button>
         </div>
         <div className="message-list">
-          {rooms === null && !error && <div className="empty-state"><span>Загрузка бесед…</span></div>}
+          {rooms === null && !error && <SkeletonRows variant="room" count={7} label="Загрузка бесед…" />}
           {visibleRooms.map((r) => (
             <button key={r.token} className={`message-row room-row ${r.token === token ? 'selected' : ''} ${r.unread ? 'unread' : ''}`} onClick={() => setToken(r.token)}>
               {r.kind === 1 && r.peer
                 ? <Avatar id={r.peer} name={r.name} />
                 : <Avatar kind="room" id={r.token} name={r.name} fallback={r.kind === 1 ? undefined : <Users size={16} />} />}
               <div className="message-summary">
-                <div className="message-topline"><span className="sender-name">{r.name}</span>{r.unread > 0 && <b className={`folder-count ${r.unreadMention ? 'mention' : ''}`}>{r.unread}</b>}</div>
+                <div className="message-topline"><span className="sender-name">{r.name}</span>{r.favorite && <Star size={13} className="room-favorite" aria-label="Избранное" fill="currentColor" />}{r.unread > 0 && <b className={`folder-count ${r.unreadMention ? 'mention' : ''}`}>{r.unread}</b>}</div>
                 <div className="message-preview">{r.lastMessage ?? ''}</div>
               </div>
             </button>
@@ -399,13 +486,17 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
           <>
             <div className="calendar-toolbar">
               <strong className="calendar-title">{room.name}</strong>
+              <button className={`icon-button soft talk-favorite ${room.favorite ? 'on' : ''}`} aria-pressed={room.favorite}
+                aria-label={room.favorite ? 'Убрать из избранного' : 'В избранное'} title={room.favorite ? 'Убрать из избранного' : 'В избранное — беседа будет выше остальных'}
+                onClick={() => void toggleFavorite(room)}><Star size={17} fill={room.favorite ? 'currentColor' : 'none'} /></button>
               <div className="reader-toolbar-spacer" />
               <button className="secondary-button" title="Звонок откроется в браузере" onClick={() => void api.ncOpen(`call/${room.token}`)}><Phone size={15} /> Звонок</button>
             </div>
             {error && <div className="inline-warning" role="alert">Talk: {error}</div>}
             <div className="talk-messages" ref={listRef}
               onScroll={(e) => { const el = e.currentTarget; stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
-              {loading && <div className="empty-state"><span>Загрузка сообщений…</span></div>}
+              {loading && messages.length === 0 && <SkeletonChat />}
+              {hasOlder && !loading && <button className="text-button talk-older" disabled={olderBusy} onClick={() => void loadOlder()}>{olderBusy ? 'Загрузка…' : 'Показать более ранние сообщения'}</button>}
               {messages.map((m) => m.system ? (
                 <div key={m.id} className="talk-system">{m.text} · {timeOf(m.timestamp)}</div>
               ) : (
@@ -445,7 +536,10 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                         ))}
                       </div>
                     )}
-                    <div className="talk-time">{m.edited && !m.deleted && <span className="talk-edited">изменено</span>}{timeOf(m.timestamp)}</div>
+                    <div className="talk-time">{m.edited && !m.deleted && <span className="talk-edited">изменено</span>}{timeOf(m.timestamp)}
+                      {m.own && !m.deleted && (m.id <= readMark
+                        ? <CheckCheck size={14} className="talk-tick read" aria-label="Прочитано" />
+                        : <Check size={14} className="talk-tick" aria-label="Отправлено" />)}</div>
                     {!room.readOnly && !m.deleted && (
                       <div className="talk-actions">
                         <button aria-label="Реакция" title="Реакция" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}><SmilePlus size={14} /></button>
@@ -477,7 +571,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                   </div>
                 )}
                 {replyTo && <div className="talk-quote replying"><b>{replyTo.author}</b> {replyTo.text.slice(0, 120)}<button type="button" aria-label="Отменить ответ" onClick={() => setReplyTo(null)}><X size={13} /></button></div>}
-                {editing && <div className="talk-quote replying editing"><Pencil size={13} /> <b>Изменение сообщения</b><button type="button" aria-label="Отменить изменение" onClick={() => { setEditing(null); setDraft('') }}><X size={13} /></button></div>}
+                {editing && <div className="talk-quote replying editing"><Pencil size={13} /> <b>Изменение сообщения</b><button type="button" aria-label="Отменить изменение" onClick={cancelEdit}><X size={13} /></button></div>}
                 <div className="talk-input-row">
                   {!editing && <button type="button" className="icon-button soft talk-attach" aria-label="Прикрепить файл" title="Прикрепить файл" disabled={sending} onClick={() => void pickFiles()}><Paperclip size={18} /></button>}
                   <div className="talk-input-wrap">
@@ -503,7 +597,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                           if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(mentions[mentionSel]); return }
                           if (e.key === 'Escape') { setMentions([]); return }
                         }
-                        if (e.key === 'Escape' && editing) { setEditing(null); setDraft(''); return }
+                        if (e.key === 'Escape' && editing) { cancelEdit(); return }
                         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
                       }}
                       placeholder={editing ? 'Новый текст… (Enter — сохранить, Esc — отмена)' : files.length ? 'Подпись к файлу… (Enter — отправить)' : 'Сообщение… (@ — упомянуть, Enter — отправить, Shift+Enter — новая строка)'}
@@ -619,7 +713,7 @@ function NewChat({ onClose, onCreated }: { onClose: () => void; onCreated: (toke
     let cancelled = false
     const t = setTimeout(() => {
       api.ncSearchUsers(q).then((list) => { if (!cancelled) setFound(list) }).catch((e) => { if (!cancelled) setError(errorText(e)) })
-    }, 250)
+    }, TYPING_PAUSE_MS)
     return () => { cancelled = true; clearTimeout(t) }
   }, [q])
 

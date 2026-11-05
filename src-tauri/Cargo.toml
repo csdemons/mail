@@ -1,7 +1,7 @@
 [package]
 name = "rrcki-mail"
-version = "0.30.3"
-description = "RRCKI Mail — корпоративный почтовый клиент"
+version = "0.31.0"
+description = "Atom Workspace — почта, календарь, задачи, чат и файлы"
 authors = ["RRCKI"]
 license = ""
 edition = "2021"
@@ -38,7 +38,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # macOS: пароли — в Связке ключей (apple-native).
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-native-tls", "hostname"] }
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "charset", "json", "stream", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "charset", "json", "stream", "multipart", "gzip", "brotli", "deflate"] }
 bytes = "1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

@@ -2147,7 +2147,7 @@ pub async fn diagnostics(conn: &mut Connection, folder: Option<&str>) -> Result<
     if conn.is_ews() {
         let folders = conn.ews().expect("ews").list_folders().await;
         return Ok(format!(
-            "Atom Mail {} — диагностика Exchange (EWS)\n\nАдрес EWS: {}\nВход: выполнен\nПапок: {}",
+            "Atom Workspace {} — диагностика Exchange (EWS)\n\nАдрес EWS: {}\nВход: выполнен\nПапок: {}",
             env!("CARGO_PKG_VERSION"),
             conn.creds.ews.clone().unwrap_or_default(),
             folders.map(|f| f.len().to_string()).unwrap_or_else(|e| format!("ошибка: {e}"))
@@ -2155,7 +2155,7 @@ pub async fn diagnostics(conn: &mut Connection, folder: Option<&str>) -> Result<
     }
     use std::fmt::Write;
     let mut r = String::new();
-    let _ = writeln!(r, "Atom Mail {} — диагностика IMAP", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(r, "Atom Workspace {} — диагностика IMAP", env!("CARGO_PKG_VERSION"));
 
     let caps = conn.capabilities().await.unwrap_or_else(|e| vec![format!("ошибка: {e}")]);
     let _ = writeln!(r, "\n## CAPABILITY\n{}", caps.join(" "));

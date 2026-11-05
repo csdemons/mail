@@ -13,7 +13,7 @@ export default function About() {
       <div className="about-head">
         <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
         <div>
-          <strong>Atom Mail{info ? ` ${info.version}` : ''}</strong>
+          <strong>Atom Workspace{info ? ` ${info.version}` : ''}</strong>
           <span>{info ? VARIANT_LABEL[info.variant] ?? info.variant : ''}</span>
         </div>
       </div>

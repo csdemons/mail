@@ -1107,3 +1107,41 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .login-diag .diag-text { height: 220px; }
 .login-diag-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); }
 .login-card { max-height: calc(100vh - 48px); overflow-y: auto; }
+
+/* Чат: избранные беседы и отметки о прочтении */
+.room-favorite { color: #e2a400; flex: none; margin-left: 4px; }
+.talk-favorite.on { color: #e2a400; }
+.talk-tick { color: var(--muted); }
+.talk-tick.read { color: var(--blue); }
+.theme-dark .talk-tick.read { color: #6fb1ff; }
+
+/* Серые заглушки при загрузке (скелетоны) */
+:root { --skeleton: #e6eaf0; --skeleton-shine: #f3f5f8; }
+.theme-dark { --skeleton: #2a3242; --skeleton-shine: #343d50; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skeleton-list { display: flex; flex-direction: column; padding: 4px 0; }
+.skeleton-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.skeleton-row.compact { align-items: center; padding: 8px 14px; border-bottom: 0; gap: 10px; }
+.skeleton-lines { flex: 1; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.skeleton-bar, .skeleton-avatar, .skeleton-dot, .skeleton-square, .skeleton-bubble {
+  display: block; background: linear-gradient(90deg, var(--skeleton) 25%, var(--skeleton-shine) 37%, var(--skeleton) 63%);
+  background-size: 400% 100%; animation: skeleton-shimmer 1.4s ease infinite; border-radius: 6px;
+}
+.skeleton-bar { height: 11px; }
+.skeleton-bar.thin { height: 8px; }
+.skeleton-bar.short { width: 14%; margin-left: auto; }
+.skeleton-bar.title { height: 18px; margin: 10px 0 6px; }
+.skeleton-avatar { width: 34px; height: 34px; border-radius: 50%; flex: none; }
+.skeleton-avatar.large { width: 44px; height: 44px; }
+.skeleton-dot { width: 16px; height: 16px; border-radius: 4px; flex: none; }
+.skeleton-square { width: 28px; height: 28px; border-radius: 6px; flex: none; }
+.skeleton-folder .skeleton-bar, .skeleton-line .skeleton-bar { flex: none; }
+.skeleton-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; margin: 8px; border: 1px solid var(--line); border-radius: 10px; }
+.skeleton-reader { display: flex; flex-direction: column; gap: 10px; padding: 24px 28px; }
+.skeleton-reader .skeleton-row { padding: 0 0 12px; }
+.skeleton-chat { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+.skeleton-bubble { height: 38px; border-radius: 12px; }
+.skeleton-bubble.own { align-self: flex-end; }
+@keyframes skeleton-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+@media (prefers-reduced-motion: reduce) { .skeleton-bar, .skeleton-avatar, .skeleton-dot, .skeleton-square, .skeleton-bubble { animation: none; } }
+.talk-older { align-self: center; margin: 4px 0 8px; }

@@ -87,6 +87,11 @@ pub fn open_url(_app: &AppHandle, url: &str) -> Result<()> {
     open::that_detached(url).map_err(|e| AppError::Other(format!("Не удалось открыть браузер: {e}")))
 }
 
+/// Файл — в программе по умолчанию.
+pub fn open_file(_app: &AppHandle, path: &std::path::Path) -> Result<()> {
+    open::that_detached(path).map_err(|e| AppError::Other(format!("Не удалось открыть файл: {e}")))
+}
+
 pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Result<()> {
     if let Some(w) = app.get_window(label) {
         let _ = w.unminimize();

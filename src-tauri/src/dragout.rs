@@ -10,16 +10,22 @@ use std::path::{Path, PathBuf};
 /// Через сколько убирать временные копии перетащенных вложений: файловый
 /// менеджер копирует файл уже после того, как его отпустили.
 const KEEP_SECS: u64 = 3600;
+/// Копии, открытые в программе компьютера (Word, Excel…): с ними могут работать долго.
+const OPEN_KEEP_SECS: u64 = 7 * 24 * 3600;
 
-/// Убрать временные копии прошлых перетаскиваний (старше часа).
+/// Убрать временные копии прошлых перетаскиваний (старше часа) и открытых вложений (старше недели).
 pub fn cleanup_old(base: &Path) {
     let Ok(rd) = std::fs::read_dir(base) else { return };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        if !name.starts_with("dragout-") {
+        let keep = if name.starts_with("dragout-") {
+            KEEP_SECS
+        } else if name.starts_with("open-") {
+            OPEN_KEEP_SECS
+        } else {
             continue;
-        }
-        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > KEEP_SECS);
+        };
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > keep);
         if old {
             let _ = std::fs::remove_dir_all(e.path());
         }
@@ -28,7 +34,11 @@ pub fn cleanup_old(base: &Path) {
 
 /// Записать вложение во временный каталог: путь к файлу с исходным именем.
 pub fn stage(name: &str, data: &[u8]) -> crate::error::Result<PathBuf> {
-    let dir = crate::updater::private_dir("dragout")?;
+    stage_in("dragout", name, data)
+}
+
+fn stage_in(prefix: &str, name: &str, data: &[u8]) -> crate::error::Result<PathBuf> {
+    let dir = crate::updater::private_dir(prefix)?;
     if let Some(base) = dir.parent() {
         cleanup_old(base);
     }
@@ -40,6 +50,37 @@ pub fn stage(name: &str, data: &[u8]) -> crate::error::Result<PathBuf> {
         f.write_all(data)?;
     }
     Ok(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+/// Файлы, которые можно открыть программой компьютера прямо из письма: документы,
+/// таблицы, презентации, PDF, картинки, текст, архивы. Исполняемые файлы, скрипты,
+/// ярлыки и всё неизвестное так не открываются — только «Сохранить».
+const OPENABLE: &[&str] = &[
+    "doc", "docx", "docm", "dot", "dotx", "rtf", "odt", "ott", "xls", "xlsx", "xlsm", "xlt", "xltx", "csv", "ods", "ots", "ppt", "pptx", "pptm", "pps", "ppsx", "odp", "otp",
+    "pdf", "djvu", "txt", "log", "md", "xml", "json", "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "svg", "heic", "vsd", "vsdx", "odg", "mpp", "zip", "7z", "rar",
+    "eml", "msg", "ics", "vcf", "mp3", "mp4", "wav", "avi", "mkv", "mov",
+];
+
+pub fn openable(name: &str) -> bool {
+    let n = name.trim().trim_end_matches(['.', ' ']).to_ascii_lowercase();
+    n.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && OPENABLE.contains(&ext))
+}
+
+/// Вложение — во временную копию для открытия программой компьютера. В Windows
+/// копия помечается как файл из интернета (Mark of the Web, зона «Интернет»):
+/// Office открывает её в защищённом просмотре, макросы не запускаются сами.
+pub fn stage_for_open(name: &str, data: &[u8]) -> crate::error::Result<PathBuf> {
+    if !openable(name) {
+        return Err(crate::error::AppError::Other(format!("«{name}» нельзя открыть прямо из письма — сохраните файл и проверьте его перед открытием")));
+    }
+    let path = stage_in("open", name, data)?;
+    #[cfg(windows)]
+    {
+        let mut ads = path.as_os_str().to_owned();
+        ads.push(":Zone.Identifier");
+        let _ = std::fs::write(std::path::PathBuf::from(ads), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    Ok(path)
 }
 
 /// Linux: начать перетаскивание файлов из окна (вызывать в главном потоке, пока
@@ -81,4 +122,19 @@ pub fn start_gtk(window: &gtk::ApplicationWindow, paths: Vec<PathBuf>) -> bool {
     let end = window.connect_drag_end(move |w, _| cleanup(w));
     handlers.borrow_mut().push(end);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_documents_open_directly() {
+        for ok in ["Смета.xlsx", "Отчёт.DOCX", "план.pdf", "фото.jpg", "a.b.odt"] {
+            assert!(openable(ok), "{ok}");
+        }
+        for bad in ["setup.exe", "отчёт.docx.exe", "run.bat", "x.ps1", "x.js", "x.vbs", "x.lnk", "x.desktop", "x.sh", "x.jar", "x.scr", "x.hta", "x.msi", "README", ".docx"] {
+            assert!(!openable(bad), "{bad}");
+        }
+    }
 }

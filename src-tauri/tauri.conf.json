@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RRCKI Mail",
-  "version": "0.30.3",
+  "version": "0.31.0",
   "identifier": "ru.rrcki.mail",
   "build": {
     "frontendDist": "../frontend/dist",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Atom Mail",
+        "title": "Atom Workspace",
         "width": 1400,
         "height": 900,
         "minWidth": 960,
@@ -45,14 +45,16 @@
     ],
     "publisher": "RRCKI",
     "category": "Productivity",
-    "shortDescription": "Корпоративный почтовый клиент",
+    "shortDescription": "Atom Workspace — почта, календарь, задачи, чат и файлы",
     "linux": {
       "deb": {
         "section": "mail",
         "preInstallScript": "deb/preinst",
+        "desktopTemplate": "deb/atom-workspace.desktop",
         "recommends": ["hunspell-ru", "hunspell-en-us", "libayatana-appindicator3-1"]
       },
       "rpm": {
+        "desktopTemplate": "deb/atom-workspace.desktop",
         "recommends": ["hunspell-ru", "hunspell-en-US", "libayatana-appindicator-gtk3"]
       }
     },

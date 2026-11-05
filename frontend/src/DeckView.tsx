@@ -6,6 +6,7 @@ import { addItem, checklistProgress, parseChecklist, removeItem, renameItem, tog
 import Avatar from './Avatar'
 import TalkText from './TalkText'
 import type { DeckActivity, DeckAttachment, DeckBoard, DeckBoardDetails, DeckCard, DeckComment, DeckLabel, DeckStack, DeckUser } from './types'
+import { SkeletonRows } from './Skeleton'
 
 const LAST_BOARD_KEY = 'rrcki-mail.deck-board'
 const FILTER_KEY = 'rrcki-mail.deck-filter.'
@@ -277,7 +278,7 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
       <aside className="folder-sidebar">
         <div className="sidebar-heading"><span>Доски</span></div>
         <div className="folder-list">
-          {boards === null && !error && <div className="folder-placeholder">Загрузка досок…</div>}
+          {boards === null && !error && <SkeletonRows variant="folder" count={5} label="Загрузка досок…" />}
           {activeBoards.map((b) => (
             <button key={b.id} className={`folder-item ${b.id === boardId ? 'selected' : ''}`} onClick={() => setBoardId(b.id)} title={`Владелец: ${b.owner}`}>
               <span className="board-dot" style={{ background: `#${b.color || '0082c9'}` }} />
@@ -642,7 +643,7 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
 
   const sectionComments = (
     <div className="deck-comments">
-      {comments === null && <div className="muted">Загрузка…</div>}
+      {comments === null && <SkeletonRows variant="line" count={3} label="Загрузка комментариев…" />}
       {comments?.length === 0 && <div className="muted">Комментариев пока нет.</div>}
       {comments?.map((c) => (
         <div key={c.id} className={`deck-comment ${c.own ? 'own' : ''}`}>
@@ -663,7 +664,7 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
 
   const sectionFiles = (
     <div className="deck-files">
-      {attachments === null && <div className="muted">Загрузка…</div>}
+      {attachments === null && <SkeletonRows variant="file" count={2} label="Загрузка файлов…" />}
       {attachments?.length === 0 && <div className="muted">Вложений нет.</div>}
       {attachments?.map((a) => (
         <div key={a.id} className="talk-file-row deck-file-row">

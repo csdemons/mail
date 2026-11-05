@@ -1399,7 +1399,7 @@ pub fn split_ics(data: &str) -> Result<Vec<IcsEvent>> {
         header.insert(0, "VERSION:2.0".into());
     }
     if !header.iter().any(|h| name_of(h) == "PRODID") {
-        header.push("PRODID:-//NRC Kurchatov Institute//Atom Mail//RU".into());
+        header.push("PRODID:-//NRC Kurchatov Institute//Atom Workspace//RU".into());
     }
     let mut out = Vec::new();
     for (uid, events) in groups {

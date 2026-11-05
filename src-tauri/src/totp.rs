@@ -1,7 +1,7 @@
 //! Блокировка программы кодом TOTP (RFC 6238: 6 цифр, шаг 30 с, HMAC-SHA1 — как в
 //! Яндекс Ключе, Google Authenticator, FreeOTP).
 //!
-//! Это замок на программе, а не второй фактор почтового сервера: без кода Atom Mail
+//! Это замок на программе, а не второй фактор почтового сервера: без кода Atom Workspace
 //! не подключается к почте (сохранённый пароль не используется), но пароль почты
 //! по-прежнему работает в других клиентах. Секрет и хэши резервных кодов — в
 //! системном хранилище (рядом с паролем почты), не в файлах настроек.
@@ -206,7 +206,7 @@ pub fn use_recovery(stored: &mut Stored, code: &str) -> bool {
 
 pub fn otpauth_uri(secret: &str, account: &str) -> String {
     let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~@".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
-    format!("otpauth://totp/{}:{}?secret={secret}&issuer={}&algorithm=SHA1&digits=6&period=30", enc("Atom Mail"), enc(account), enc("Atom Mail"))
+    format!("otpauth://totp/{}:{}?secret={secret}&issuer={}&algorithm=SHA1&digits=6&period=30", enc("Atom Workspace"), enc(account), enc("Atom Workspace"))
 }
 
 /// QR-код ссылки для приложения-аутентификатора (SVG).

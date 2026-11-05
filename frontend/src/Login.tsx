@@ -142,7 +142,7 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
       <form className="login-card" onSubmit={submit} aria-label={add ? 'Добавить учётную запись' : undefined}>
         <div className="login-brand">
           <img className="brand-logo" src={kurchatovLogo} alt="НИЦ «Курчатовский институт»" />
-          <span>Atom Mail</span>
+          <span>Atom Workspace</span>
         </div>
         <h1>{add ? 'Добавить учётную запись' : 'Вход в почту'}</h1>
         <p className="login-hint">{add
@@ -244,7 +244,7 @@ export default function Login({ initial, initialError, onLoggedIn, add }: Props)
         </button>
         {add && <button type="button" className="text-button" onClick={add.onCancel}>Отмена</button>}
         <p className="login-note">Соединение защищено TLS. Пароль не передаётся никуда, кроме почтового сервера.</p>
-        <p className="login-version">Atom Mail{version ? ` ${version}` : ''} · НИЦ «Курчатовский институт»</p>
+        <p className="login-version">Atom Workspace{version ? ` ${version}` : ''} · НИЦ «Курчатовский институт»</p>
       </form>
     </div>
   )

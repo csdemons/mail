@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarClock, ChevronDown, Cloud, FileText, MailCheck, Paperclip, Send, Trash2, X } from 'lucide-react'
 
-import { api, errorText, formatSize } from './api'
+import { api, errorText, formatSize, TYPING_PAUSE_MS } from './api'
 import RichEditor, { type RichEditorHandle } from './RichEditor'
 import NcFilePicker from './NcFilePicker'
 import type { Contact, Draft, MailTemplate, PickedFile } from './types'
@@ -61,7 +61,7 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
         .then((list) => { if (!cancelled) setRemote({ q: token, list }) })
         .catch(() => { if (!cancelled) setRemote({ q: token, list: [] }) })
         .finally(() => { if (!cancelled) setSearching(false) })
-    }, 300)
+    }, TYPING_PAUSE_MS)
     return () => { cancelled = true; clearTimeout(t) }
   }, [token, focused])
 
@@ -298,7 +298,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
                 <input type="datetime-local" aria-label="Дата и время отправки" value={schedAt} min={localInputValue(new Date())} onChange={(e) => setSchedAt(e.target.value)} />
                 <button type="button" className="secondary-button" disabled={!schedAt} onClick={() => { setSchedOpen(false); void submit(null, new Date(schedAt)) }}>Запланировать</button>
               </label>
-              <small className="settings-hint">Письмо ждёт в «Черновиках» и уходит в срок, пока Atom Mail запущен (можно свернуть в трей); если программа была закрыта — при следующем запуске.</small>
+              <small className="settings-hint">Письмо ждёт в «Черновиках» и уходит в срок, пока Atom Workspace запущен (можно свернуть в трей); если программа была закрыта — при следующем запуске.</small>
             </div>}
           </div>
         </div>

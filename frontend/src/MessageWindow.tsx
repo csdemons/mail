@@ -13,6 +13,7 @@ import { useOutbox } from './sending'
 import { trashFor } from './FolderPicker'
 import { buildDraft, ensureArchive, forwardDraft, initials, senderLabel, withSignature } from './mailActions'
 import type { Contact, Draft, Folder, MessageDetail, Settings } from './types'
+import { SkeletonReader } from './Skeleton'
 
 declare global {
   interface Window { __RRCKI_MESSAGE?: { folder: string; uid: number } }
@@ -49,7 +50,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
     api.listFolders().then(setFolders).catch(() => undefined)
     api.getMessage(folder, uid).then((m) => {
       setDetail(m)
-      document.title = `${m.subject || '(без темы)'} — Atom Mail`
+      document.title = `${m.subject || '(без темы)'} — Atom Workspace`
       if (m.unread) {
         api.setFlag(folder, uid, 'seen', true).then(() => setDetail((d) => d && { ...d, unread: false })).catch(() => undefined)
       }
@@ -188,7 +189,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
         <MdnBar detail={detail} me={me} onNotice={setNotice} onDone={() => setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] })} />
         <MessageBody detail={detail} scale={font / 15} dark={dark} onNotice={setNotice} />
       </div> : <div className="empty-reader">
-        {error ? <><strong>Не удалось открыть письмо</strong><span>{error}</span></> : <span>Загрузка письма…</span>}
+        {error ? <><strong>Не удалось открыть письмо</strong><span>{error}</span></> : <SkeletonReader />}
       </div>}
 
       {outbox.element}

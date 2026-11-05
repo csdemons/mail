@@ -5,6 +5,7 @@ import { api, errorText } from './api'
 import Login from './Login'
 import { appInFront, notify } from './notifications'
 import type { AccountEntry, MessageSummary, UnifiedFilters, UnifiedItem, UnifiedMark, UnifiedRole } from './types'
+import { SkeletonRows } from './Skeleton'
 
 export function accountTitle(a: { displayName: string; username: string; email?: string }) {
   return a.displayName.trim() || a.email || a.username
@@ -42,7 +43,7 @@ export function useAccounts(pollSecs: () => number, mailNotify: () => { mail: bo
           if (appInFront()) {
             cb.current.onNotice(n.items.length > 1 ? `Новых писем в ${n.label}: ${n.items.length}` : `Новое письмо в ${n.label} от ${who}`)
           } else {
-            notify(n.items.length > 1 ? `Новых писем: ${n.items.length} — ${n.label}` : `Новое письмо — ${who} (${n.label})`, p.preview ? (m.subject || '(без темы)') : 'Откройте Atom Mail, чтобы прочитать')
+            notify(n.items.length > 1 ? `Новых писем: ${n.items.length} — ${n.label}` : `Новое письмо — ${who} (${n.label})`, p.preview ? (m.subject || '(без темы)') : 'Откройте Atom Workspace, чтобы прочитать')
           }
         }
       } catch { /* сеть — в следующий раз */ }
@@ -253,7 +254,7 @@ export function UnifiedColumn({ role, accounts, filters, onFilters, onOpen, onNo
       </div>
       {errors.length > 0 && <div className="unified-errors" role="alert">Не ответили: {errors.join('; ')}</div>}
       <div className="message-list">
-        {items === null && <div className="empty-state"><span>Загрузка писем всех учётных записей…</span></div>}
+        {items === null && <SkeletonRows variant="message" count={9} label="Загрузка писем всех учётных записей…" />}
         {items !== null && shown.length === 0 && <div className="empty-state"><span>{filtered ? 'Ничего не найдено' : 'Писем нет'}</span>{filtered && <button className="text-button" onClick={() => onFilters(NO_FILTERS)}>Сбросить фильтры</button>}</div>}
         {shown.map((m: UnifiedItem & MessageSummary) => {
           const peer = peerOf(m, role)

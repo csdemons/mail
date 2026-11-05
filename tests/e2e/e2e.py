@@ -109,7 +109,7 @@ try:
     err = wait(d, '.login-error').text
     assert 'Неверный логин или пароль' in err, err; ok(f'wrong password -> «{err}»')
     ver = __import__('json').load(open(os.path.join(os.path.dirname(__file__), '../../src-tauri/tauri.conf.json')))['version']
-    W(d, 10).until(lambda d: f'Atom Mail {ver}' in d.find_element(By.CSS_SELECTOR, '.login-version').get_attribute('textContent'))
+    W(d, 10).until(lambda d: f'Atom Workspace {ver}' in d.find_element(By.CSS_SELECTOR, '.login-version').get_attribute('textContent'))
     ok(f'login screen shows version {ver}')
     d.save_screenshot(f'{OUT}/01-login-error.png')
 
@@ -138,7 +138,7 @@ try:
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.update-card'))
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     about = W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.about-block'))
-    W(d, 10).until(lambda d: f'Atom Mail {ver}' in d.find_element(By.CSS_SELECTOR, '.about-block').get_attribute('textContent'))
+    W(d, 10).until(lambda d: f'Atom Workspace {ver}' in d.find_element(By.CSS_SELECTOR, '.about-block').get_attribute('textContent'))
     t = about.get_attribute('textContent')
     assert 'НИЦ «Курчатовский институт»' in t and 'Юшков Дмитрий Олегович' in t, t; ok('settings: version and «О программе»')
     d.save_screenshot(f'{OUT}/12-about.png')
@@ -271,6 +271,14 @@ try:
 
     # 10. ответ: In-Reply-To + подсказка адреса из контактов
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Почта']]").click()
+    # «Отправленные»: в списке — кому письмо, а не от кого.
+    W(d, 20).until(lambda d: [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Отправленные' in f.get_attribute('textContent')])
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Отправленные' in f.get_attribute('textContent')][0].click()
+    sent_row = lambda: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'Проверка отправки из RRCKI Mail' in r.get_attribute('textContent')]
+    W(d, 20).until(lambda d: sent_row())
+    who = sent_row()[0].find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent')
+    assert who.startswith('Кому:') and ('Иванов' in who or 'ivanov@inst.test' in who), who
+    ok(f'Sent folder list shows the recipient ({who})')
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Входящие' in f.get_attribute('textContent')][0].click()
     W(d, 20).until(lambda d: any('Отчёт с вложением' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
     [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'Отчёт с вложением' in r.get_attribute('textContent')][0].click()
@@ -575,10 +583,43 @@ try:
     box.send_keys('Добрый день, принято'); box.send_keys(Keys.ENTER)
     W(d, 20).until(lambda d: any('Добрый день, принято' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own')))
     ok('message sent, shown as own')
+    def own_msg(text):
+        return [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own') if text in m.get_attribute('textContent')][0]
+    assert own_msg('Добрый день, принято').find_elements(By.CSS_SELECTOR, '.talk-tick[aria-label="Отправлено"]'), 'single tick expected'
     t0 = time.time()
-    nc_mock('POST', '/test/inject?token=abc123&text=' + __import__('urllib.parse').parse.quote('Срочно: проверьте почту'))
+    # Коллега прочитал всё и ответил: свои сообщения — «✓✓».
+    nc_mock('POST', '/test/inject?read=1&token=abc123&text=' + __import__('urllib.parse').parse.quote('Срочно: проверьте почту'))
     W(d, 15).until(lambda d: any('Срочно: проверьте почту' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg:not(.own)')))
     ok(f'incoming message via long-poll in {time.time() - t0:.1f}s')
+    W(d, 10).until(lambda d: own_msg('Добрый день, принято').find_elements(By.CSS_SELECTOR, '.talk-tick.read[aria-label="Прочитано"]'))
+    ok('own messages: ✓ sent, ✓✓ once read by everyone')
+
+    # Недописанное сообщение переживает уход в другой раздел.
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
+    box.send_keys('Черновик в чате')
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Почта']]").click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-compose'))
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-compose textarea') and d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == 'Черновик в чате')
+    W(d, 20).until(lambda d: any('Срочно: проверьте почту' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')))
+    clear(d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'))
+    ok('chat draft kept after switching to Mail and back')
+
+    # Избранное: вторая беседа отмечается звёздочкой и встаёт первой (и на сервере тоже).
+    rows = d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row:not(.person-row)')
+    second = rows[1].find_element(By.CSS_SELECTOR, '.sender-name').text
+    rows[1].click()
+    W(d, 10).until(lambda d: second in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').text)
+    d.find_element(By.CSS_SELECTOR, '.talk-favorite').click()
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row')[0].find_element(By.CSS_SELECTOR, '.sender-name').text == second
+                   and d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row')[0].find_elements(By.CSS_SELECTOR, '.room-favorite'))
+    W(d, 10).until(lambda d: any(r['isFavorite'] for r in nc_mock('GET', '/test/state')['rooms'] if r['displayName'] == second or r.get('name') == second))
+    d.find_element(By.CSS_SELECTOR, '.talk-favorite').click()
+    W(d, 10).until(lambda d: not any(r['isFavorite'] for r in nc_mock('GET', '/test/state')['rooms']))
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if 'УИТ — общий' in r.find_element(By.CSS_SELECTOR, '.sender-name').text][0].click()
+    W(d, 15).until(lambda d: 'УИТ — общий' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').text
+                   and any('обновление в среду' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')))
+    ok('chat favorites: star pins the conversation on top (Talk API)')
     target = [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'обновление в среду' in m.get_attribute('textContent')][0]
     d.execute_script("arguments[0].click()", target.find_element(By.CSS_SELECTOR, '.talk-actions button[aria-label="Ответить"]'))
     wait(d, '.talk-quote.replying')
@@ -1854,6 +1895,19 @@ try:
     assert open(staged()[0], 'rb').read() == b'SMETA-DATA-2027'
     assert os.stat(os.path.dirname(staged()[0])).st_mode & 0o077 == 0
     ok('drag an attachment out of a mail: copy with its real name in a private folder handed to the system drag')
+    # щелчок по документу без встроенного просмотра — открыть в программе компьютера (Office), а не скачивать
+    t_open = time.time()
+    card = [c for c in d.find_elements(By.CSS_SELECTOR, '.attachment-card') if 'Смета 2027.xlsx' in c.get_attribute('textContent')][0]
+    assert 'открыть' in card.get_attribute('textContent') and 'программе' in card.get_attribute('title'), card.get_attribute('title')
+    card.click()
+    def opened():
+        return [f for f in (f for b in bases for f in glob.glob(f'{b}/open-*/Смета 2027.xlsx')) if os.path.exists(f) and os.path.getmtime(f) >= t_open - 1]
+    W(d, 15).until(lambda d: opened())
+    assert open(opened()[0], 'rb').read() == b'SMETA-DATA-2027'
+    assert os.stat(os.path.dirname(opened()[0])).st_mode & 0o077 == 0
+    W(d, 10).until(lambda d: any('открыт в программе' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    assert not os.path.exists(os.path.join(os.environ['E2E_HOME'], 'saved', 'Смета 2027.xlsx')), 'must open, not download'
+    ok('click on an office attachment opens a private copy in the local program instead of downloading')
     # файлы с компьютера, брошенные на окно почты, — новое письмо с вложениями
     d.execute_script("""
       const dt = new DataTransfer(); dt.items.add(new File(['план'], 'План работ.docx', {type: 'application/octet-stream'}));
@@ -2264,7 +2318,7 @@ try:
     W(d, 5).until(lambda d: len([i for i in boxes.find_elements(By.CSS_SELECTOR, 'input') if i.is_selected()]) == 2)
     tr_button('Сохранить копию').click()
     summary = W(d, 120).until(lambda d: [e.get_attribute('textContent') for e in d.find_elements(By.CSS_SELECTOR, '[aria-label="Ход резервного копирования"] .job-summary')] or None)[0]
-    copies = glob.glob(f'{H}/backup/Atom Mail — копия */')
+    copies = glob.glob(f'{H}/backup/Atom Workspace — копия */')
     assert len(copies) == 1 and 'Сохранено писем' in summary, (copies, summary)
     copy = copies[0]
     inbox_box = open(f'{copy}/Входящие.mbox', 'rb').read()

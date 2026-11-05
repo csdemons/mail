@@ -3,7 +3,8 @@
 python3 tests/servers/nextcloud_mock.py <cert> <key> [port=8443]
 
 Тестовые ручки:
-  POST /test/inject?token=<room>&text=...  — сообщение «от коллеги» (будит long-poll)
+  POST /test/inject?token=<room>&text=...  — сообщение «от коллеги» (будит long-poll);
+                                             &read=1 — коллега сначала прочитал всё (для «✓✓»)
   GET  /test/state                         — состояние для проверок
 """
 import json, ssl, sys, threading, time, base64, itertools
@@ -86,6 +87,8 @@ state = {
         'dm-ivanov': [],
     },
     'read': {'abc123': 0, 'dm-ivanov': 0},
+    # До какого сообщения беседу прочитали все участники (X-Chat-Last-Common-Read).
+    'peer_read': {},
 }
 
 
@@ -109,7 +112,8 @@ def room_view(r):
     msgs = [m for m in state['messages'][r['token']] if m['messageType'] != 'system']
     last = msgs[-1] if msgs else None
     unread = sum(1 for m in msgs if m['id'] > state['read'][r['token']] and m['actorId'] != UID)
-    return dict(r, unreadMessages=unread, unreadMention=False,
+    return dict(r, unreadMessages=unread, unreadMention=False, isFavorite=bool(r.get('favorite')),
+                lastCommonReadMessage=state['peer_read'].get(r['token'], 0),
                 lastActivity=last['timestamp'] if last else 0, lastMessage=last or [])
 
 
@@ -253,10 +257,12 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'],
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']],
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:
+                if q.get('read') == '1' and state['messages'][q['token']]:
+                    state['peer_read'][q['token']] = max(m['id'] for m in state['messages'][q['token']])
                 state['messages'][q['token']].append({
                     'id': next(ids), 'actorType': 'users', 'actorId': 'ivanov', 'actorDisplayName': 'Иванов Иван',
                     'timestamp': int(time.time()), 'message': q['text'], 'messageType': 'comment', 'systemMessage': '',
@@ -524,6 +530,13 @@ class H(BaseHTTPRequestHandler):
                 r = {'token': tok, 'type': 2, 'name': b['roomName'], 'displayName': b['roomName'], 'readOnly': 0, 'participants': []}
                 state['rooms'].append(r); state['messages'][tok] = []; state['read'][tok] = 0
             return self.ocs(room_view(r), 201)
+        if method in ('POST', 'DELETE') and p.startswith('/ocs/v2.php/apps/spreed/api/v4/room/') and p.endswith('/favorite'):
+            tok = p.split('/')[-2]
+            r = next((x for x in state['rooms'] if x['token'] == tok), None)
+            if not r:
+                return self.send(404, {})
+            r['favorite'] = method == 'POST'
+            return self.ocs({})
         if method == 'POST' and p.startswith('/ocs/v2.php/apps/spreed/api/v4/room/') and p.endswith('/participants'):
             tok = p.split('/')[-2]
             r = next(x for x in state['rooms'] if x['token'] == tok)
@@ -610,10 +623,11 @@ class H(BaseHTTPRequestHandler):
                     msgs = list(reversed(older[-limit:]))  # история приходит от новых к старым
                 if msgs and q.get('setReadMarker', '1') == '1':
                     state['read'][token] = max(state['read'][token], max(m['id'] for m in msgs))
+            common = str(state['peer_read'].get(token, 0))
             if not msgs:
-                self.send_response(304); self.send_header('Content-Length', '0'); self.end_headers()
+                self.send_response(304); self.send_header('Content-Length', '0'); self.send_header('X-Chat-Last-Common-Read', common); self.end_headers()
                 return
-            return self.ocs(msgs, 200, {'X-Chat-Last-Given': str(msgs[-1]['id'])})
+            return self.ocs(msgs, 200, {'X-Chat-Last-Given': str(msgs[-1]['id']), 'X-Chat-Last-Common-Read': common})
 
         self.send(404, {'message': f'no route {method} {p}'})
 

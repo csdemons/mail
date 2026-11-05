@@ -696,8 +696,10 @@ version = "0.4.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cae36683101b2899f48bd31f8db9839437356188e3b1ff23096e73dab09ba8fe"
 dependencies = [
+ "brotli",
  "compression-core",
  "flate2",
+ "memchr",
 ]
 
 [[package]]
@@ -4024,7 +4026,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rrcki-mail"
-version = "0.30.3"
+version = "0.31.0"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -5482,12 +5484,17 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
+ "async-compression",
  "bitflags 2.13.2",
  "bytes",
+ "futures-core",
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "pin-project-lite",
+ "tokio",
+ "tokio-util",
  "tower",
  "tower-layer",
  "tower-service",

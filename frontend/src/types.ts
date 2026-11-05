@@ -328,6 +328,10 @@ export interface TalkRoom {
   readOnly: boolean
   /** Личная беседа: ID собеседника. */
   peer: string | null
+  /** Избранная — показывается выше остальных. */
+  favorite: boolean
+  /** До какого сообщения прочитали все участники (0 — неизвестно). */
+  lastCommonRead: number
 }
 
 export interface TalkMessage {
@@ -357,6 +361,9 @@ export interface TalkReaction {
 export interface TalkChunk {
   messages: TalkMessage[]
   lastId: number
+  lastCommonRead: number
+  /** История: есть ли, вероятно, более ранние сообщения. */
+  more: boolean
 }
 
 export interface TalkMention {
