@@ -1,12 +1,14 @@
 :root {
-  font-family: "Segoe UI", system-ui, "Ubuntu", "Cantarell", "Noto Sans", "DejaVu Sans", Arial, sans-serif;
+  /* Системный шрифт: Windows — Segoe UI, macOS — San Francisco, Linux — шрифт рабочего стола
+     (в Astra — PT Astra Sans), далее распространённые гарнитуры. */
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "PT Astra Sans", "Noto Sans", "Ubuntu", "Cantarell", "Liberation Sans", Arial, sans-serif;
   color: #202939;
   background: #f5f7fb;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   font-optical-sizing: auto;
-  font-size: 13px;
+  font-size: 14px;
   /* Цвета темы — на всей странице: и в окне программы, и в том, что выводится поверх
      (уведомление об обновлении, всплывающие окна). */
   --line: #e8edf4; --muted: #778397; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed;
@@ -349,7 +351,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 
 .deck-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
 .deck-columns { flex: 1; display: flex; gap: 12px; padding: 12px; overflow: auto; align-items: flex-start; }
-.deck-column { flex: 0 0 272px; max-height: 100%; display: flex; flex-direction: column; background: var(--hover); border-radius: 12px; padding: 8px; border: 2px dashed transparent; }
+.deck-column { flex: 0 0 var(--deck-col, 272px); font-size: var(--deck-font, 13px); max-height: 100%; display: flex; flex-direction: column; background: var(--hover); border-radius: 12px; padding: 8px; border: 2px dashed transparent; }
 .deck-column.drop { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 8%, var(--hover)); }
 .deck-card.drag-source { opacity: .35; }
 .deck-ghost { position: fixed; z-index: 1000; pointer-events: none; transform: rotate(2deg); box-shadow: 0 10px 28px #0003; cursor: grabbing; }
@@ -386,7 +388,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .talk-msg.own .talk-bubble { background: #e3eeff; border-color: #c9dcff; border-radius: 12px 12px 4px 12px; }
 .theme-dark .talk-msg.own .talk-bubble { background: #233a5c; border-color: #2f4c75; }
 .talk-author { font-size: 11px; font-weight: 600; color: var(--blue); }
-.talk-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.talk-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--content-font, 14px); line-height: 1.45; }
 .talk-time { font-size: 10px; color: var(--muted); align-self: flex-end; display: flex; align-items: center; gap: 4px; }
 .talk-quote { border-left: 3px solid var(--blue); padding: 2px 8px; font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--blue) 6%, transparent); border-radius: 0 6px 6px 0; }
 .talk-quote.replying { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
@@ -463,8 +465,9 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .login-version { margin: 4px 0 0; text-align: center; color: var(--muted); font-size: 11px; }
 
 /* Talk: реакции, действия, упоминания, эмодзи */
-.talk-actions { position: absolute; top: -14px; right: 6px; display: none; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 2px 8px #0002; }
-.talk-msg.own .talk-actions { right: auto; left: 6px; }
+.talk-actions { position: absolute; top: -14px; left: 6px; display: none; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 2px 8px #0002; }
+/* Свои сообщения прижаты вправо — панель растёт влево, чужие — вправо: не уходит за край ленты. */
+.talk-msg.own .talk-actions { left: auto; right: 6px; }
 .talk-bubble:hover .talk-actions, .talk-bubble:focus-within .talk-actions { display: flex; }
 .talk-actions button { border: 0; background: transparent; color: var(--muted); width: 24px; height: 22px; border-radius: 6px; display: grid; place-items: center; cursor: pointer; }
 .talk-actions button:hover { background: var(--hover); color: var(--blue); }
@@ -790,7 +793,9 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .create-doc-form input { padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; }
 .create-doc-form .settings-actions { margin-top: 4px; }
 
-/* Контекстное меню (правая кнопка мыши) */
+/* Контекстное меню (правая кнопка мыши): вне .app-shell — свои значения цветов */
+:root:not(.theme-dark) { --line: #e8edf4; --muted: #778397; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed; --text: #202939; }
+.theme-dark { --text: #e6ebf3; }
 .context-menu { position: fixed; z-index: 80; min-width: 250px; padding: 4px; background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 34px #0003; outline: none; font-size: 13px; }
 .context-menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; }
 .context-menu button.active, .context-menu button:hover:not(:disabled) { background: var(--hover); }
@@ -884,7 +889,18 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .due-tag.overdue { color: #b91c1c; background: #fee2e2; }
 .theme-dark .due-tag { background: #451a03; color: #fcd34d; }
 .theme-dark .due-tag.overdue { background: #450a0a; color: #fca5a5; }
-.filter-select { appearance: auto; font: inherit; font-size: 12px; height: 28px; padding: 0 6px; border: 1px solid var(--line, #d0d7e2); border-radius: 999px; background: transparent; color: inherit; max-width: 160px; }
+/* Выпадающий список-фильтр в виде «чипа» (категории). Свой значок стрелки: системный
+   в WebView2/WebKitGTK на скруглённом поле обрезался и наезжал на текст. */
+.filter-row select.filter-select, .filter-select {
+  appearance: none; -webkit-appearance: none; font: inherit; font-size: 11px; line-height: 1; height: auto;
+  padding: 7px 24px 7px 10px; border: 1px solid transparent; border-radius: 18px; color: #647186; max-width: 170px;
+  background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23778397' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 9px center;
+  text-overflow: ellipsis; white-space: nowrap; overflow: hidden; cursor: pointer;
+}
+.filter-row select.filter-select.active, .filter-select.active { border-color: #b9d2ff; color: #1c6ce6; background-color: #eaf2ff; }
+.theme-dark .filter-row select.filter-select, .theme-dark .filter-select { color: var(--muted); }
+.theme-dark .filter-row select.filter-select.active, .theme-dark .filter-select.active { background-color: #263b5b; color: #8db7ff; border-color: #2f4c75; }
+.filter-select option { color: initial; background: initial; }
 .thread-count { display: inline-flex; align-items: center; gap: 1px; margin-right: 6px; padding: 0 5px 0 2px; border-radius: 999px; background: var(--hover, #eef2f7); font-size: 11px; font-weight: 600; cursor: pointer; vertical-align: 1px; }
 .thread-count svg { transition: transform .15s; }
 .thread-count.open svg { transform: rotate(90deg); }
@@ -1145,3 +1161,86 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 @keyframes skeleton-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 @media (prefers-reduced-motion: reduce) { .skeleton-bar, .skeleton-avatar, .skeleton-dot, .skeleton-square, .skeleton-bubble { animation: none; } }
 .talk-older { align-self: center; margin: 4px 0 8px; }
+
+/* Контекстное меню (правая кнопка мыши) */
+.ctx-menu { position: fixed; z-index: 1000; min-width: 200px; max-width: 320px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px #0003; user-select: none; }
+.ctx-item { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: transparent; color: var(--text); text-align: left; padding: 7px 10px; border-radius: 6px; font: inherit; cursor: pointer; }
+.ctx-item:hover:not(:disabled), .ctx-item:focus-visible { background: var(--hover); outline: none; }
+.ctx-item:disabled { color: var(--muted); cursor: default; }
+.ctx-item.danger { color: #c62828; }
+.theme-dark .ctx-item.danger { color: #ff8a80; }
+.ctx-icon { width: 16px; display: grid; place-items: center; color: var(--muted); flex: none; }
+.ctx-item.danger .ctx-icon { color: inherit; }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.ctx-custom { display: flex; gap: 2px; padding: 4px 6px; }
+.ctx-custom button { border: 0; background: transparent; font-size: 18px; width: 32px; height: 32px; border-radius: 8px; cursor: pointer; }
+.ctx-custom button:hover { background: var(--hover); }
+
+/* Разделители колонок */
+.splitter { flex: 0 0 6px; width: 6px; margin: 0 -3px; position: relative; z-index: 4; cursor: col-resize; touch-action: none; background: transparent; }
+.splitter::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background .12s; }
+.splitter:hover::after, .splitter.dragging::after, .splitter:focus-visible::after { background: var(--blue); }
+.splitter:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing iframe { pointer-events: none; }
+@media (min-width: 851px) {
+  .sized { flex: 0 0 var(--w) !important; width: var(--w) !important; max-width: 75% !important; min-width: 0 !important; }
+}
+@media (max-width: 850px) { .splitter { display: none; } }
+
+/* Настройки → «Вид» */
+.appearance-settings label { display: flex; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; }
+.appearance-settings label > span:first-child { min-width: 230px; }
+.appearance-settings select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: inherit; }
+.font-stepper { display: inline-flex; align-items: center; gap: 6px; }
+.font-stepper b { min-width: 26px; text-align: center; }
+.appearance-sample { margin: 2px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--panel); line-height: 1.45; }
+
+/* Текст элементов интерфейса не выделяется (заголовки, кнопки, эмблема, списки, панели);
+   содержимое — письма, сообщения, карточки, поля ввода — выделяется и копируется как обычно. */
+.topbar, .brand, .module-rail, .folder-sidebar, .list-toolbar, .filter-row, .reader-toolbar, .sidebar-heading,
+.message-row, .room-row, .message-list-header, .settings-modal > h2, .tabs, .tab, .deck-column-head, .calendar-toolbar,
+button, label, .splitter, .splash, .toast, .status-bar, .module-view .list-toolbar {
+  -webkit-user-select: none; user-select: none;
+}
+.reader-content, .message-body, .talk-text, .talk-quote, .contact-card, .deck-card-full, .counterparty-main-pane,
+input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint, .error-text, pre, code {
+  -webkit-user-select: text; user-select: text;
+}
+
+/* Deck: колонки по ширине окна (как дни в «Календаре») и масштаб */
+.deck-columns.stretch .deck-column { flex: 1 1 var(--deck-col, 272px); min-width: var(--deck-col, 272px); }
+.deck-column .deck-card { font-size: inherit; }
+.deck-view-controls { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
+.deck-scale-label { min-width: 44px; text-align: center; font-size: 12px; color: var(--muted); }
+.deck-view-controls .icon-button.active { color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, transparent); }
+
+/* Чат: участники, настройки беседы, вставленные картинки */
+.talk-people-panel { flex: 0 0 300px; width: 300px; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); }
+.talk-people-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+.talk-person { display: flex; align-items: center; gap: 10px; padding: 8px 12px; }
+.talk-person:hover { background: var(--hover); }
+.talk-person .message-summary { flex: 1; min-width: 0; }
+.talk-person-avatar { position: relative; flex: none; }
+.presence { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--surface); background: #a0aab8; }
+.presence.online { background: #22c55e; }
+.presence.away { background: #f59e0b; }
+.presence.dnd, .presence.busy { background: #ef4444; }
+.talk-role { display: inline-flex; align-items: center; gap: 3px; margin-right: 6px; padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 600; background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); }
+.talk-role.role-1 { background: #fff3d6; color: #a86a00; }
+.theme-dark .talk-role.role-1 { background: #4a3a14; color: #ffcf6e; }
+.talk-room-description { margin: 0; padding: 8px 14px; color: var(--muted); font-size: 12px; white-space: pre-wrap; border-bottom: 1px solid var(--line); }
+.talk-people-add { padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.talk-people-toggle.active { color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, transparent); }
+.room-muted { color: var(--muted); margin-left: 4px; flex: none; }
+.talk-settings-modal { width: min(520px, calc(100vw - 32px)); }
+.talk-settings-modal textarea { resize: vertical; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; }
+.talk-settings-modal select { align-self: flex-start; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: inherit; }
+.talk-settings-actions { align-items: center; flex-wrap: wrap; }
+.text-button.danger { color: #c62828; }
+.theme-dark .text-button.danger { color: #ff8a80; }
+.talk-file.with-preview { align-items: center; }
+.talk-paste-preview { width: 48px; height: 36px; object-fit: cover; border-radius: 5px; border: 1px solid var(--line); }
+/* Кнопки действий над сообщением не уходят за край ленты: место сверху у первого сообщения. */
+.talk-messages { padding-top: 22px; }
+.talk-actions { z-index: 3; }

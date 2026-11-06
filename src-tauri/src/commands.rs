@@ -4213,6 +4213,19 @@ pub async fn talk_send(state: State<'_, AppState>, token: String, message: Strin
 }
 
 #[tauri::command]
+pub async fn talk_participants(state: State<'_, AppState>, token: String) -> Result<Vec<crate::nextcloud::TalkParticipant>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_participants(&token).await
+}
+
+/// Действия с беседой: участники, роли, название, описание, режимы, уведомления, выход, удаление.
+#[tauri::command]
+pub async fn talk_manage(state: State<'_, AppState>, token: String, action: String, value: serde_json::Value) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_manage(&token, &action, &value).await
+}
+
+#[tauri::command]
 pub async fn talk_favorite(state: State<'_, AppState>, token: String, on: bool) -> Result<()> {
     let ctx = state.ctx().await?;
     nc(&ctx).await?.talk_favorite(&token, on).await
@@ -4509,6 +4522,16 @@ pub async fn create_folder(state: State<'_, AppState>, name: String) -> Result<(
         return Err(AppError::Other("Некорректное имя папки".into()));
     }
     with_conn!(state, c => imap::create_folder(c, &name))
+}
+
+/// Масштаб интерфейса окна, из которого вызвана команда (настройка «Масштаб», Ctrl +/−/0).
+/// `false` — движок не поддерживает, интерфейс масштабируется средствами CSS.
+#[tauri::command]
+pub async fn set_zoom(app: AppHandle, window: tauri::Window, factor: f64) -> Result<bool> {
+    if !(0.5..=3.0).contains(&factor) {
+        return Err(AppError::Other("Масштаб вне допустимых пределов".into()));
+    }
+    Ok(host::set_zoom(&app, window.label(), factor))
 }
 
 /// Закрывает окно, из которого вызвана команда (окно письма после удаления/архивации).
@@ -5382,6 +5405,8 @@ macro_rules! app_commands {
             crate::commands::talk_send_file,
             crate::commands::talk_react,
             crate::commands::talk_favorite,
+            crate::commands::talk_participants,
+            crate::commands::talk_manage,
             crate::commands::talk_edit,
             crate::commands::talk_delete,
             crate::commands::talk_mentions,
@@ -5496,6 +5521,7 @@ macro_rules! app_commands {
             crate::commands::notify,
             crate::commands::notify_poll_secs,
             crate::commands::close_window,
+            crate::commands::set_zoom,
             crate::commands::mail_filters_get,
             crate::commands::mail_filters_save,
             crate::commands::delete_messages,

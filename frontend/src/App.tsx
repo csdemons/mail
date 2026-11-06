@@ -46,6 +46,9 @@ import FolderPicker, { sharedMailboxOf, trashFor } from './FolderPicker'
 import { appInFront, loadPrefs, notify, savePrefs } from './notifications'
 import type { NotifyPrefs } from './notifications'
 import { SkeletonReader, SkeletonRows } from './Skeleton'
+import Splitter from './Splitter'
+import AppearanceSettings from './AppearanceSettings'
+import { useAppearance, zoomStep } from './appearance'
 
 const ROLE_LABELS: Partial<Record<FolderRole, string>> = {
   inbox: 'Входящие',
@@ -182,6 +185,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     try { localStorage.setItem(AUTOLOCK_KEY, String(minutes)) } catch { /* нет хранилища */ }
   }
 
+  const appearance = useAppearance()
   const [dark, setDark] = useState(() => {
     try {
       const saved = localStorage.getItem('rrcki-mail.theme')
@@ -1126,6 +1130,24 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     }
   }
 
+  // Масштаб интерфейса: Ctrl + / Ctrl − / Ctrl 0 (и Ctrl+колесо мыши) — в любом разделе.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomStep(1) }
+      else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomStep(-1) }
+      else if (e.key === '0') { e.preventDefault(); zoomStep(0) }
+    }
+    function onWheel(e: WheelEvent) {
+      if (!(e.ctrlKey || e.metaKey) || e.deltaY === 0) return
+      e.preventDefault()
+      zoomStep(e.deltaY < 0 ? 1 : -1)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('wheel', onWheel, { passive: false })
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('wheel', onWheel) }
+  }, [])
+
   // Del — удалить, Shift+Del — безвозвратно; Ctrl+A — отметить все.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1520,6 +1542,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <span>{account.host}</span>
           </div>
         </aside>}
+        {foldersOpen && <Splitter id="mail-folders" min={150} max={420} label="Ширина списка папок" />}
 
         {unified ? <UnifiedColumn
           role={unified}
@@ -1689,6 +1712,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             </span>
           </div>
         </main>}
+        {readerOpen && <Splitter id="mail-list" min={260} max={900} label="Ширина списка писем" />}
 
         {readerOpen && <section className="reader-pane">
           <div className="reader-toolbar">
@@ -1755,7 +1779,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               onEdit={ncStatus?.connected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(detail.folder, detail.uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined}
             />}
             <MdnBar detail={detail} me={myAddress} onNotice={setNotice} onDone={() => { setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] }); patchMessage(messageKey(detail), { keywords: [...detail.keywords, '$MDNSent'] }) }} />
-            <MessageBody detail={detail} dark={dark} onNotice={setNotice} />
+            <MessageBody detail={detail} scale={appearance.text / 14} dark={dark} onNotice={setNotice} />
             <div className="reader-actions">
               <button className="primary-button" onClick={() => openComposer('reply')}><Reply size={16} /> Ответить</button>
               <button className="secondary-button" onClick={() => openComposer('replyAll')}><ReplyAll size={16} /> Ответить всем</button>
@@ -1851,6 +1875,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             {notifyPolicy !== 'full' && <span className="settings-hint">{notifyPolicy === 'none' ? 'Администратор разрешил показывать в уведомлениях только сам факт нового письма или сообщения.' : 'Администратор запретил показывать в уведомлениях тему и текст.'}</span>}
             <button className="text-button" onClick={() => notify('Atom Workspace', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
           </div>
+          <AppearanceSettings />
           <SignatureSettings signature={signature} onSaved={(text, msg) => { setSignature(text); setNotice(msg) }} />
           <SendingSettings />
           <CategoriesSettings categories={categories} onSaved={(list, msg) => { setCategories(list); setNotice(msg) }} />

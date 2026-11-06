@@ -684,6 +684,31 @@ pub struct TalkRoom {
     pub favorite: bool,
     /// Последнее сообщение, прочитанное всеми участниками (для «✓✓»); 0 — неизвестно.
     pub last_common_read: i64,
+    /// Моя роль: 1 — владелец, 2 — модератор, 3 — участник, 4 — гость, 5 — сам вошёл, 6 — гость-модератор.
+    pub role: i64,
+    /// Я владелец или модератор — могу управлять беседой.
+    pub moderator: bool,
+    pub description: String,
+    /// Уведомления: 1 — всегда, 2 — при упоминании, 3 — никогда (0 — по умолчанию).
+    pub notify_level: i64,
+    pub can_leave: bool,
+    pub can_delete: bool,
+}
+
+/// Участник беседы (список, как в Talk).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkParticipant {
+    pub attendee_id: i64,
+    /// users, groups, emails, guests, federated_users…
+    pub actor_type: String,
+    pub actor_id: String,
+    pub name: String,
+    pub role: i64,
+    /// online, away, dnd, offline или пусто.
+    pub status: String,
+    pub status_message: String,
+    pub me: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -926,6 +951,12 @@ impl Nc {
             peer: (int(&r["type"]) == 1).then(|| text(&r["name"])).filter(|n| !n.is_empty()),
             favorite: r["isFavorite"].as_bool().unwrap_or(false),
             last_common_read: int(&r["lastCommonReadMessage"]),
+            role: int(&r["participantType"]),
+            moderator: matches!(int(&r["participantType"]), 1 | 2 | 6),
+            description: text(&r["description"]),
+            notify_level: int(&r["notificationLevel"]),
+            can_leave: r["canLeaveConversation"].as_bool().unwrap_or(true),
+            can_delete: r["canDeleteConversation"].as_bool().unwrap_or(false),
         }).filter(|r| r.kind != 4).collect()).unwrap_or_default();
         // Как в Talk: избранные сверху, внутри — по последней активности.
         rooms.sort_by_key(|r| (std::cmp::Reverse(r.favorite), std::cmp::Reverse(r.last_activity)));
@@ -964,6 +995,72 @@ impl Nc {
     pub async fn talk_favorite(&self, token: &str, on: bool) -> Result<()> {
         let path = format!("{TALK_ROOM}/{}/favorite", seg(token));
         self.ocs(if on { Method::POST } else { Method::DELETE }, &path, &[], None, "Избранное").await?;
+        Ok(())
+    }
+
+    /// Участники беседы с ролями и статусом (как боковая панель Talk).
+    pub async fn talk_participants(&self, token: &str) -> Result<Vec<TalkParticipant>> {
+        let path = format!("{TALK_ROOM}/{}/participants", seg(token));
+        let (_, _, d) = self.ocs(Method::GET, &path, &[("includeStatus", "true".into())], None, "Участники").await?;
+        let mut list: Vec<TalkParticipant> = d.as_array().map(|a| a.iter().map(|p| {
+            let actor_type = text(&p["actorType"]);
+            let actor_id = text(&p["actorId"]);
+            TalkParticipant {
+                attendee_id: int(&p["attendeeId"]),
+                me: actor_type == "users" && actor_id == self.me,
+                name: p["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or(&actor_id).to_string(),
+                role: int(&p["participantType"]),
+                status: text(&p["status"]),
+                status_message: text(&p["statusMessage"]),
+                actor_type,
+                actor_id,
+            }
+        }).collect()).unwrap_or_default();
+        // Владельцы и модераторы сверху, затем по имени.
+        list.sort_by_key(|p| (!matches!(p.role, 1 | 2 | 6), p.name.to_lowercase()));
+        Ok(list)
+    }
+
+    /// Управление беседой (модератор/владелец) и своё участие — тонкие обёртки над API Talk.
+    pub async fn talk_manage(&self, token: &str, action: &str, value: &Value) -> Result<()> {
+        let room = format!("{TALK_ROOM}/{}", seg(token));
+        let attendee = || -> Result<Value> {
+            let id = value["attendeeId"].as_i64().ok_or_else(|| AppError::Other("Не указан участник".into()))?;
+            Ok(json!({ "attendeeId": id }))
+        };
+        let (method, path, body, what) = match action {
+            "add" => {
+                let who = value["id"].as_str().unwrap_or_default().trim().to_string();
+                if who.is_empty() { return Err(AppError::Other("Не указан участник".into())); }
+                let source = value["source"].as_str().filter(|s| matches!(*s, "groups" | "emails" | "circles")).unwrap_or("users");
+                (Method::POST, format!("{room}/participants"), Some(json!({ "newParticipant": who, "source": source })), "Добавление участника")
+            }
+            "remove" => (Method::DELETE, format!("{room}/attendees"), Some(attendee()?), "Удаление участника"),
+            "promote" => (Method::POST, format!("{room}/moderators"), Some(attendee()?), "Назначение модератора"),
+            "demote" => (Method::DELETE, format!("{room}/moderators"), Some(attendee()?), "Снятие модератора"),
+            "rename" => {
+                let name = value["name"].as_str().unwrap_or_default().trim().to_string();
+                if name.is_empty() { return Err(AppError::Other("Название не может быть пустым".into())); }
+                (Method::PUT, room.clone(), Some(json!({ "roomName": name })), "Переименование")
+            }
+            "description" => (Method::PUT, format!("{room}/description"), Some(json!({ "description": value["description"].as_str().unwrap_or_default() })), "Описание"),
+            "read_only" => (Method::PUT, format!("{room}/read-only"), Some(json!({ "state": i64::from(value["on"].as_bool().unwrap_or(false)) })), "Только чтение"),
+            "public" => (if value["on"].as_bool().unwrap_or(false) { Method::POST } else { Method::DELETE }, format!("{room}/public"), None, "Доступ по ссылке"),
+            "notify" => {
+                let level = value["level"].as_i64().filter(|l| (0..=3).contains(l)).unwrap_or(0);
+                (Method::POST, format!("{room}/notify"), Some(json!({ "level": level })), "Уведомления")
+            }
+            "read" => {
+                // Без номера — «прочитано всё» (lastReadMessage: null, как в Talk).
+                let body = value["lastId"].as_i64().map_or_else(|| json!({ "lastReadMessage": null }), |last| json!({ "lastReadMessage": last }));
+                (Method::POST, format!("{TALK_CHAT}{}/read", seg(token)), Some(body), "Прочитано")
+            }
+            "unread" => (Method::DELETE, format!("{TALK_CHAT}{}/read", seg(token)), None, "Непрочитано"),
+            "leave" => (Method::DELETE, format!("{room}/participants/self"), None, "Выход из беседы"),
+            "delete" => (Method::DELETE, room.clone(), None, "Удаление беседы"),
+            other => return Err(AppError::Other(format!("Неизвестное действие с беседой: {other}"))),
+        };
+        self.ocs(method, &path, &[], body, what).await?;
         Ok(())
     }
 

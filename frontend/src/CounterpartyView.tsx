@@ -3,6 +3,7 @@ import { Building2, CalendarDays, Check, CloudDownload, FileText, Handshake, Inb
 
 import { api, errorText } from './api'
 import type { Agreement, CalEvent, Counterparty, CounterpartyTimeline, Dossier, MessageSummary } from './types'
+import Splitter from './Splitter'
 
 interface Props {
   /** Организация, которую открыть (например, из меню адреса в письме). */
@@ -221,6 +222,7 @@ export default function CounterpartyView({ domain, onDomain, onCompose, onNotice
         ))}
       </div>
     </section>
+    <Splitter id="counterparty-list" min={240} max={700} label="Ширина списка контрагентов" />
 
     <section className="counterparty-main-pane">
       {!domain && <div className="empty-state counterparty-empty">
@@ -315,6 +317,7 @@ export default function CounterpartyView({ domain, onDomain, onCompose, onNotice
             </ol>
           </div>
 
+          <Splitter id="counterparty-side" side="next" min={240} max={640} label="Ширина боковой панели" />
           <aside className="counterparty-side">
             <section className="counterparty-panel">
               <div className="panel-head"><Handshake size={15} /><b>Договорённости</b><button className="icon-button" title="Добавить договорённость" aria-label="Добавить договорённость" disabled={!data} onClick={() => setForm(agreementFrom())}><Plus size={15} /></button></div>

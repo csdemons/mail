@@ -1,7 +1,7 @@
 import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
-  SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, LoginResult, MessageDetail, MessagePage,
+  SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, TalkParticipant, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
@@ -45,7 +45,7 @@ const READ_ONLY = new Set([
   'nc_search_users', 'nc_files_list', 'nc_shares', 'talk_file_preview', 'talk_file_data', 'totp_status', 'cached_folders',
   'cached_messages', 'search_mail', 'search_server', 'offline_status', 'offline_queue', 'signature_get', 'list_folders', 'list_messages',
   'nc_editors', 'nc_avatar', 'attachment_data', 'mail_filters_get', 'rules_get', 'counterparties', 'counterparty_timeline',
-  'calendar_file_preview', 'attach_data', 'diagnostics',
+  'calendar_file_preview', 'diagnostics', 'talk_participants',
 ])
 /** Опросы и служебные вызовы: ничего не меняют, разделённые запросы не сбрасывают. */
 const PASSIVE = new Set(['talk_poll', 'job_status', 'update_progress', 'nc_connect_poll', 'send_wait', 'notify', 'notify_poll_secs', 'nc_open', 'open_link'])
@@ -189,6 +189,9 @@ export const api = {
   talkPoll: (token: string, lastKnown: number) => invoke<TalkChunk>('talk_poll', { token, lastKnown }),
   talkReact: (token: string, messageId: number, emoji: string, add: boolean) => invoke<void>('talk_react', { token, messageId, emoji, add }),
   talkFavorite: (token: string, on: boolean) => invoke<void>('talk_favorite', { token, on }),
+  talkParticipants: (token: string) => invoke<TalkParticipant[]>('talk_participants', { token }),
+  /** Управление беседой: add, remove, promote, demote, rename, description, read_only, public, notify, read, unread, leave, delete. */
+  talkManage: (token: string, action: string, value: Record<string, unknown> = {}) => invoke<void>('talk_manage', { token, action, value }),
   talkEdit: (token: string, messageId: number, message: string) => invoke<void>('talk_edit', { token, messageId, message }),
   talkDelete: (token: string, messageId: number) => invoke<void>('talk_delete', { token, messageId }),
   talkMentions: (token: string, search: string) => invoke<TalkMention[]>('talk_mentions', { token, search }),

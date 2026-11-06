@@ -108,11 +108,37 @@ USERS = [{'id': 'ivanov', 'label': 'Иванов Иван', 'subline': 'ivanov@i
 HIDDEN_USER = {'id': 'smirnov', 'label': 'Смирнов Пётр', 'subline': 'smirnov@inst.test'}
 
 
+NAMES = {u['id']: u['label'] for u in USERS + [HIDDEN_USER]}
+_att = iter(range(100, 10**6))
+
+
+def attendee(uid, role=3, status='offline'):
+    """Участник беседы, как его отдаёт Talk: роль 1 — владелец, 2 — модератор, 3 — участник."""
+    return {'attendeeId': next(_att), 'actorType': 'users', 'actorId': uid,
+            'displayName': NAMES.get(uid, 'Тестовый Пользователь' if uid == UID else uid),
+            'participantType': role, 'status': status, 'statusMessage': ''}
+
+
+def members(r):
+    if 'members' not in r:
+        if r['token'] == 'abc123':
+            r['members'] = [attendee(UID, 1, 'online'), attendee('ivanov', 2, 'online'), attendee('petrova', 3, 'away')]
+        elif r['type'] == 1:
+            r['members'] = [attendee(UID, 1, 'online'), attendee(r['name'], 1, 'dnd')]
+        else:
+            r['members'] = [attendee(UID, 1, 'online')] + [attendee(u) for u in r.get('participants', [])]
+    return r['members']
+
+
 def room_view(r):
+    me = next((m for m in members(r) if m['actorId'] == UID), None)
     msgs = [m for m in state['messages'][r['token']] if m['messageType'] != 'system']
     last = msgs[-1] if msgs else None
     unread = sum(1 for m in msgs if m['id'] > state['read'][r['token']] and m['actorId'] != UID)
-    return dict(r, unreadMessages=unread, unreadMention=False, isFavorite=bool(r.get('favorite')),
+    return dict({k: v for k, v in r.items() if k != 'members'}, unreadMessages=unread, unreadMention=False, isFavorite=bool(r.get('favorite')),
+                participantType=me['participantType'] if me else 3, description=r.get('description', ''),
+                notificationLevel=r.get('notify', 0), canLeaveConversation=True,
+                canDeleteConversation=bool(me and me['participantType'] in (1, 2) and r['type'] != 1),
                 lastCommonReadMessage=state['peer_read'].get(r['token'], 0),
                 lastActivity=last['timestamp'] if last else 0, lastMessage=last or [])
 
@@ -257,7 +283,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']],
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']},
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:
@@ -537,11 +563,49 @@ class H(BaseHTTPRequestHandler):
                 return self.send(404, {})
             r['favorite'] = method == 'POST'
             return self.ocs({})
-        if method == 'POST' and p.startswith('/ocs/v2.php/apps/spreed/api/v4/room/') and p.endswith('/participants'):
-            tok = p.split('/')[-2]
+        RM = '/ocs/v2.php/apps/spreed/api/v4/room/'
+        if p.startswith(RM) and p[len(RM):].split('/')[0] in [x['token'] for x in state['rooms']]:
+            tok, *rest = p[len(RM):].split('/')
             r = next(x for x in state['rooms'] if x['token'] == tok)
-            r.setdefault('participants', []).append(self.body()['newParticipant'])
-            return self.ocs({})
+            sub = '/'.join(rest)
+            me = next((m for m in members(r) if m['actorId'] == UID), None)
+            mod = bool(me and me['participantType'] in (1, 2))
+            b = self.body() if method in ('POST', 'PUT', 'DELETE') else {}
+            find = lambda: next((m for m in members(r) if m['attendeeId'] == int(b.get('attendeeId', q.get('attendeeId', 0)))), None)
+            if method == 'GET' and sub == 'participants':
+                return self.ocs(members(r))
+            if method == 'POST' and sub == 'participants':
+                uid = b['newParticipant']
+                r.setdefault('participants', []).append(uid)
+                if not any(m['actorId'] == uid for m in members(r)):
+                    members(r).append(attendee(uid))
+                return self.ocs({})
+            if method == 'DELETE' and sub == 'participants/self':
+                r['members'] = [m for m in members(r) if m['actorId'] != UID]
+                state['rooms'].remove(r)
+                return self.ocs({})
+            if method == 'POST' and sub == 'notify':
+                r['notify'] = int(b.get('level', 0)); return self.ocs({})
+            if not mod and (sub in ('attendees', 'moderators', 'description', 'read-only', 'public') or (sub == '' and method in ('PUT', 'DELETE'))):
+                return self.ocs({}, 403)
+            if method == 'DELETE' and sub == 'attendees':
+                a = find()
+                if not a: return self.ocs({}, 404)
+                r['members'].remove(a); return self.ocs({})
+            if sub == 'moderators':
+                a = find()
+                if not a: return self.ocs({}, 404)
+                a['participantType'] = 2 if method == 'POST' else 3; return self.ocs({})
+            if method == 'PUT' and sub == '':
+                r['displayName'] = r['name'] = b['roomName']; return self.ocs({})
+            if method == 'PUT' and sub == 'description':
+                r['description'] = b.get('description', ''); return self.ocs({})
+            if method == 'PUT' and sub == 'read-only':
+                r['readOnly'] = int(b.get('state', 0)); return self.ocs({})
+            if sub == 'public':
+                r['type'] = 3 if method == 'POST' else 2; return self.ocs({})
+            if method == 'DELETE' and sub == '':
+                state['rooms'].remove(r); return self.ocs({})
         if method == 'GET' and p == '/ocs/v2.php/core/autocomplete/get':
             sq = q.get('search', '').lower()
             # Как при ограничении автодополнения: Смирнов находится только по точному e-mail.
@@ -566,6 +630,13 @@ class H(BaseHTTPRequestHandler):
             out = [{'id': 'all', 'label': 'УИТ — общий', 'source': 'calls', 'mentionId': 'all'}] if 'all'.startswith(sq) or not sq else []
             out += [{'id': u['id'], 'label': u['label'], 'source': 'users', 'mentionId': u['id']} for u in USERS if sq in u['label'].lower() or sq in u['id']]
             return self.ocs(out)
+        if p.startswith(T) and p.endswith('/read') and method in ('POST', 'DELETE'):
+            token = p[len(T):].split('/')[0]
+            msgs = state['messages'][token]
+            # «Непрочитано» — как в Talk: последнее сообщение снова непрочитанное.
+            last = self.body().get('lastReadMessage') if method == 'POST' else None
+            state['read'][token] = (int(last) if last is not None else max((m['id'] for m in msgs), default=0)) if method == 'POST' else max((m['id'] for m in msgs[:-1]), default=0)
+            return self.ocs({})
         if p.startswith(T) and p[len(T):].count('/') == 1 and method in ('PUT', 'DELETE'):
             token, mid = p[len(T):].split('/')
             msg = next(m for m in state['messages'][token] if m['id'] == int(mid))

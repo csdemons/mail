@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-manage"
+description = "Enables the talk_manage command without any pre-configured scope."
+commands.allow = ["talk_manage"]
+
+[[permission]]
+identifier = "deny-talk-manage"
+description = "Denies the talk_manage command without any pre-configured scope."
+commands.deny = ["talk_manage"]

@@ -88,6 +88,11 @@ pub fn open_url(_app: &AppHandle, url: &str) -> Result<()> {
 }
 
 /// Файл — в программе по умолчанию.
+/// Tauri 1 не управляет масштабом веб-движка — интерфейс масштабирует себя сам (CSS).
+pub fn set_zoom(_app: &AppHandle, _label: &str, _factor: f64) -> bool {
+    false
+}
+
 pub fn open_file(_app: &AppHandle, path: &std::path::Path) -> Result<()> {
     open::that_detached(path).map_err(|e| AppError::Other(format!("Не удалось открыть файл: {e}")))
 }

@@ -91,7 +91,7 @@ export default function MessageBody({ detail, scale = 1, dark = false, onNotice 
 
 const FRAME_CSS = `
 html { background: #fff; }
-body { margin: 0; padding: 14px 16px; color: #111827; font: 14px/1.5 "Segoe UI", Arial, "Liberation Sans", sans-serif; overflow-wrap: anywhere; }
+body { margin: 0; padding: 14px 16px; color: #111827; font: 14px/1.5 "Segoe UI", system-ui, -apple-system, "PT Astra Sans", "Noto Sans", Arial, "Liberation Sans", sans-serif; overflow-wrap: anywhere; }
 img { max-width: 100%; }
 pre { white-space: pre-wrap; }
 blockquote { margin: 0 0 0 6px; padding-left: 10px; border-left: 3px solid #cbd5e1; color: #475569; }

@@ -2,7 +2,8 @@ import faulthandler, json, imaplib, ssl, subprocess, sys, time, os, glob, email,
 from email.header import decode_header, make_header
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.options import ArgOptions
@@ -279,6 +280,21 @@ try:
     who = sent_row()[0].find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent')
     assert who.startswith('Кому:') and ('Иванов' in who or 'ivanov@inst.test' in who), who
     ok(f'Sent folder list shows the recipient ({who})')
+    # Разделитель между списком писем и письмом: перетаскивание, запоминание, двойной щелчок — как было.
+    col_w = lambda: d.execute_script("return document.querySelector('.workspace > .message-column').getBoundingClientRect().width")
+    w_before = col_w()
+    d.execute_script("""
+      const s = document.querySelector('.splitter[aria-label="Ширина списка писем"]');
+      const r = s.getBoundingClientRect(), x = r.left + 3, y = r.top + 100;
+      s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: y }));
+      s.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 1, clientX: x + 120, clientY: y }));
+      s.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: x + 120, clientY: y }));
+    """)
+    W(d, 5).until(lambda d: abs(col_w() - (w_before + 120)) < 3)
+    assert abs(int(d.execute_script("return localStorage.getItem('atom.width.mail-list')")) - (w_before + 120)) < 3
+    d.execute_script("document.querySelector('.splitter[aria-label=\"Ширина списка писем\"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))")
+    W(d, 5).until(lambda d: abs(col_w() - w_before) < 3 and d.execute_script("return localStorage.getItem('atom.width.mail-list')") is None)
+    ok('mail: column splitter drags, remembers width, double click restores')
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Входящие' in f.get_attribute('textContent')][0].click()
     W(d, 20).until(lambda d: any('Отчёт с вложением' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.message-row')))
     [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'Отчёт с вложением' in r.get_attribute('textContent')][0].click()
@@ -553,6 +569,42 @@ try:
     assert not d.find_elements(By.CSS_SELECTOR, '.deck-add-button') and 'только чтение' in d.find_element(By.CSS_SELECTOR, '.deck-main').get_attribute('textContent')
     ok('read-only board: no editing controls')
 
+    # Deck: колонки по ширине окна и масштаб колонок — запоминается.
+    cols = d.find_element(By.CSS_SELECTOR, '.deck-columns')
+    assert 'stretch' in cols.get_attribute('class')
+    w0 = d.execute_script("return document.querySelector('.deck-column').getBoundingClientRect().width")
+    assert w0 > 272, f'stretched column expected, got {w0}'
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Колонки крупнее"]').click()
+    W(d, 5).until(lambda d: '313px' in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('style'))
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="По ширине окна"]').click()
+    W(d, 5).until(lambda d: 'stretch' not in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('class'))
+    assert abs(d.execute_script("return document.querySelector('.deck-column').getBoundingClientRect().width") - 313) < 2
+    assert d.execute_script("return JSON.parse(localStorage.getItem('atom.deck.view'))") == {'scale': 1.15, 'stretch': False}
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="По ширине окна"]').click()
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Колонки мельче"]').click()
+    W(d, 5).until(lambda d: '272px' in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('style') and 'stretch' in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('class'))
+    ok('deck: columns stretch to the window width; column size −/+ remembered')
+
+    # Масштаб интерфейса: Ctrl + / Ctrl 0, размер текста в настройках «Вид».
+    appearance = lambda: d.execute_script("return JSON.parse(localStorage.getItem('atom.appearance') || '{}')")
+    ActionChains(d).key_down(Keys.CONTROL).send_keys('=').key_up(Keys.CONTROL).perform()
+    W(d, 5).until(lambda d: appearance().get('zoom') == 1.1)
+    ActionChains(d).key_down(Keys.CONTROL).send_keys('0').key_up(Keys.CONTROL).perform()
+    W(d, 5).until(lambda d: appearance().get('zoom') == 1)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    sec = wait(d, '.appearance-settings')
+    sec.find_element(By.CSS_SELECTOR, 'button[aria-label="Крупнее"]').click()
+    W(d, 5).until(lambda d: appearance().get('text') == 15 and d.execute_script("return getComputedStyle(document.documentElement).getPropertyValue('--content-font').trim()") == '15px')
+    sec.find_element(By.CSS_SELECTOR, 'button[aria-label="Мельче"]').click()
+    W(d, 5).until(lambda d: appearance().get('text') == 14)
+    Select(sec.find_element(By.CSS_SELECTOR, 'select[aria-label="Масштаб интерфейса"]')).select_by_value('1.25')
+    W(d, 5).until(lambda d: appearance().get('zoom') == 1.25)
+    Select(sec.find_element(By.CSS_SELECTOR, 'select[aria-label="Масштаб интерфейса"]')).select_by_value('1')
+    W(d, 5).until(lambda d: appearance().get('zoom') == 1)
+    d.find_element(By.CSS_SELECTOR, '.settings-modal .compose-header button[aria-label="Закрыть"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.appearance-settings'))
+    ok('appearance: zoom with Ctrl +/0 and in settings, chat/mail text size')
+
     # 19. Talk
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
     W(d, 20).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.room-row')) == 2)
@@ -712,6 +764,118 @@ try:
     W(d, 15).until(lambda d: any(c['title'].startswith('Коллеги') and 'call/abc123#message_1' in c['description'] for c in nc_mock('GET', '/test/state')['cards']))
     ok('Deck card created from message (text, author, link)')
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-card-modal'))
+
+    # Правая кнопка мыши: своё меню вместо стандартного «Назад / Обновить / Печать».
+    def ctx(el):
+        d.execute_script("const r = arguments[0].getBoundingClientRect(); arguments[0].dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 10}))", el)
+        return wait(d, '.ctx-menu')
+    def ctx_pick(label):
+        [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.strip() == label][0].click()
+        W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.ctx-menu'))
+    prevented = d.execute_script("const e = new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: 20, clientY: 300}); document.querySelector('.module-rail').dispatchEvent(e); return e.defaultPrevented")
+    assert prevented and not d.find_elements(By.CSS_SELECTOR, '.ctx-menu'), 'default web menu must be suppressed'
+    menu = ctx(talk_msg('посмотри'))
+    labels = [b.text.strip() for b in menu.find_elements(By.CSS_SELECTOR, '.ctx-item')]
+    assert {'Ответить', 'Копировать текст', 'Переслать…', 'Изменить', 'Удалить'} <= set(labels), labels
+    assert menu.find_elements(By.CSS_SELECTOR, '.ctx-custom button[aria-label="Реакция 👍"]'), 'quick reactions row'
+    ctx_pick('Ответить')
+    wait(d, '.talk-quote.replying')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Отменить ответ"]').click()
+    ctx(talk_msg('посмотри')); ctx_pick('Переслать…')
+    fwd = wait(d, '.modal-backdrop [aria-label="Переслать сообщение"]')
+    [b for b in fwd.find_elements(By.CSS_SELECTOR, '.message-row') if 'Иванов Иван' in b.get_attribute('textContent')][0].click()
+    W(d, 15).until(lambda d: any(m['message'].startswith('↪ ') and 'посмотри' in m['message'] for m in nc_mock('GET', '/test/state')['messages']['dm-ivanov']))
+    ok('chat: right-click menu (reply, copy, forward, edit, delete, reactions); default web menu suppressed; forward to another chat')
+
+    # Картинка из буфера обмена (Ctrl+V): превью, отправка файлом в /Talk.
+    d.execute_script("""
+      const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
+      const file = new File([png], 'image.png', { type: 'image/png' });
+      const ev = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'clipboardData', { value: { files: [file], items: [], types: ['Files'], getData: () => '' } });
+      document.querySelector('.talk-compose textarea').dispatchEvent(ev);
+    """)
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-pending .talk-paste-preview'))
+    d.find_element(By.CSS_SELECTOR, '.talk-compose button[type=submit]').click()
+    W(d, 20).until(lambda d: any(k.startswith('/Talk/Снимок ') and k.endswith('.png') for k in nc_mock('GET', '/test/state')['files']))
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-pending'))
+    ok('chat: image pasted from clipboard is previewed and sent')
+
+    # Отправка восстановленного черновика очищает поле — и после возврата в раздел тоже.
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'); box.send_keys('Отправлю после возврата')
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Почта']]").click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-compose'))
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-compose textarea') and d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == 'Отправлю после возврата')
+    d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').send_keys(Keys.ENTER)
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw', nc_mock('GET', '/test/state')['messages']['abc123'][-1]['message']) == 'Отправлю после возврата')
+    W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == '')
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Почта']]").click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-compose'))
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-compose textarea'))
+    time.sleep(1)
+    assert d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == '', 'sent draft must not come back'
+    W(d, 20).until(lambda d: any('обновление в среду' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')))
+    ok('chat: restored draft is cleared after sending and does not come back')
+
+    # Участники и модерация (как в Talk).
+    def members_of(tok='abc123'):
+        return {m['actorId']: m['participantType'] for m in nc_mock('GET', '/test/state')['members'][tok]}
+    def person(uid):
+        return d.find_element(By.CSS_SELECTOR, f'.talk-person[data-actor="{uid}"]')
+    d.find_element(By.CSS_SELECTOR, '.talk-people-toggle').click()
+    W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.talk-people-panel .talk-person')) == 3)
+    assert 'модератор' in person('ivanov').get_attribute('textContent') and 'владелец' in person('test').get_attribute('textContent') and '(вы)' in person('test').get_attribute('textContent')
+    assert person('ivanov').find_elements(By.CSS_SELECTOR, '.presence.online') and person('petrova').find_elements(By.CSS_SELECTOR, '.presence.away')
+    person('petrova').find_element(By.CSS_SELECTOR, 'button[aria-label^="Действия"]').click()
+    wait(d, '.ctx-menu'); ctx_pick('Назначить модератором')
+    W(d, 10).until(lambda d: members_of()['petrova'] == 2)
+    W(d, 10).until(lambda d: 'модератор' in person('petrova').get_attribute('textContent'))
+    ctx(person('petrova')); ctx_pick('Снять права модератора')
+    W(d, 10).until(lambda d: members_of()['petrova'] == 3)
+    d.find_element(By.CSS_SELECTOR, '.talk-people-panel button[aria-label="Добавить участника"]').click()
+    wait(d, '.talk-people-add input').send_keys('Сидор')
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-people-add .person-row'))[0].click()
+    W(d, 10).until(lambda d: 'sidorov' in members_of())
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-person[data-actor="sidorov"]'))
+    ctx(person('sidorov')); ctx_pick('Удалить из беседы'); accept_confirm(d)
+    W(d, 10).until(lambda d: 'sidorov' not in members_of())
+    ok('chat participants: roles and status, promote/demote moderator, add and remove a member')
+
+    # Настройки беседы: описание, переименование, «только чтение».
+    d.find_element(By.CSS_SELECTOR, '.talk-people-panel button[aria-label="Настройки беседы"]').click()
+    dlg = wait(d, '.talk-settings-modal')
+    name_in = dlg.find_element(By.CSS_SELECTOR, 'input'); clear(name_in); name_in.send_keys('УИТ — релизы')
+    dlg.find_element(By.CSS_SELECTOR, 'textarea').send_keys('Обсуждение выпусков')
+    [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.text == 'Сохранить'][0].click()
+    W(d, 10).until(lambda d: any(r['displayName'] == 'УИТ — релизы' and r['description'] == 'Обсуждение выпусков' for r in nc_mock('GET', '/test/state')['rooms']))
+    W(d, 15).until(lambda d: 'УИТ — релизы' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').get_attribute('textContent'))
+    W(d, 10).until(lambda d: 'Обсуждение выпусков' in d.find_element(By.CSS_SELECTOR, '.talk-people-panel').get_attribute('textContent'))
+    d.find_element(By.CSS_SELECTOR, '.talk-people-panel button[aria-label="Настройки беседы"]').click()
+    dlg = wait(d, '.talk-settings-modal')
+    [l for l in dlg.find_elements(By.TAG_NAME, 'label') if 'Только чтение' in l.text][0].find_element(By.TAG_NAME, 'input').click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-readonly') and not d.find_elements(By.CSS_SELECTOR, '.talk-compose'))
+    d.find_element(By.CSS_SELECTOR, '.talk-people-panel button[aria-label="Настройки беседы"]').click()
+    dlg = wait(d, '.talk-settings-modal')
+    [l for l in dlg.find_elements(By.TAG_NAME, 'label') if 'Только чтение' in l.text][0].find_element(By.TAG_NAME, 'input').click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-compose textarea'))
+    d.find_element(By.CSS_SELECTOR, '.talk-people-panel button[aria-label="Настройки беседы"]').click()
+    dlg = wait(d, '.talk-settings-modal')
+    name_in = dlg.find_element(By.CSS_SELECTOR, 'input'); clear(name_in); name_in.send_keys('УИТ — общий')
+    [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.text == 'Сохранить'][0].click()
+    W(d, 15).until(lambda d: 'УИТ — общий' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').get_attribute('textContent'))
+    d.find_element(By.CSS_SELECTOR, '.talk-people-panel button[aria-label="Закрыть список участников"]').click()
+    ok('chat moderation: rename, description, read-only on and off')
+
+    # Меню беседы: «Не уведомлять» и обратно.
+    row = lambda: [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if 'УИТ — общий' in r.get_attribute('textContent')][0]
+    ctx(row()); ctx_pick('Не уведомлять')
+    W(d, 10).until(lambda d: any(r['token'] == 'abc123' and r['notificationLevel'] == 3 for r in nc_mock('GET', '/test/state')['rooms']))
+    W(d, 10).until(lambda d: row().find_elements(By.CSS_SELECTOR, '.room-muted'))
+    ctx(row()); ctx_pick('Включить уведомления')
+    W(d, 10).until(lambda d: any(r['token'] == 'abc123' and r['notificationLevel'] == 0 for r in nc_mock('GET', '/test/state')['rooms']))
+    ok('chat: conversation right-click menu (mute/unmute notifications)')
 
     # Новая личная беседа.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Новая беседа"]').click()

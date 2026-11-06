@@ -198,6 +198,11 @@ pub fn open_url(app: &AppHandle, url: &str) -> Result<()> {
 }
 
 /// Файл — в программе по умолчанию (Word, Excel, LibreOffice, просмотрщик PDF…).
+/// Масштаб содержимого окна (как Ctrl+колесо в браузере). `false` — движок не умеет.
+pub fn set_zoom(app: &AppHandle, label: &str, factor: f64) -> bool {
+    app.get_webview_window(label).is_some_and(|w| w.set_zoom(factor).is_ok())
+}
+
 pub fn open_file(app: &AppHandle, path: &std::path::Path) -> Result<()> {
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)

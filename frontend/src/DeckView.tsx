@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, ArchiveRestore, CalendarClock, CheckCircle2, ExternalLink, FileText, Filter, History, ListChecks, Lock, Maximize2, MessageSquare, Minimize2, Paperclip, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-react'
+import { Archive, ArchiveRestore, CalendarClock, CheckCircle2, ExternalLink, FileText, Filter, History, ListChecks, Lock, Maximize2, MessageSquare, Minimize2, Minus, MoveHorizontal, Paperclip, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
 import { addItem, checklistProgress, parseChecklist, removeItem, renameItem, toggleItem } from './checklist'
@@ -7,6 +7,17 @@ import Avatar from './Avatar'
 import TalkText from './TalkText'
 import type { DeckActivity, DeckAttachment, DeckBoard, DeckBoardDetails, DeckCard, DeckComment, DeckLabel, DeckStack, DeckUser } from './types'
 import { SkeletonRows } from './Skeleton'
+
+/** Масштаб колонок и карточек Deck и растяжение по ширине окна — настройка рабочего места. */
+const DECK_SCALES = [0.85, 1, 1.15, 1.3, 1.5]
+function loadDeckView(): { scale: number; stretch: boolean } {
+  try {
+    const v = JSON.parse(localStorage.getItem('atom.deck.view') ?? '{}') as { scale?: number; stretch?: boolean }
+    return { scale: DECK_SCALES.includes(Number(v.scale)) ? Number(v.scale) : 1, stretch: v.stretch !== false }
+  } catch {
+    return { scale: 1, stretch: true }
+  }
+}
 
 const LAST_BOARD_KEY = 'rrcki-mail.deck-board'
 const FILTER_KEY = 'rrcki-mail.deck-filter.'
@@ -96,6 +107,15 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   const dropRef = useRef<number | null>(null)
   const suppressClick = useRef(false)
   const columnsRef = useRef<HTMLDivElement>(null)
+  const [view, setView] = useState(loadDeckView)
+  function updateView(patch: Partial<{ scale: number; stretch: boolean }>) {
+    setView((v) => {
+      const next = { ...v, ...patch }
+      try { localStorage.setItem('atom.deck.view', JSON.stringify(next)) } catch { /* без хранилища */ }
+      return next
+    })
+  }
+  const scaleIdx = DECK_SCALES.indexOf(view.scale)
   const moveRef = useRef<(card: DeckCard, stack: number) => Promise<void>>(async () => {})
 
   const [filter, setFilter] = useState<CardFilter>(() => loadFilter(boardId))
@@ -298,6 +318,12 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           <div className="reader-toolbar-spacer" />
           {board && <button className="icon-button soft" aria-label="Открыть в Nextcloud" title="Открыть в Nextcloud" onClick={() => void api.ncOpen(`apps/deck/board/${board.id}`)}><ExternalLink size={17} /></button>}
           {board && <button className="icon-button soft" aria-label="Обновить" onClick={() => void loadStacks(board.id)}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button>}
+          <span className="deck-view-controls" role="group" aria-label="Размер колонок">
+            <button className="icon-button soft" aria-label="Колонки мельче" title="Мельче" disabled={scaleIdx <= 0} onClick={() => updateView({ scale: DECK_SCALES[scaleIdx - 1] })}><Minus size={15} /></button>
+            <span className="deck-scale-label" title="Размер колонок и карточек">{Math.round(view.scale * 100)} %</span>
+            <button className="icon-button soft" aria-label="Колонки крупнее" title="Крупнее" disabled={scaleIdx >= DECK_SCALES.length - 1} onClick={() => updateView({ scale: DECK_SCALES[scaleIdx + 1] })}><Plus size={15} /></button>
+            <button className={`icon-button soft ${view.stretch ? 'active' : ''}`} aria-pressed={view.stretch} aria-label="По ширине окна" title={view.stretch ? 'Колонки растянуты по ширине окна — нажмите, чтобы сделать фиксированной ширины' : 'Растянуть колонки по ширине окна'} onClick={() => updateView({ stretch: !view.stretch })}><MoveHorizontal size={16} /></button>
+          </span>
           {editable && <button className="secondary-button" onClick={() => void addStack()}><Plus size={15} /> Колонка</button>}
         </div>
         {board && <div className="deck-filters" role="search" aria-label="Фильтр карточек">
@@ -328,7 +354,8 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           </>}
         </div>}
         {error && <div className="inline-warning" role="alert">Deck: {error}</div>}
-        <div className="deck-columns" ref={columnsRef}>
+        <div className={`deck-columns ${view.stretch ? 'stretch' : ''}`} ref={columnsRef}
+          style={{ '--deck-col': `${Math.round(272 * view.scale)}px`, '--deck-font': `${(13 * view.scale).toFixed(1)}px` } as React.CSSProperties}>
           {stacks.map((s) => (
             <section
               key={s.id}

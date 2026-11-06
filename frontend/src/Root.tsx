@@ -6,6 +6,7 @@ import MessageWindow from './MessageWindow'
 import Login from './Login'
 import LockScreen from './LockScreen'
 import UpdateNotice from './UpdateNotice'
+import { ContextMenuHost } from './PopupMenu'
 import { forgetView } from './viewContext'
 import kurchatovLogo from './assets/kurchatov-logo.png'
 import type { Account, MessageSummary, Settings } from './types'
@@ -19,8 +20,12 @@ type State =
 export default function Root() {
   // Окно отдельного письма: вход уже выполнен в главном окне (общее состояние бэкенда).
   const msg = window.__RRCKI_MESSAGE
-  if (msg) return <MessageWindow folder={msg.folder} uid={msg.uid} />
-  return <MainRoot />
+  return (
+    <>
+      {msg ? <MessageWindow folder={msg.folder} uid={msg.uid} /> : <MainRoot />}
+      <ContextMenuHost />
+    </>
+  )
 }
 
 function MainRoot() {

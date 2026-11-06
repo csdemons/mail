@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BookUser, Building2, Loader2, Mail, MapPin, Pencil, Phone, Plus, RefreshCw, Search, StickyNote, Trash2 } from 'lucide-react'
+import { BookUser, Building2, Copy, Loader2, Mail, MapPin, Pencil, Phone, Plus, RefreshCw, Search, StickyNote, Trash2 } from 'lucide-react'
 
 import { api, errorText, TYPING_PAUSE_MS } from './api'
 import type { Contact, ContactsResult } from './types'
 import ContactEditor from './ContactEditor'
 import { SkeletonRows } from './Skeleton'
+import Splitter from './Splitter'
+import { openContextMenu, type MenuItem } from './PopupMenu'
 
 interface Props {
   onWrite: (address: string) => void
@@ -120,6 +122,28 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
   const browsingAny = Object.values(browsed).some((v) => v === 'loading')
   const canCreate = Boolean(data?.books.some((b) => b.writable))
 
+  function copy(text: string, what: string) {
+    navigator.clipboard.writeText(text).then(() => onNotice(what)).catch((err) => onNotice(`Не удалось скопировать: ${errorText(err)}`))
+  }
+
+  /** Меню контакта (правая кнопка мыши). */
+  function contactMenu(c: Contact): MenuItem[] {
+    const email = c.emails[0]
+    const phone = c.phones[0]
+    return [
+      ...c.emails.slice(0, 3).map((e): MenuItem => ({ label: c.emails.length > 1 ? `Написать: ${e}` : 'Написать письмо', icon: <Mail size={15} />, onClick: () => onWrite(`${c.fullName} <${e}>`) })),
+      ...(email || phone ? [{ separator: true } as MenuItem] : []),
+      ...(email ? [{ label: 'Копировать адрес', icon: <Copy size={15} />, onClick: () => copy(email, `Скопировано: ${email}`) }] : []),
+      ...(phone ? [{ label: 'Копировать телефон', icon: <Copy size={15} />, onClick: () => copy(phone, `Скопировано: ${phone}`) }] : []),
+      { label: 'Копировать имя и адрес', icon: <Copy size={15} />, disabled: !email, onClick: () => copy(`${c.fullName} <${email}>`, 'Имя и адрес скопированы') },
+      ...(c.editable ? [
+        { separator: true } as MenuItem,
+        { label: 'Изменить', icon: <Pencil size={15} />, onClick: () => setEditing(c) },
+        { label: 'Удалить', icon: <Trash2 size={15} />, danger: true, onClick: () => void remove(c) },
+      ] : []),
+    ]
+  }
+
   async function remove(c: Contact) {
     if (!window.confirm(`Удалить контакт «${c.fullName}»?`)) return
     try {
@@ -147,6 +171,7 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
           ))}
         </div>
       </aside>
+      <Splitter id="contacts-books" min={150} max={420} label="Ширина списка адресных книг" />
 
       <main className="message-column">
         <div className="list-toolbar">
@@ -165,7 +190,8 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
           )}
           {data?.errors.map((e) => <div key={e} className="inline-warning">{e}</div>)}
           {page.map((c) => (
-            <button key={c.id} className={`message-row contact-row ${selectedId === c.id ? 'selected' : ''}`} onClick={() => setSelectedId(c.id)}>
+            <button key={c.id} className={`message-row contact-row ${selectedId === c.id ? 'selected' : ''}`} onClick={() => setSelectedId(c.id)}
+              onContextMenu={(e) => { setSelectedId(c.id); openContextMenu(e, contactMenu(c)) }}>
               <div className="sender-avatar">{initials(c.fullName)}</div>
               <div className="message-summary">
                 <div className="message-topline"><span className="sender-name">{c.fullName}</span></div>
@@ -183,6 +209,7 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
         </div>
         <div className="list-footer"><span>{visible.length}{selectedBook && Array.isArray(browseState) ? '' : ` из ${all.length}`}</span><span>{(data?.books ?? []).some((b) => b.url.startsWith('ews:')) ? 'Exchange' : selectedBook && !selectedBook.writable ? 'SOGo' : 'CardDAV'}</span></div>
       </main>
+      <Splitter id="contacts-list" min={240} max={800} label="Ширина списка контактов" />
 
       <section className="reader-pane">
         {selected ? (

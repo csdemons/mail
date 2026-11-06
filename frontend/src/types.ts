@@ -332,6 +332,26 @@ export interface TalkRoom {
   favorite: boolean
   /** До какого сообщения прочитали все участники (0 — неизвестно). */
   lastCommonRead: number
+  /** Моя роль: 1 — владелец, 2 — модератор, 3 — участник, 4 — гость… */
+  role: number
+  /** Я владелец или модератор. */
+  moderator: boolean
+  description: string
+  /** Уведомления: 0 — по умолчанию, 1 — всегда, 2 — при упоминании, 3 — никогда. */
+  notifyLevel: number
+  canLeave: boolean
+  canDelete: boolean
+}
+
+export interface TalkParticipant {
+  attendeeId: number
+  actorType: string
+  actorId: string
+  name: string
+  role: number
+  status: string
+  statusMessage: string
+  me: boolean
 }
 
 export interface TalkMessage {

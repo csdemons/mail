@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  Check, CheckCheck, CornerUpLeft, Download, ExternalLink, FileText, KanbanSquare, MessageCircle, MessageSquarePlus, Paperclip, Pencil, Phone, RefreshCw,
-  Search, Send, Smile, SmilePlus, Star, Trash2, Users, X,
+  Bell, BellOff, Check, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
+  MoreHorizontal, Paperclip, Pencil, Phone, RefreshCw, Search, Send, Settings2, Smile, SmilePlus, Star, Trash2, Users, X,
 } from 'lucide-react'
 
 import { api, errorText, formatSize, onSessionReset, TYPING_PAUSE_MS } from './api'
@@ -11,6 +11,9 @@ import Avatar from './Avatar'
 import AttachmentViewer, { previewKind } from './AttachmentViewer'
 import type { AttachmentInfo, DeckBoard, DeckStack, NcUser, PickedFile, TalkFile, TalkMention, TalkMessage, TalkRoom } from './types'
 import { SkeletonChat, SkeletonRows } from './Skeleton'
+import Splitter from './Splitter'
+import { openContextMenu, type MenuItem } from './PopupMenu'
+import { ForwardDialog, RoomPeople, RoomSettings } from './TalkRoomPanel'
 
 /** Файл чата открывается во встроенном просмотрщике (фото, PDF, текст), если известен его путь. */
 function viewable(f: TalkFile): boolean {
@@ -102,6 +105,20 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   // История приходит порциями по 100: более ранние — по кнопке вверху ленты.
   const [hasOlder, setHasOlder] = useState(false)
   const [olderBusy, setOlderBusy] = useState(false)
+  // Панель участников (как в Talk) — открыта или нет, запоминается на этом компьютере.
+  const [showPeople, setShowPeople] = useState(() => { try { return localStorage.getItem('atom.talk.people') === '1' } catch { return false } })
+  useEffect(() => { try { localStorage.setItem('atom.talk.people', showPeople ? '1' : '0') } catch { /* без хранилища */ } }, [showPeople])
+  const [settingsFor, setSettingsFor] = useState<TalkRoom | null>(null)
+  const [forwarding, setForwarding] = useState<TalkMessage | null>(null)
+  // Картинки из буфера обмена, ожидающие отправки: превью по id вложения.
+  const [previews, setPreviews] = useState<Record<string, string>>({})
+  useEffect(() => {
+    // Превью отправленных или убранных картинок больше не нужны.
+    const gone = Object.keys(previews).filter((id) => !files.some((f) => f.id === id))
+    if (gone.length === 0) return
+    gone.forEach((id) => URL.revokeObjectURL(previews[id]))
+    setPreviews((p) => Object.fromEntries(Object.entries(p).filter(([id]) => !gone.includes(id))))
+  }, [files, previews])
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   // Показанное в поле «@Имя» → что отправить в Talk («@"id"»).
@@ -306,6 +323,10 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     setError('')
     setEmojiOpen(false)
     stickToBottom.current = true
+    // Беседа и текст на момент отправки: пока сервер отвечает, можно уйти в другую беседу
+    // или раздел — черновик очищается именно у этой беседы и только если текст не меняли.
+    const room = token
+    const sentDraft = draft
     try {
       const text = withMentions(draft)
       const wasEditing = Boolean(editing)
@@ -323,16 +344,22 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
       } else {
         await api.talkSend(token, text, replyTo?.id ?? null)
       }
+      const here = draftOwner.current === room
       if (wasEditing) {
         // После правки — обратно недописанное сообщение, если оно было.
-        const saved = drafts.get(token)
-        mentionMap.current = new Map(saved?.mentions ?? [])
-        setDraft(saved?.text ?? '')
+        const saved = drafts.get(room)
+        if (here) {
+          mentionMap.current = new Map(saved?.mentions ?? [])
+          setDraft(saved?.text ?? '')
+        }
       } else {
-        mentionMap.current.clear()
-        setDraft('')
+        if (drafts.get(room)?.text === sentDraft) drafts.delete(room)
+        if (here) {
+          mentionMap.current.clear()
+          setDraft((d) => (d === sentDraft ? '' : d))
+        }
       }
-      setReplyTo(null)
+      if (here) setReplyTo(null)
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -397,6 +424,91 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     }
   }
 
+  function copyText(text: string, what = 'Текст скопирован') {
+    navigator.clipboard.writeText(text).then(() => notify(what)).catch((e) => notify(`Не удалось скопировать: ${errorText(e)}`))
+  }
+
+  /** Меню сообщения (правая кнопка мыши или «⋯»). */
+  function messageMenu(m: TalkMessage, r: TalkRoom): MenuItem[] {
+    if (m.system) return []
+    const canWrite = !r.readOnly && !m.deleted
+    const sel = window.getSelection()?.toString() ?? ''
+    const items: MenuItem[] = []
+    if (canWrite) {
+      items.push({ custom: <>{QUICK_REACTIONS.map((e) => <button key={e} type="button" aria-label={`Реакция ${e}`} onClick={() => void react(m, e)}>{e}</button>)}</> })
+      items.push({ label: 'Ответить', icon: <CornerUpLeft size={15} />, onClick: () => { setReplyTo(m); setEditing(null); inputRef.current?.focus() } })
+    }
+    if (sel.trim()) items.push({ label: 'Копировать выделенное', icon: <Copy size={15} />, onClick: () => copyText(sel) })
+    if (m.text && !m.deleted) items.push({ label: 'Копировать текст', icon: <Copy size={15} />, onClick: () => copyText(m.text) })
+    if (!m.deleted) items.push({ label: 'Переслать…', icon: <Forward size={15} />, onClick: () => setForwarding(m) })
+    if (canWrite) items.push({ label: 'Создать карточку Deck…', icon: <KanbanSquare size={15} />, onClick: () => setCardFrom(m) })
+    const f = m.files[0]
+    if (f && !m.deleted) {
+      items.push({ separator: true })
+      items.push({ label: m.files.length > 1 ? `Открыть «${f.name}»` : 'Открыть файл', icon: <ExternalLink size={15} />, onClick: () => openFile(f) })
+      if (f.path) items.push({ label: 'Сохранить файл на компьютер…', icon: <Download size={15} />, onClick: () => void saveFile(f) })
+    }
+    if (canWrite && (m.editText !== null || m.own)) items.push({ separator: true })
+    if (canWrite && m.editText !== null) items.push({ label: 'Изменить', icon: <Pencil size={15} />, onClick: () => startEdit(m) })
+    if (canWrite && m.own) items.push({ label: 'Удалить', icon: <Trash2 size={15} />, danger: true, onClick: () => void remove(m) })
+    return items
+  }
+
+  async function manageRoom(r: TalkRoom, action: string, value: Record<string, unknown>, done: string) {
+    try {
+      await api.talkManage(r.token, action, value)
+      notify(done)
+      await loadRooms()
+    } catch (e) {
+      notify(`Не удалось: ${errorText(e)}`)
+    }
+  }
+
+  function roomGone(r: TalkRoom) {
+    drafts.delete(r.token)
+    if (token === r.token) { lastRoom = null; setToken(null) }
+    void loadRooms()
+  }
+
+  /** Меню беседы в списке. */
+  function roomMenu(r: TalkRoom): MenuItem[] {
+    const muted = r.notifyLevel === 3
+    return [
+      { label: r.favorite ? 'Убрать из избранного' : 'В избранное', icon: <Star size={15} />, onClick: () => void toggleFavorite(r) },
+      r.unread > 0
+        ? { label: 'Отметить прочитанной', icon: <MailOpen size={15} />, onClick: () => void manageRoom(r, 'read', {}, `«${r.name}» — прочитано`) }
+        : { label: 'Отметить непрочитанной', icon: <MailOpen size={15} />, onClick: () => void manageRoom(r, 'unread', {}, `«${r.name}» — непрочитано`) },
+      { label: muted ? 'Включить уведомления' : 'Не уведомлять', icon: muted ? <Bell size={15} /> : <BellOff size={15} />, onClick: () => void manageRoom(r, 'notify', { level: muted ? 0 : 3 }, muted ? 'Уведомления включены' : 'Уведомления беседы отключены') },
+      { separator: true },
+      { label: 'Участники', icon: <Users size={15} />, onClick: () => { setToken(r.token); setShowPeople(true) } },
+      { label: 'Настройки беседы…', icon: <Settings2 size={15} />, onClick: () => setSettingsFor(r) },
+      { label: 'Открыть в Nextcloud', icon: <ExternalLink size={15} />, onClick: () => void api.ncOpen(`call/${r.token}`) },
+      ...(r.canLeave ? [{ separator: true }, { label: 'Выйти из беседы', icon: <LogOut size={15} />, danger: true, onClick: () => { if (window.confirm(`Выйти из беседы «${r.name}»?`)) void api.talkManage(r.token, 'leave').then(() => { notify(`Вы вышли из «${r.name}»`); roomGone(r) }).catch((e) => notify(`Не удалось: ${errorText(e)}`)) } }] : []),
+    ]
+  }
+
+  /** Ctrl+V с картинкой (снимок экрана и т. п.) — вложение к сообщению, с превью. */
+  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const images = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
+    if (images.length === 0) return
+    e.preventDefault()
+    for (const img of images) {
+      try {
+        const buf = new Uint8Array(await img.arrayBuffer())
+        let bin = ''
+        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000))
+        const ext = (img.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '')
+        const stamp = new Date().toLocaleString('ru-RU').replace(/[^\d]+/g, '-').replace(/-$/, '')
+        const name = img.name && img.name !== 'image.png' ? img.name : `Снимок ${stamp}.${ext}`
+        const picked = await api.attachData(name, btoa(bin))
+        setPreviews((p) => ({ ...p, [picked.id]: URL.createObjectURL(img) }))
+        setFiles((list) => [...list, picked])
+      } catch (err) {
+        notify(`Картинка не вставлена: ${errorText(err)}`)
+      }
+    }
+  }
+
   const room = rooms?.find((r) => r.token === token)
   const readMark = Math.max(readUpTo, room?.lastCommonRead ?? 0)
 
@@ -455,12 +567,13 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
         <div className="message-list">
           {rooms === null && !error && <SkeletonRows variant="room" count={7} label="Загрузка бесед…" />}
           {visibleRooms.map((r) => (
-            <button key={r.token} className={`message-row room-row ${r.token === token ? 'selected' : ''} ${r.unread ? 'unread' : ''}`} onClick={() => setToken(r.token)}>
+            <button key={r.token} className={`message-row room-row ${r.token === token ? 'selected' : ''} ${r.unread ? 'unread' : ''}`} onClick={() => setToken(r.token)}
+              onContextMenu={(e) => openContextMenu(e, roomMenu(r))}>
               {r.kind === 1 && r.peer
                 ? <Avatar id={r.peer} name={r.name} />
                 : <Avatar kind="room" id={r.token} name={r.name} fallback={r.kind === 1 ? undefined : <Users size={16} />} />}
               <div className="message-summary">
-                <div className="message-topline"><span className="sender-name">{r.name}</span>{r.favorite && <Star size={13} className="room-favorite" aria-label="Избранное" fill="currentColor" />}{r.unread > 0 && <b className={`folder-count ${r.unreadMention ? 'mention' : ''}`}>{r.unread}</b>}</div>
+                <div className="message-topline"><span className="sender-name">{r.name}</span>{r.favorite && <Star size={13} className="room-favorite" aria-label="Избранное" fill="currentColor" />}{r.notifyLevel === 3 && <BellOff size={12} className="room-muted" aria-label="Без уведомлений" />}{r.unread > 0 && <b className={`folder-count ${r.unreadMention ? 'mention' : ''}`}>{r.unread}</b>}</div>
                 <div className="message-preview">{r.lastMessage ?? ''}</div>
               </div>
             </button>
@@ -480,6 +593,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
           </div>}
         </div>
       </aside>
+      <Splitter id="talk-rooms" min={220} max={640} label="Ширина списка бесед" />
 
       <main className="talk-main">
         {room ? (
@@ -491,6 +605,8 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                 onClick={() => void toggleFavorite(room)}><Star size={17} fill={room.favorite ? 'currentColor' : 'none'} /></button>
               <div className="reader-toolbar-spacer" />
               <button className="secondary-button" title="Звонок откроется в браузере" onClick={() => void api.ncOpen(`call/${room.token}`)}><Phone size={15} /> Звонок</button>
+              <button className={`icon-button soft talk-people-toggle ${showPeople ? 'active' : ''}`} aria-pressed={showPeople} aria-label="Участники" title="Участники беседы" onClick={() => setShowPeople(!showPeople)}><Users size={17} /></button>
+              <button className="icon-button soft" aria-label="Меню беседы" title="Ещё" onClick={(e) => openContextMenu(e, roomMenu(room))}><MoreHorizontal size={17} /></button>
             </div>
             {error && <div className="inline-warning" role="alert">Talk: {error}</div>}
             <div className="talk-messages" ref={listRef}
@@ -500,7 +616,8 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
               {messages.map((m) => m.system ? (
                 <div key={m.id} className="talk-system">{m.text} · {timeOf(m.timestamp)}</div>
               ) : (
-                <div key={m.id} className={`talk-msg ${m.own ? 'own' : ''} ${m.deleted ? 'deleted' : ''}`} data-id={m.id}>
+                <div key={m.id} className={`talk-msg ${m.own ? 'own' : ''} ${m.deleted ? 'deleted' : ''}`} data-id={m.id}
+                  onContextMenu={(e) => { const items = messageMenu(m, room); if (items.length) openContextMenu(e, items) }}>
                   {!m.own && <Avatar id={m.authorId} name={m.author} />}
                   <div className="talk-bubble">
                     {!m.own && <div className="talk-author">{m.author}</div>}
@@ -547,6 +664,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                         <button aria-label="Карточка Deck" title="Создать карточку Deck" onClick={() => setCardFrom(m)}><KanbanSquare size={14} /></button>
                         {m.editText !== null && <button aria-label="Изменить" title="Изменить" onClick={() => startEdit(m)}><Pencil size={14} /></button>}
                         {m.own && <button aria-label="Удалить" title="Удалить" onClick={() => void remove(m)}><Trash2 size={14} /></button>}
+                        <button aria-label="Ещё" title="Ещё действия" onClick={(e) => openContextMenu(e, messageMenu(m, room))}><MoreHorizontal size={14} /></button>
                       </div>
                     )}
                     {reactFor === m.id && (
@@ -564,7 +682,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                 {files.length > 0 && (
                   <div className="talk-pending">
                     {files.map((f) => (
-                      <span key={f.id} className="talk-file"><Paperclip size={14} /><span>{f.name}</span><small>{formatSize(f.size)}</small>
+                      <span key={f.id} className={`talk-file ${previews[f.id] ? 'with-preview' : ''}`}>{previews[f.id] ? <img className="talk-paste-preview" src={previews[f.id]} alt="" /> : <Paperclip size={14} />}<span>{f.name}</span><small>{formatSize(f.size)}</small>
                         {!sending && <button type="button" aria-label={`Убрать ${f.name}`} onClick={() => dropFile(f.id)}><X size={13} /></button>}
                       </span>
                     ))}
@@ -590,6 +708,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                       rows={2}
                       value={draft}
                       onChange={(e) => onDraftChange(e.target.value, e.target.selectionStart)}
+                      onPaste={(e) => void onPaste(e)}
                       onKeyDown={(e) => {
                         if (mentions.length > 0) {
                           if (e.key === 'ArrowDown') { e.preventDefault(); setMentionSel((i) => (i + 1) % mentions.length); return }
@@ -613,7 +732,11 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
           <div className="empty-reader">{error ? <><strong>Talk недоступен</strong><span>{error}</span></> : <><MessageCircle size={42} /><strong>Выберите беседу</strong></>}</div>
         )}
       </main>
+      {room && showPeople && <Splitter id="talk-people" side="next" min={220} max={520} label="Ширина списка участников" />}
+      {room && showPeople && <RoomPeople room={room} notify={notify} onClose={() => setShowPeople(false)} onRoomChanged={() => void loadRooms()} onSettings={() => setSettingsFor(room)} />}
 
+      {settingsFor && <RoomSettings room={rooms?.find((r) => r.token === settingsFor.token) ?? settingsFor} notify={notify} onClose={() => setSettingsFor(null)} onChanged={() => void loadRooms()} onGone={() => roomGone(settingsFor)} />}
+      {forwarding && rooms && <ForwardDialog rooms={rooms} message={forwarding} notify={notify} onClose={() => setForwarding(null)} />}
       {cardFrom && room && <CardFromMessage message={cardFrom} room={room} onClose={() => setCardFrom(null)} onDone={(t) => { setCardFrom(null); notify(t) }} />}
       {newChat && <NewChat onClose={() => setNewChat(false)} onCreated={(t) => { setNewChat(false); void loadRooms().then(() => setToken(t)) }} />}
       {viewing !== null && viewItems[viewing] && (

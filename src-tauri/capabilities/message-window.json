@@ -27,6 +27,7 @@
     "allow-attachment-open",
     "allow-save-attachment",
     "allow-close-window",
+    "allow-set-zoom",
     "allow-message-html-remote",
     "allow-nc-status",
     "allow-nc-edit-attachment",
