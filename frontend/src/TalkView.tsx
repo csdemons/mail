@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  BarChart3, Bell, BellOff, Check, Images, Timer, Loader2, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
+  BarChart3, Bell, BellOff, Check, Images, Wallpaper as WallpaperIcon, Timer, Loader2, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
   MoreHorizontal, Paperclip, Pencil, Phone, RefreshCw, Search, Send, Settings2, Smile, SmilePlus, Star, Trash2, Users, X,
 } from 'lucide-react'
 
@@ -15,6 +15,8 @@ import { SkeletonChat, SkeletonRows } from './Skeleton'
 import Splitter from './Splitter'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import { ForwardDialog, RoomPeople, RoomSettings } from './TalkRoomPanel'
+import WallpaperDialog from './WallpaperDialog'
+import { useDarkTheme, useWallpaperVersion, wallpaperFor, wallpaperStyle } from './wallpaper'
 import { firstUrl, LinkCard, MediaPanel, PollCard, PollDialog, VoicePlayer, VoiceRecorder } from './TalkExtras'
 
 /** Файл чата открывается во встроенном просмотрщике (фото, PDF, текст), если известен его путь. */
@@ -147,6 +149,10 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   useEffect(() => { try { localStorage.setItem('atom.talk.people', showPeople ? '1' : '0') } catch { /* без хранилища */ } }, [showPeople])
   const [settingsFor, setSettingsFor] = useState<TalkRoom | null>(null)
   const [showMedia, setShowMedia] = useState(false)
+  // Обои: undefined — окно закрыто; иначе для какой беседы (null — для всех).
+  const [wallpaperRoom, setWallpaperRoom] = useState<TalkRoom | null | undefined>(undefined)
+  const dark = useDarkTheme()
+  useWallpaperVersion()
   const [pollOpen, setPollOpen] = useState(false)
   // «Без звука»: следующее сообщение придёт получателям без звука уведомления.
   const [silent, setSilent] = useState(false)
@@ -610,6 +616,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
       { separator: true },
       { label: 'Участники', icon: <Users size={15} />, onClick: () => { setToken(r.token); setShowPeople(true) } },
       { label: 'Настройки беседы…', icon: <Settings2 size={15} />, onClick: () => setSettingsFor(r) },
+      { label: 'Обои…', icon: <WallpaperIcon size={15} />, onClick: () => setWallpaperRoom(r) },
       { label: 'Открыть в Nextcloud', icon: <ExternalLink size={15} />, onClick: () => void api.ncOpen(`call/${r.token}`) },
       ...(r.canLeave ? [{ separator: true }, { label: 'Выйти из беседы', icon: <LogOut size={15} />, danger: true, onClick: () => { if (window.confirm(`Выйти из беседы «${r.name}»?`)) void api.talkManage(r.token, 'leave').then(() => { notify(`Вы вышли из «${r.name}»`); roomGone(r) }).catch((e) => notify(`Не удалось: ${errorText(e)}`)) } }] : []),
     ]
@@ -638,6 +645,9 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   }
 
   const room = rooms?.find((r) => r.token === token)
+  const wpChoice = room ? wallpaperFor(room.token) : null
+  const wp = wallpaperStyle(wpChoice, dark)
+  const wpData = wpChoice ? (wpChoice.kind === 'preset' ? wpChoice.id : 'image') : undefined
   const readMark = Math.max(readUpTo, room?.lastCommonRead ?? 0)
 
   async function toggleFavorite(r: TalkRoom) {
@@ -723,7 +733,9 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
       </aside>
       <Splitter id="talk-rooms" min={220} max={640} label="Ширина списка бесед" />
 
-      <main className="talk-main">
+      <main className={`talk-main ${wp ? 'has-wallpaper' : ''}`} data-wallpaper={wpData}>
+        {wp && <div className="talk-wallpaper" style={wp.layer} aria-hidden="true" />}
+        {wp?.shade && <div className="talk-wallpaper-shade" style={wp.shade} aria-hidden="true" />}
         {room ? (
           <>
             <div className="calendar-toolbar">
@@ -880,7 +892,8 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                   <button type="button" className={`icon-button soft talk-emoji ${emojiOpen ? 'active' : ''}`} aria-label="Эмодзи" title="Эмодзи" onClick={() => setEmojiOpen((v) => !v)}><Smile size={18} /></button>
                   {!editing && <button type="button" className="icon-button soft talk-poll-new" aria-label="Опрос" title="Создать опрос" disabled={sending} onClick={() => setPollOpen(true)}><BarChart3 size={18} /></button>}
                   {!editing && <button type="button" className={`icon-button soft talk-silent ${silent ? 'active' : ''}`} aria-pressed={silent} aria-label="Без звука" title={silent ? 'Отправится без звука уведомления — нажмите, чтобы отменить' : 'Отправить без звука уведомления'} onClick={() => setSilent(!silent)}><BellOff size={18} /></button>}
-                  {!editing && !draft.trim() && files.length === 0 && <VoiceRecorder disabled={sending} notify={notify} onRecorded={(b, ext) => void sendVoice(b, ext)} />}
+                  {/* Кнопка записи на месте всегда (чтобы кнопки не прыгали); активна, когда поле пустое. */}
+                  {!editing && <VoiceRecorder disabled={sending || Boolean(draft.trim()) || files.length > 0} notify={notify} onRecorded={(b, ext) => void sendVoice(b, ext)} />}
                   <button className="primary-button" type="submit" disabled={sending || (!draft.trim() && files.length === 0)} aria-label={editing ? 'Сохранить' : 'Отправить'}>{sending && files.length > 0 ? 'Загрузка…' : editing ? 'Сохранить' : <Send size={16} />}</button>
                 </div>
               </form>
@@ -894,6 +907,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
       {room && showMedia && <MediaPanel token={room.token} messages={messages} onClose={() => setShowMedia(false)} thumb={(f) => <TalkThumb file={f} />}
         loadVoice={(f) => api.talkFileData(f.path as string)}
         onOpen={(f, list) => { const v = list.filter(viewable); const i = v.indexOf(f); if (i >= 0) setMediaView({ files: v, index: i }); else void api.ncOpen(`f/${f.id}`) }} />}
+      {wallpaperRoom !== undefined && <WallpaperDialog room={wallpaperRoom} dark={dark} onClose={() => setWallpaperRoom(undefined)} />}
       {pollOpen && room && <PollDialog token={room.token} notify={notify} onClose={() => setPollOpen(false)} />}
       {mediaView && mediaView.files[mediaView.index] && (
         <AttachmentViewer folder="" uid={0} items={mediaView.files.map((f, i) => ({ index: i, name: f.name, contentType: f.mimetype, size: f.size }))} index={mediaView.index}

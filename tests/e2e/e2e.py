@@ -1,3 +1,4 @@
+import base64
 import faulthandler, json, imaplib, ssl, subprocess, sys, time, os, glob, email, email.utils
 from email.header import decode_header, make_header
 from selenium import webdriver
@@ -886,6 +887,8 @@ try:
     vbtn = W(d, 15).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-voice button') if 'Прослушать' in b.text])
     vbtn[-1].click()
     W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-voice audio[src^="blob:"]'))
+    # Звук действительно открывается (не заблокирован политикой содержимого).
+    W(d, 10).until(lambda d: d.execute_script("const a = [...document.querySelectorAll('.talk-voice audio')].pop(); return a && !a.error && a.readyState >= 1"))
     ok('chat voice messages: record and send as voice message, play a received one')
 
     # Медиа и файлы беседы: фото (просмотр с листанием), файлы, голосовые, ссылки.
@@ -928,6 +931,51 @@ try:
     W(d, 10).until(lambda d: os.path.exists(call_file))
     assert open(call_file).read().endswith('/index.php/call/abc123'), open(call_file).read()
     ok('chat: call opens in an app window (Nextcloud call page)')
+
+    # Обои чата: у каждого свои, на этом компьютере — для всех бесед и для отдельной.
+    def wallpaper_dialog():
+        d.find_element(By.CSS_SELECTOR, 'button[aria-label="Меню беседы"]').click()
+        [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.strip() == 'Обои…'][0].click()
+        return wait(d, '.wallpaper-modal')
+    def pick(dlg, scope, tile):
+        [l for l in dlg.find_elements(By.CSS_SELECTOR, '.wallpaper-scope label') if scope in l.text][0].click()
+        dlg.find_element(By.CSS_SELECTOR, f'.wallpaper-tile[aria-label="{tile}"]').click()
+        W(d, 3).until(lambda d: dlg.find_elements(By.CSS_SELECTOR, '.wallpaper-preview .talk-wallpaper') or tile == 'Без обоев')
+        [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.text == 'Применить'][0].click()
+        W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.wallpaper-modal'))
+    main_wp = lambda: d.find_element(By.CSS_SELECTOR, '.talk-main').get_attribute('data-wallpaper')
+    pick(wallpaper_dialog(), 'Все беседы', 'Мята')
+    W(d, 5).until(lambda d: main_wp() == 'mint' and d.find_elements(By.CSS_SELECTOR, '.talk-main.has-wallpaper > .talk-wallpaper'))
+    # Пузыри остаются непрозрачными.
+    assert d.execute_script("const b = getComputedStyle(document.querySelector('.talk-msg .talk-bubble')).backgroundColor; return !b.includes('rgba') || b.endsWith(', 1)')")
+    # Своя картинка только для этой беседы, с затемнением.
+    dlg = wallpaper_dialog()
+    [l for l in dlg.find_elements(By.CSS_SELECTOR, '.wallpaper-scope label') if 'Только' in l.text][0].click()
+    # Файл выбирается «как из диалога»: WebKitWebDriver не умеет передавать файлы.
+    d.execute_script("""
+      const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR42mNk+M9QzwAEjDAGNzYAAQwBACiYBNEzkVnqAAAAAElFTkSuQmCC'), (c) => c.charCodeAt(0));
+      const input = document.querySelector('input[aria-label="Файл картинки для обоев"]');
+      const dt = new DataTransfer(); dt.items.add(new File([png], 'обои.png', { type: 'image/png' }));
+      input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true }));
+    """)
+    W(d, 10).until(lambda d: dlg.find_elements(By.CSS_SELECTOR, '.wallpaper-sliders input[aria-label="Затемнение"]'))
+    [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.text == 'Применить'][0].click()
+    W(d, 5).until(lambda d: main_wp() == 'image' and d.find_elements(By.CSS_SELECTOR, '.talk-main > .talk-wallpaper-shade'))
+    # Другая беседа — с общими обоями; обратно — снова своя картинка.
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if 'Иванов Иван' in r.get_attribute('textContent')][0].click()
+    W(d, 10).until(lambda d: 'Иванов Иван' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').get_attribute('textContent') and main_wp() == 'mint')
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if 'УИТ — общий' in r.get_attribute('textContent')][0].click()
+    W(d, 10).until(lambda d: 'УИТ — общий' in d.find_element(By.CSS_SELECTOR, '.talk-main .calendar-title').get_attribute('textContent') and main_wp() == 'image')
+    W(d, 20).until(lambda d: any('обновление в среду' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')))
+    time.sleep(0.5); d.save_screenshot(f'{OUT}/11d-chat-wallpaper.png')
+    # «Как во всех беседах», затем обои выключаются совсем.
+    dlg = wallpaper_dialog()
+    [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.text == 'Как во всех беседах'][0].click()
+    W(d, 5).until(lambda d: main_wp() == 'mint')
+    pick(wallpaper_dialog(), 'Все беседы', 'Без обоев')
+    W(d, 5).until(lambda d: main_wp() is None and not d.find_elements(By.CSS_SELECTOR, '.talk-main > .talk-wallpaper'))
+    assert d.execute_script("return Object.keys(localStorage).filter((k) => k.startsWith('atom.wallpaper.img.')).length") == 0, 'unused images removed'
+    ok('chat wallpapers: preset for all chats, own image for one chat (dim), per-chat override and reset, stored locally')
     d.save_screenshot(f'{OUT}/11-chat.png')
 
     # Карточка Deck из сообщения.
@@ -969,7 +1017,7 @@ try:
       Object.defineProperty(ev, 'clipboardData', { value: { files: [file], items: [], types: ['Files'], getData: () => '' } });
       document.querySelector('.talk-compose textarea').dispatchEvent(ev);
     """)
-    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-pending .talk-paste-preview'))
+    W(d, 10).until(lambda d: d.execute_script("const i = document.querySelector('.talk-pending .talk-paste-preview'); return i && i.complete && i.naturalWidth > 0"))
     d.find_element(By.CSS_SELECTOR, '.talk-compose button[type=submit]').click()
     W(d, 20).until(lambda d: any(k.startswith('/Talk/Снимок ') and k.endswith('.png') for k in nc_mock('GET', '/test/state')['files']))
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-pending'))

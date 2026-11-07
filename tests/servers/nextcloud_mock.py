@@ -308,13 +308,17 @@ class H(BaseHTTPRequestHandler):
                     state['peer_read'][q['token']] = max(m['id'] for m in state['messages'][q['token']])
                 if q.get('voice') == '1':
                     # Голосовое «от коллеги»: файл в /Talk и сообщение voice-message.
-                    vpath = '/Talk/Голосовое Иванова.ogg'
-                    state['files'][vpath] = {'id': next(ids), 'data': b'OggS\x00\x02' + b'\x00' * 200}
+                    vpath = '/Talk/Голосовое Иванова.wav'
+                    # Настоящий WAV (0,1 с тишины, 8 кГц, 8 бит) — проигрыватель должен его открыть.
+                    pcm = b'\x80' * 800
+                    wav = b'RIFF' + (36 + len(pcm)).to_bytes(4, 'little') + b'WAVEfmt ' + (16).to_bytes(4, 'little') + (1).to_bytes(2, 'little') + (1).to_bytes(2, 'little') \
+                        + (8000).to_bytes(4, 'little') + (8000).to_bytes(4, 'little') + (1).to_bytes(2, 'little') + (8).to_bytes(2, 'little') + b'data' + len(pcm).to_bytes(4, 'little') + pcm
+                    state['files'][vpath] = {'id': next(ids), 'data': wav}
                     vf = state['files'][vpath]
                     state['messages'][q['token']].append({
                         'id': next(ids), 'actorType': 'users', 'actorId': 'ivanov', 'actorDisplayName': 'Иванов Иван',
                         'timestamp': int(time.time()), 'message': '{file}', 'messageType': 'voice-message', 'systemMessage': '',
-                        'messageParameters': {'file': {'type': 'file', 'id': str(vf['id']), 'name': 'Голосовое Иванова.ogg', 'size': len(vf['data']), 'mimetype': 'audio/ogg', 'path': vpath.lstrip('/')}}})
+                        'messageParameters': {'file': {'type': 'file', 'id': str(vf['id']), 'name': 'Голосовое Иванова.wav', 'size': len(vf['data']), 'mimetype': 'audio/wav', 'path': vpath.lstrip('/')}}})
                 else:
                     state['messages'][q['token']].append({
                         'id': next(ids), 'actorType': 'users', 'actorId': 'ivanov', 'actorDisplayName': 'Иванов Иван',

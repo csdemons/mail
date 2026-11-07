@@ -207,7 +207,7 @@ export function VoiceRecorder({ disabled, onRecorded, notify }: { disabled: bool
       </span>
     )
   }
-  return <button type="button" className="icon-button soft talk-mic" aria-label="Записать голосовое" title="Голосовое сообщение" disabled={disabled} onClick={() => void start()}><Mic size={18} /></button>
+  return <button type="button" className="icon-button soft talk-mic" aria-label="Записать голосовое" title={disabled ? 'Голосовое — когда поле ввода пустое' : 'Голосовое сообщение'} disabled={disabled} onClick={() => void start()}><Mic size={18} /></button>
 }
 
 /** Проигрыватель голосового сообщения в ленте (файл загружается по нажатию). */

@@ -1,9 +1,14 @@
-import { Minus, Plus } from 'lucide-react'
+import { useState } from 'react'
+import { Minus, Plus, Wallpaper } from 'lucide-react'
+import WallpaperDialog from './WallpaperDialog'
+import { useDarkTheme } from './wallpaper'
 import { setAppearance, TEXT_MAX, TEXT_MIN, useAppearance, ZOOM_STEPS } from './appearance'
 
 /** Настройки → «Вид»: масштаб интерфейса и размер текста сообщений и писем. */
 export default function AppearanceSettings() {
   const a = useAppearance()
+  const [wall, setWall] = useState(false)
+  const dark = useDarkTheme()
   return (
     <div className="settings-section appearance-settings">
       <strong>Вид</strong>
@@ -23,6 +28,11 @@ export default function AppearanceSettings() {
         </span>
       </label>
       <p className="appearance-sample" style={{ fontSize: a.text }}>Так будет выглядеть текст сообщения: «Коллеги, встреча в 15:00».</p>
+      <label>
+        <span>Обои чата</span>
+        <button type="button" className="secondary-button" onClick={() => setWall(true)}><Wallpaper size={15} /> Выбрать обои…</button>
+      </label>
+      {wall && <WallpaperDialog room={null} dark={dark} onClose={() => setWall(false)} />}
       <span className="settings-hint">Ширину колонок в «Почте», «Чате», «Контактах» и «Контрагентах» можно менять, перетаскивая разделитель; двойной щелчок по нему возвращает исходную.</span>
     </div>
   )

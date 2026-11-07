@@ -1372,3 +1372,33 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 /* Вкладки панели: в узкой панели переносятся во вторую строку, ничего не обрезается. */
 .talk-media-tabs { flex-wrap: wrap; gap: 2px 4px; }
 .talk-media-tabs button { flex: 1 1 auto; justify-content: center; padding: 6px 6px; font-size: 12px; white-space: nowrap; }
+
+/* Обои чата: слой под лентой; заголовок, поиск и поле ввода — на своём фоне, пузыри непрозрачные */
+.talk-main { position: relative; overflow: hidden; }
+.talk-wallpaper, .talk-wallpaper-shade { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.talk-main > *:not(.talk-wallpaper):not(.talk-wallpaper-shade) { position: relative; z-index: 1; }
+.talk-main.has-wallpaper .talk-messages { background: transparent; }
+.talk-main.has-wallpaper > .calendar-toolbar, .talk-main.has-wallpaper > .talk-compose, .talk-main.has-wallpaper > .talk-search, .talk-main.has-wallpaper > form { background: var(--surface); }
+.talk-main.has-wallpaper .talk-system, .talk-main.has-wallpaper .talk-day, .talk-main.has-wallpaper .talk-older { align-self: center; background: color-mix(in srgb, var(--surface) 88%, transparent); padding: 3px 10px; border-radius: 10px; }
+.talk-main.has-wallpaper .talk-author-avatar, .talk-main.has-wallpaper .talk-reactions button { box-shadow: 0 1px 2px #0002; }
+.wallpaper-modal { width: min(640px, calc(100vw - 32px)); }
+.wallpaper-scope { display: flex; gap: 16px; font-size: 13px; flex-wrap: wrap; }
+.wallpaper-scope label { display: flex; align-items: center; gap: 6px; }
+.wallpaper-preview { position: relative; height: 150px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.wallpaper-sample { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 8px; padding: 14px; }
+.wallpaper-sample .talk-msg { max-width: 70%; }
+.wallpaper-sample .talk-msg.own { align-self: flex-end; }
+.wallpaper-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; }
+.wallpaper-tile { position: relative; height: 64px; border: 2px solid var(--line); border-radius: 10px; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 2px; padding: 4px; font: inherit; font-size: 11px; color: var(--text); overflow: hidden; }
+.wallpaper-tile span { background: color-mix(in srgb, var(--surface) 85%, transparent); border-radius: 6px; padding: 1px 6px; }
+.wallpaper-tile.current { border-color: var(--blue); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 30%, transparent); }
+.wallpaper-tile.none { justify-content: center; background: var(--panel); color: var(--muted); }
+.wallpaper-tile.own { justify-content: center; background-color: var(--panel); color: var(--muted); }
+.wallpaper-tile svg { position: absolute; top: 6px; right: 6px; color: var(--blue); }
+.wallpaper-tile.own svg { position: static; }
+.wallpaper-sliders { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.wallpaper-sliders label { display: flex; align-items: center; gap: 10px; }
+.wallpaper-sliders span { min-width: 100px; }
+.wallpaper-sliders input { flex: 1; }
+.wallpaper-sliders b { min-width: 44px; text-align: right; font-weight: 500; color: var(--muted); }
+.talk-main > .talk-search:not(.talk-wallpaper):not(.talk-wallpaper-shade) { z-index: 5; }
