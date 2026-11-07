@@ -1893,6 +1893,7 @@ try:
         ('ОИЯИ: удалённое', 'petrov@jinr.ru', 'test@corp.test', 'Trash', []),
     ):
         m = EmailMessage(); m['From'] = frm; m['To'] = to; m['Subject'] = subj; m['Date'] = email.utils.formatdate(localtime=True); m.set_content('Текст про договор')
+        m['Message-ID'] = email.utils.make_msgid(domain=frm.split('@')[-1].rstrip('>'))
         for f in files:
             m.add_attachment(b'%PDF-1.4 test', maintype='application', subtype='pdf', filename=f)
         M.append(folder, None, imaplib.Time2Internaldate(time.time()), m.as_bytes())
@@ -1928,7 +1929,7 @@ try:
     tl = d.find_element(By.CSS_SELECTOR, '.timeline').get_attribute('textContent')
     assert 'Договор ОИЯИ.pdf' in tl and 'Совещание с ОИЯИ' in tl and 'Re: ОИЯИ: проект договора' in tl and 'удалённое' not in tl, tl
     stats = d.find_element(By.CSS_SELECTOR, '.counterparty-stats').get_attribute('textContent')
-    assert '3 письма' in stats and '2 от них' in stats and '1 им' in stats and '1 встреча' in stats and '1 документ' in stats, stats
+    assert '3 письма' in stats and '2 от них' in stats and '1 им' in stats and '1 встреча' in stats and '1 вложение' in stats, stats
     people = d.find_element(By.CSS_SELECTOR, '.counterparty-side').get_attribute('textContent')
     assert 'Петров П' in people and 'petrov@jinr.ru' in people and 'Иван Сидоренко' in people and 'Главный инженер' in people, people
     [b for b in d.find_elements(By.CSS_SELECTOR, '.filter-chip') if b.get_attribute('data-kind') == 'event'][0].click()
@@ -1980,6 +1981,103 @@ try:
     W(d, 20).until(lambda d: '@cern.ch' in d.find_element(By.CSS_SELECTOR, '.counterparty-head').get_attribute('textContent') and 'Здесь пока пусто' in d.find_element(By.CSS_SELECTOR, '.counterparty-timeline').get_attribute('textContent'))
     assert 'err' in inv('counterparty_timeline', {'domain': '../etc', 'server': False}), 'bad domain accepted'
     ok('counterparty: name and note saved, server search, open any domain by hand; invalid domain refused')
+
+    # 0.37 «связность»: задача из письма → карточка Deck (организация, письмо, папка документов),
+    # срок в календаре, вложения в «/Контрагенты/<домен>/<задача>»; общий поиск Ctrl+K; всё — в истории.
+    d.find_element(By.CSS_SELECTOR, '.module-rail button').click()
+    jinr_row = lambda: [r for r in d.find_elements(By.CSS_SELECTOR, '.message-row') if 'ОИЯИ: проект договора' in r.get_attribute('textContent') and 'Re:' not in r.get_attribute('textContent')]
+    W(d, 20).until(lambda d: jinr_row())
+    jinr_row()[0].click()
+    W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.sender-line .address-chip').get_attribute('data-address') == 'petrov@jinr.ru')
+    wait(d, '.reader-toolbar button[aria-label="Создать задачу"]').click()
+    dlg = wait(d, '.task-from-mail')
+    W(d, 20).until(lambda d: dlg.find_element(By.CSS_SELECTOR, 'input[aria-label="Организация"]').get_attribute('value') == 'jinr.ru'
+                   and dlg.find_elements(By.CSS_SELECTOR, 'input[aria-label="Договор ОИЯИ.pdf"]')
+                   and dlg.find_element(By.CSS_SELECTOR, 'select[aria-label="Колонка"]').get_attribute('value')
+                   and 'Текст про договор' in dlg.find_element(By.CSS_SELECTOR, 'textarea[aria-label="Описание задачи"]').get_attribute('value'))
+    due = (_dt.date.today() + _dt.timedelta(days=7)).isoformat()
+    set_value(d, dlg.find_element(By.CSS_SELECTOR, 'input[aria-label="Срок"]'), due)
+    W(d, 10).until(lambda d: dlg.find_elements(By.CSS_SELECTOR, 'input[aria-label="Срок в календарь"]:checked'))
+    assert '/Контрагенты/jinr.ru/ОИЯИ проект договора' in dlg.get_attribute('textContent'), dlg.get_attribute('textContent')
+    d.save_screenshot(f'{OUT}/80-task-from-mail.png')
+    [b for b in dlg.find_elements(By.CSS_SELECTOR, '.settings-actions button') if 'Создать задачу' in b.text][0].click()
+    W(d, 40).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.task-from-mail'))
+    ncst = nc_mock('GET', '/test/state')
+    task = [c for c in ncst['cards'] if c['title'] == 'ОИЯИ: проект договора'][0]
+    assert '🏢 Контрагент: jinr.ru' in task['description'] and '✉ Письмо: [ОИЯИ: проект договора](mid:' in task['description'] \
+        and '📁 Документы: [Контрагенты/jinr.ru/ОИЯИ проект договора](' in task['description'] and task['duedate'].startswith(due[:7]), task
+    assert '/Контрагенты/jinr.ru/ОИЯИ проект договора/Договор ОИЯИ.pdf' in ncst['files'], list(ncst['files'])
+    rng_t = {'start': f'{_dt.date.today()}T00:00:00Z', 'end': f'{_dt.date.today() + _dt.timedelta(days=30)}T00:00:00Z'}
+    dl = [e for e in inv('list_events', rng_t)['ok']['events'] if e['title'] == 'Срок: ОИЯИ: проект договора']
+    assert dl and dl[0]['allDay'] and dl[0]['start'] == due and 'jinr.ru' in (dl[0]['description'] or ''), dl
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.deck-chain'))
+    chain = d.find_element(By.CSS_SELECTOR, '.deck-chain').get_attribute('textContent')
+    assert 'jinr.ru' in chain and 'ОИЯИ: проект договора' in chain and 'Документы' in chain, chain
+    d.save_screenshot(f'{OUT}/81-task-chain.png')
+    ok('task from a mail: Deck card linked to the organisation and the mail, deadline in the calendar, attachment in the organisation folder')
+
+    # из карточки — к письму
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-chain-item') if 'ОИЯИ: проект договора' in b.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.reader-pane') and 'ОИЯИ: проект договора' in d.find_element(By.CSS_SELECTOR, '.reader-pane').get_attribute('textContent')
+                   and d.find_elements(By.CSS_SELECTOR, '.module-rail .module.active') and 'Почта' in d.find_element(By.CSS_SELECTOR, '.module-rail .module.active').get_attribute('textContent'))
+    ok('task chain: the mail opens from the card')
+
+    # общий поиск по организации: письма, контакты, встречи, файлы, задачи, чат
+    inv('talk_send', {'token': 'abc123', 'message': 'Документы для jinr.ru готовы', 'replyTo': None, 'silent': False})
+    def gsearch(term, need):
+        ActionChains(d).key_down(Keys.CONTROL).send_keys('k').key_up(Keys.CONTROL).perform()
+        box = wait(d, '.global-search input[aria-label="Искать везде"]')
+        set_value(d, box, term)
+        W(d, 40).until(lambda d: all(d.find_elements(By.CSS_SELECTOR, f'.global-search-section[data-section="{s}"] .global-search-row') for s in need)
+                       and not d.find_elements(By.CSS_SELECTOR, '.global-search-input .spin'))
+        return d.find_element(By.CSS_SELECTOR, '.global-search')
+    sec_text = lambda s: d.find_element(By.CSS_SELECTOR, f'.global-search-section[data-section="{s}"]').get_attribute('textContent')
+    gs = gsearch('@jinr.ru', ['mail', 'contact', 'event', 'file', 'card', 'chat'])
+    assert 'История организации jinr.ru' in gs.find_element(By.CSS_SELECTOR, '.global-search-row.org').get_attribute('textContent')
+    assert 'ОИЯИ: проект договора' in sec_text('mail') and 'ОИЯИ: сроки поставки' in sec_text('mail'), sec_text('mail')
+    assert 'Иван Сидоренко' in sec_text('contact'), sec_text('contact')
+    assert 'Совещание с ОИЯИ' in sec_text('event') and 'Срок: ОИЯИ: проект договора' in sec_text('event'), sec_text('event')
+    assert 'Договор ОИЯИ.pdf' in sec_text('file'), sec_text('file')
+    assert 'ОИЯИ: проект договора' in sec_text('card') and 'УИТ — задачи' in sec_text('card'), sec_text('card')
+    assert 'Документы для jinr.ru готовы' in sec_text('chat'), sec_text('chat')
+    assert len(d.find_elements(By.CSS_SELECTOR, '.global-search-section[data-section="mail"] .global-search-row')) <= 5
+    d.save_screenshot(f'{OUT}/82-global-search.png')
+    # фильтр по разделу и по времени
+    gs.find_element(By.CSS_SELECTOR, '.filter-chip[data-section="card"]').click()
+    W(d, 5).until(lambda d: [s.get_attribute('data-section') for s in d.find_elements(By.CSS_SELECTOR, '.global-search-section')] == ['card'])
+    gs.find_element(By.CSS_SELECTOR, '.global-search-filters button[role="tab"]').click()
+    Select(gs.find_element(By.CSS_SELECTOR, 'select[aria-label="Период"]')).select_by_visible_text('За неделю')
+    # встреча 10 дней назад за неделю не попадает, срок задачи (через неделю) и свежие письма — да
+    W(d, 5).until(lambda d: 'Совещание с ОИЯИ' not in sec_text('event'))
+    assert 'Срок: ОИЯИ: проект договора' in sec_text('event') and d.find_elements(By.CSS_SELECTOR, '.global-search-section[data-section="mail"] .global-search-row')
+    ok('global search by organisation domain: mail, people, meetings, files, tasks and chat in sections; section and period filters')
+    # щелчок по задаче → карточка в Deck → папка документов в «Файлах»
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.global-search-section[data-section="card"] .global-search-row') if 'ОИЯИ: проект договора' in r.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.global-search') and d.find_elements(By.CSS_SELECTOR, '.deck-chain'))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-chain-item') if 'Документы' in b.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.file-row[data-path="/Контрагенты/jinr.ru/ОИЯИ проект договора/Договор ОИЯИ.pdf"]'))
+    # файл из поиска выделяется в своей папке; сообщение чата открывается в беседе
+    gsearch('Регламент', ['file'])
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.global-search-section[data-section="file"] .global-search-row') if 'Регламент.txt' in r.get_attribute('textContent')][0].click()
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.file-row.selected[data-path="/Документы/Регламент.txt"]'))
+    gsearch('jinr.ru готовы', ['chat'])
+    d.find_element(By.CSS_SELECTOR, '.global-search-section[data-section="chat"] .global-search-row').click()
+    W(d, 20).until(lambda d: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'Документы для jinr.ru готовы' in m.get_attribute('textContent')])
+    ok('global search: a card, a file and a chat message open in their own sections')
+
+    # Enter на первой строке → история организации: задача, файл и сообщение чата на шкале, срок — встречей
+    gsearch('@jinr.ru', ['card'])
+    d.find_element(By.CSS_SELECTOR, '.global-search input').send_keys(Keys.ENTER)
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.counterparty-view') and '@jinr.ru' in d.find_element(By.CSS_SELECTOR, '.counterparty-head').get_attribute('textContent'))
+    W(d, 40).until(lambda d: {'task', 'file', 'chat'} <= set(kinds()))
+    tl = d.find_element(By.CSS_SELECTOR, '.timeline').get_attribute('textContent')
+    assert 'Договор ОИЯИ.pdf' in tl and 'УИТ — задачи' in tl and 'Срок: ОИЯИ: проект договора' in tl and 'Документы для jinr.ru готовы' in tl, tl
+    d.save_screenshot(f'{OUT}/83-counterparty-chain.png')
+    [li for li in d.find_elements(By.CSS_SELECTOR, '.timeline-item') if li.get_attribute('data-kind') == 'task'][0].find_element(By.CSS_SELECTOR, '.timeline-card').click()
+    W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.deck-chain'))
+    ok('counterparty history: the whole chain — mail, task, deadline, document, chat — on one timeline; items open in place')
+    assert 'err' not in inv('nc_search', {'term': 'x', 'domain': None, 'limit': 5})
+    assert inv('mail_by_msgid', {'msgId': '<nope@nowhere>'})['ok'] is None
     d.find_element(By.CSS_SELECTOR, '.module-rail button').click()
     wait(d, '.message-row')
 

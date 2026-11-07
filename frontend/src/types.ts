@@ -645,3 +645,30 @@ export interface LinkPreview {
   image: string | null
   site: string
 }
+
+/** Найденная карточка Deck — с доской и колонкой. */
+export interface DeckHit {
+  boardId: number
+  board: string
+  stackId: number
+  stack: string
+  card: DeckCard
+}
+
+/** Найденное в чате: сообщение (`messageId`) или беседа по названию (`messageId` = null). */
+export interface ChatHit {
+  token: string
+  room: string
+  messageId: number | null
+  author: string
+  text: string
+  timestamp: number
+}
+
+/** Общий поиск по Nextcloud. */
+export interface NcSearch {
+  files: NcFile[]
+  cards: DeckHit[]
+  chat: ChatHit[]
+  errors: string[]
+}

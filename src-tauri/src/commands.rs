@@ -504,6 +504,20 @@ pub async fn search_mail(state: State<'_, AppState>, query: String) -> Result<Ve
     tokio::task::spawn_blocking(move || st.search(&q, 300)).await.map_err(|e| AppError::Other(e.to_string()))
 }
 
+/// Письмо по Message-ID среди хранящихся на компьютере (ссылка из карточки Deck и т. п.).
+#[tauri::command]
+pub async fn mail_by_msgid(state: State<'_, AppState>, msg_id: String) -> Result<Option<imap::MessageSummary>> {
+    let ctx = state.ctx().await?;
+    let id = format!("<{}>", msg_id.trim().trim_matches(['<', '>']));
+    if id.len() < 4 {
+        return Ok(None);
+    }
+    let Some(st) = local(&ctx).await else { return Ok(None) };
+    tokio::task::spawn_blocking(move || st.select(&std::collections::HashSet::new(), |m| m.message_id.as_deref() == Some(id.as_str()), 1).into_iter().next())
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))
+}
+
 /// Поиск на сервере по всем своим папкам (без общих ящиков) — отдельным
 /// соединением, чтобы не задерживать остальную работу.
 async fn server_search(creds: &Credentials, q: &crate::search::Query) -> Result<Vec<imap::MessageSummary>> {
@@ -2247,8 +2261,12 @@ async fn rule_action(app: &AppHandle, ctx: &AccountCtx, rule: &str, a: &crate::r
             let (board, stack) = arg.split_once(':').and_then(|(b, s)| Some((b.parse::<i64>().ok()?, s.parse::<i64>().ok()?))).ok_or_else(|| AppError::Other("доска не указана".into()))?;
             let title = if m.subject.trim().is_empty() { format!("Письмо от {}", m.from_address) } else { m.subject.clone() };
             let when = m.date.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map(|d| d.with_timezone(&chrono::Local).format("%d.%m.%Y %H:%M").to_string()).unwrap_or_default();
-            let description = format!("Письмо от {} <{}>\nДата: {when}\nТема: {}\n\nСоздано правилом «{rule}» в Atom Workspace.", m.from_name, m.from_address, m.subject);
-            nc(ctx).await?.deck_create_card(board, stack, &title, &description, None).await
+            let mut description = format!("Письмо от {} <{}>\nДата: {when}\nТема: {}\n\nСоздано правилом «{rule}» в Atom Workspace.", m.from_name, m.from_address, m.subject);
+            // Связь с организацией отправителя — карточка появится в её истории.
+            if let Some(d) = crate::counterparty::domain_of(&m.from_address) {
+                description.push_str(&format!("\n\n---\n🏢 Контрагент: {d}"));
+            }
+            nc(ctx).await?.deck_create_card(board, stack, &title, &description, None).await.map(|_| ())
         }
         _ => Ok(()),
     }
@@ -2359,7 +2377,8 @@ pub async fn counterparty_timeline(app: AppHandle, state: State<'_, AppState>, d
             let mut seen = std::collections::HashSet::new();
             r.events
                 .into_iter()
-                .filter(|e| e.participants.iter().any(|p| cp::in_domain(p, &dom)))
+                // С участниками из организации или со ссылкой на неё (срок задачи: «Контрагент: домен»).
+                .filter(|e| e.participants.iter().any(|p| cp::in_domain(p, &dom)) || e.description.as_deref().is_some_and(|d| mentions_domain(d, &dom)))
                 .filter(|e| seen.insert(e.id.clone()))
                 .collect()
         }
@@ -2398,6 +2417,34 @@ pub async fn counterparty_timeline(app: AppHandle, state: State<'_, AppState>, d
         events_from: from.date_naive().to_string(),
         errors,
     })
+}
+
+/// В тексте упомянут домен целиком (не как часть другого: «niiar.ru» не найдётся в «xniiar.ru»).
+fn mentions_domain(text: &str, dom: &str) -> bool {
+    let t = text.to_lowercase();
+    // Слева допускается точка (поддомен — та же организация), справа — конец слова.
+    let edge = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '-'));
+    t.match_indices(dom).any(|(i, _)| {
+        let rest = &t[i + dom.len()..];
+        let longer = rest.starts_with('.') && rest[1..].starts_with(char::is_alphanumeric);
+        edge(t[..i].chars().next_back()) && edge(rest.chars().next()) && !longer
+    })
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::mentions_domain;
+
+    #[test]
+    fn whole_domain_only() {
+        assert!(mentions_domain("Контрагент: niiar.ru", "niiar.ru"));
+        assert!(mentions_domain("mail.NIIAR.ru, срок", "niiar.ru"));
+        assert!(mentions_domain("Контрагент: niiar.ru.", "niiar.ru"));
+        assert!(!mentions_domain("xniiar.ru", "niiar.ru"));
+        assert!(!mentions_domain("niiar.ru-test", "niiar.ru"));
+        assert!(!mentions_domain("niiar.ruble", "niiar.ru"));
+        assert!(!mentions_domain("niiar.ru.example.com", "niiar.ru"));
+    }
 }
 
 /// Досье организации: название, заметка, договорённости.
@@ -4066,9 +4113,60 @@ pub async fn deck_create_card(
     title: String,
     description: String,
     duedate: Option<String>,
-) -> Result<()> {
+) -> Result<i64> {
     let ctx = state.ctx().await?;
     nc(&ctx).await?.deck_create_card(board_id, stack_id, &title, &description, duedate.as_deref()).await
+}
+
+/// Папка документов организации в Nextcloud: «/Контрагенты/<домен>».
+pub const COUNTERPARTY_DIR: &str = "/Контрагенты";
+
+/// Общий поиск по Nextcloud: файлы (по имени), карточки Deck, беседы и сообщения чата.
+/// С `domain` — ещё и все файлы из папки организации «/Контрагенты/<домен>».
+#[tauri::command]
+pub async fn nc_search(state: State<'_, AppState>, term: String, domain: Option<String>, limit: Option<u32>) -> Result<crate::nextcloud::NcSearch> {
+    let ctx = state.ctx().await?;
+    let nc = nc(&ctx).await?;
+    let limit = limit.unwrap_or(20).clamp(1, 100) as usize;
+    let term = term.trim().trim_start_matches('@').to_string();
+    let folder = domain.as_deref().and_then(crate::counterparty::normalize).map(|d| format!("{COUNTERPARTY_DIR}/{d}"));
+    let t = Duration::from_secs(30);
+    let (files, cards, chat, tree) = tokio::join!(
+        tokio::time::timeout(t, nc.files_search(&term, limit)),
+        tokio::time::timeout(t, nc.deck_search(&term, limit)),
+        tokio::time::timeout(t, nc.chat_search(&term, limit)),
+        async {
+            match &folder {
+                Some(p) => Some(tokio::time::timeout(t, nc.files_tree(p, 3)).await),
+                None => None,
+            }
+        },
+    );
+    let mut out = crate::nextcloud::NcSearch::default();
+    let mut take = |what: &str, r: std::result::Result<Result<()>, tokio::time::error::Elapsed>| match r {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => out.errors.push(format!("{what}: {e}")),
+        Err(_) => out.errors.push(format!("{what}: сервер не ответил за 30 секунд")),
+    };
+    let mut found_files = Vec::new();
+    let mut found_cards = Vec::new();
+    let mut found_chat = Vec::new();
+    take("Файлы", files.map(|r| r.map(|v| found_files = v)));
+    take("Задачи", cards.map(|r| r.map(|v| found_cards = v)));
+    take("Чат", chat.map(|r| r.map(|v| found_chat = v)));
+    if let Some(tree) = tree {
+        let mut in_folder = Vec::new();
+        take("Папка организации", tree.map(|r| r.map(|v| in_folder = v)));
+        for f in in_folder {
+            if !found_files.iter().any(|x: &crate::nextcloud::NcFile| x.path == f.path) {
+                found_files.push(f);
+            }
+        }
+    }
+    out.files = found_files;
+    out.cards = found_cards;
+    out.chat = found_chat;
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5478,6 +5576,8 @@ macro_rules! app_commands {
             crate::commands::talk_favorite,
             crate::commands::talk_participants,
             crate::commands::talk_search,
+            crate::commands::nc_search,
+            crate::commands::mail_by_msgid,
             crate::commands::talk_manage,
             crate::commands::talk_edit,
             crate::commands::talk_delete,

@@ -12,6 +12,8 @@ interface Props {
   onWrite: (address: string) => void
   onLoaded: (contacts: Contact[]) => void
   onNotice: (text: string) => void
+  /** Переход из общего поиска: показать этот контакт. */
+  focus?: { contact: Contact; n: number } | null
 }
 
 function initials(name: string) {
@@ -21,7 +23,11 @@ function initials(name: string) {
 
 const CONTACTS_PAGE = 200
 
-export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
+
+/** Последний выполненный переход из общего поиска. */
+let contactFocusSeen = 0
+
+export default function ContactsView({ onWrite, onLoaded, onNotice, focus }: Props) {
   const [data, setData] = useState<ContactsResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -50,6 +56,17 @@ export default function ContactsView({ onWrite, onLoaded, onNotice }: Props) {
     }, TYPING_PAUSE_MS)
     return () => { cancelled = true; clearTimeout(t) }
   }, [query])
+
+  useEffect(() => {
+    // Каждый переход — один раз: при повторном открытии раздела он не повторяется.
+    if (!focus || focus.n <= contactFocusSeen) return
+    contactFocusSeen = focus.n
+    const c = focus.contact
+    setBook('')
+    setRemote((r) => (r.some((x) => x.href === c.href) ? r : [c, ...r]))
+    setQuery(c.emails[0] ?? c.fullName)
+    setSelectedId(c.id)
+  }, [focus])
 
   const all = useMemo(() => {
     const local = data?.contacts ?? []

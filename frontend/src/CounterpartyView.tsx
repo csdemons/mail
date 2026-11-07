@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Building2, CalendarDays, Check, CloudDownload, FileText, Handshake, Inbox, Loader2, Mail, Paperclip, Pencil, Plus, RefreshCw, Search, Send, SquarePen, Trash2, Users, X } from 'lucide-react'
+import { Building2, CalendarDays, Check, Cloud, CloudDownload, FileText, Handshake, Inbox, Loader2, Mail, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Send, SquareKanban, SquarePen, Trash2, Users, X } from 'lucide-react'
 
 import { api, errorText } from './api'
-import type { Agreement, CalEvent, Counterparty, CounterpartyTimeline, Dossier, MessageSummary } from './types'
+import type { Agreement, CalEvent, ChatHit, Counterparty, CounterpartyTimeline, DeckHit, Dossier, MessageSummary, NcFile, NcSearch } from './types'
+import type { Found } from './GlobalSearch'
 import Splitter from './Splitter'
 
 interface Props {
@@ -11,21 +12,33 @@ interface Props {
   onDomain: (domain: string | null) => void
   onCompose: (to: string) => void
   onNotice: (text: string) => void
+  /** Открыть найденное в своём разделе (файл, задачу, беседу, встречу). */
+  onOpen?: (f: Found) => void
+  /** Nextcloud подключён — в историю попадают файлы, задачи Deck и чат. */
+  ncConnected?: boolean
+  /** Создать задачу из письма. */
+  onTask?: (m: MessageSummary) => void
 }
 
-type Kind = 'all' | 'mail' | 'event' | 'document' | 'agreement'
+type Kind = 'all' | 'mail' | 'event' | 'document' | 'file' | 'task' | 'chat' | 'agreement'
 
 type Item =
   | { kind: 'mail'; key: string; date: Date; m: MessageSummary; incoming: boolean }
   | { kind: 'event'; key: string; date: Date; e: CalEvent }
   | { kind: 'document'; key: string; date: Date; m: MessageSummary; name: string; incoming: boolean }
   | { kind: 'agreement'; key: string; date: Date; a: Agreement }
+  | { kind: 'file'; key: string; date: Date; f: NcFile }
+  | { kind: 'task'; key: string; date: Date; h: DeckHit }
+  | { kind: 'chat'; key: string; date: Date; h: ChatHit }
 
 const KINDS: { id: Kind; label: string }[] = [
   { id: 'all', label: 'Всё' },
   { id: 'mail', label: 'Письма' },
   { id: 'event', label: 'Встречи' },
-  { id: 'document', label: 'Документы' },
+  { id: 'document', label: 'Вложения' },
+  { id: 'file', label: 'Файлы' },
+  { id: 'task', label: 'Задачи' },
+  { id: 'chat', label: 'Чат' },
   { id: 'agreement', label: 'Договорённости' },
 ]
 
@@ -49,8 +62,8 @@ function eventDate(e: CalEvent): Date {
   return e.allDay ? dayDate(e.start) : new Date(e.start)
 }
 
-/** Хронология: письма, их вложения, встречи и договорённости — новые сверху. */
-export function buildTimeline(t: CounterpartyTimeline): Item[] {
+/** Хронология: письма, их вложения, встречи, договорённости, файлы, задачи и чат — новые сверху. */
+export function buildTimeline(t: CounterpartyTimeline, nc: NcSearch | null = null): Item[] {
   const out: Item[] = []
   for (const m of t.messages) {
     const date = m.date ? new Date(m.date) : new Date(0)
@@ -63,11 +76,32 @@ export function buildTimeline(t: CounterpartyTimeline): Item[] {
   }
   for (const e of t.events) out.push({ kind: 'event', key: `e:${e.id}`, date: eventDate(e), e })
   for (const a of t.dossier.agreements ?? []) out.push({ kind: 'agreement', key: `a:${a.id}`, date: dayDate(a.date), a })
+  for (const f of nc?.files ?? []) {
+    if (f.isDir) continue
+    const d = new Date(f.modified)
+    out.push({ kind: 'file', key: `f:${f.path}`, date: Number.isNaN(d.getTime()) ? new Date(0) : d, f })
+  }
+  for (const h of nc?.cards ?? []) out.push({ kind: 'task', key: `k:${h.card.id}`, date: new Date((h.card.createdAt || h.card.lastModified) * 1000), h })
+  for (const h of nc?.chat ?? []) {
+    if (h.messageId !== null) out.push({ kind: 'chat', key: `t:${h.token}:${h.messageId}`, date: new Date(h.timestamp * 1000), h })
+  }
   out.sort((x, y) => y.date.getTime() - x.date.getTime())
   return out
 }
 
-export default function CounterpartyView({ domain, onDomain, onCompose, onNotice }: Props) {
+/** Объединить результаты нескольких поисков Nextcloud без повторов. */
+function mergeNc(list: NcSearch[]): NcSearch {
+  const out: NcSearch = { files: [], cards: [], chat: [], errors: [] }
+  for (const r of list) {
+    for (const f of r.files) if (!out.files.some((x) => x.path === f.path)) out.files.push(f)
+    for (const h of r.cards) if (!out.cards.some((x) => x.card.id === h.card.id)) out.cards.push(h)
+    for (const h of r.chat) if (!out.chat.some((x) => x.token === h.token && x.messageId === h.messageId)) out.chat.push(h)
+    for (const e of r.errors) if (!out.errors.includes(e)) out.errors.push(e)
+  }
+  return out
+}
+
+export default function CounterpartyView({ domain, onDomain, onCompose, onNotice, onOpen, ncConnected = false, onTask }: Props) {
   const [list, setList] = useState<Counterparty[] | null>(null)
   const [listError, setListError] = useState('')
   const [filter, setFilter] = useState('')
@@ -126,10 +160,29 @@ export default function CounterpartyView({ domain, onDomain, onCompose, onNotice
     }
   }
 
-  const items = useMemo(() => (data ? buildTimeline(data) : []), [data])
+  // Файлы, задачи Deck и чат — общим поиском Nextcloud: по домену, по названию организации
+  // и всё из её папки «/Контрагенты/<домен>».
+  const [nc, setNc] = useState<NcSearch | null>(null)
+  const [ncBusy, setNcBusy] = useState(false)
+  const loadedDomain = data?.domain
+  const dossierName = data?.dossier.name ?? null
+  useEffect(() => {
+    setNc(null)
+    if (!loadedDomain || !ncConnected) return
+    let off = false
+    setNcBusy(true)
+    const name = dossierName?.trim()
+    Promise.all([api.ncSearch(loadedDomain, loadedDomain, 100), ...(name && name.length >= 3 ? [api.ncSearch(name, null, 100)] : [])])
+      .then((list) => { if (!off) setNc(mergeNc(list)) })
+      .catch((e) => { if (!off) setNc({ files: [], cards: [], chat: [], errors: [`Nextcloud: ${errorText(e)}`] }) })
+      .finally(() => { if (!off) setNcBusy(false) })
+    return () => { off = true }
+  }, [loadedDomain, dossierName, ncConnected])
+
+  const items = useMemo(() => (data ? buildTimeline(data, nc) : []), [data, nc])
   const shown = useMemo(() => items.filter((i) => kind === 'all' || i.kind === kind), [items, kind])
   const counts = useMemo(() => {
-    const c: Record<Kind, number> = { all: items.length, mail: 0, event: 0, document: 0, agreement: 0 }
+    const c: Record<Kind, number> = { all: items.length, mail: 0, event: 0, document: 0, file: 0, task: 0, chat: 0, agreement: 0 }
     for (const i of items) c[i.kind] += 1
     return c
   }, [items])
@@ -228,7 +281,7 @@ export default function CounterpartyView({ domain, onDomain, onCompose, onNotice
       {!domain && <div className="empty-state counterparty-empty">
         <Handshake size={34} />
         <b>История взаимодействия с организацией</b>
-        <span className="muted">Выберите организацию слева — письма, вложения, встречи и договорённости с ней соберутся на одной временной шкале. Организация определяется по домену адреса.</span>
+        <span className="muted">Выберите организацию слева — письма, вложения, встречи, договорённости, а с Nextcloud ещё файлы, задачи и чат соберутся на одной временной шкале. Организация определяется по домену адреса.</span>
       </div>}
       {domain && <>
         <header className="counterparty-head">
@@ -262,13 +315,16 @@ export default function CounterpartyView({ domain, onDomain, onCompose, onNotice
           <span><Inbox size={14} /> {data.messages.filter((m) => inDomain(m.fromAddress, data.domain)).length} от них</span>
           <span><Send size={14} /> {data.messages.filter((m) => !inDomain(m.fromAddress, data.domain)).length} им</span>
           <span><CalendarDays size={14} /> {data.events.length} {plural(data.events.length, 'встреча', 'встречи', 'встреч')}</span>
-          <span><Paperclip size={14} /> {counts.document} {plural(counts.document, 'документ', 'документа', 'документов')}</span>
+          <span><Paperclip size={14} /> {counts.document} {plural(counts.document, 'вложение', 'вложения', 'вложений')}</span>
+          {ncConnected && <span><Cloud size={14} /> {ncBusy ? <Loader2 className="spin" size={12} /> : counts.file} {plural(counts.file, 'файл', 'файла', 'файлов')}</span>}
+          {ncConnected && <span><SquareKanban size={14} /> {ncBusy ? <Loader2 className="spin" size={12} /> : counts.task} {plural(counts.task, 'задача', 'задачи', 'задач')}</span>}
           <span><Handshake size={14} /> {openAgreements.length} открытых</span>
           {firstDate && firstDate.getTime() > 0 && <span className="muted">с {fmtDay(firstDate)}</span>}
           {lastMail && <span className="muted">последнее письмо {fmtDay(lastMail)}</span>}
         </div>}
         {error && <div className="inline-warning">{error}</div>}
         {data && data.errors.map((e) => <div key={e} className="inline-warning">{e}</div>)}
+        {nc && nc.errors.map((e) => <div key={e} className="inline-warning">{e}</div>)}
         {data && !data.server && <div className="counterparty-hint muted">Письма — из хранящихся на компьютере. Более старые найдутся кнопкой «Искать и на сервере».</div>}
 
         <div className="counterparty-body">
@@ -291,6 +347,19 @@ export default function CounterpartyView({ domain, onDomain, onCompose, onNotice
                       <small className="muted">{i.incoming ? `От: ${i.m.fromName || i.m.fromAddress}` : `Кому: ${i.m.to.filter((a) => inDomain(a, data!.domain)).join(', ') || i.m.to.join(', ')}`}{i.m.hasAttachments ? ' · есть вложения' : ''}</small>
                     </button>}
                     {i.kind === 'mail' && <button className="icon-button timeline-extra" title="Договорённость из этого письма" aria-label="Договорённость из письма" onClick={() => setForm(agreementFrom(i.m))}><Handshake size={14} /></button>}
+                    {i.kind === 'mail' && onTask && <button className="icon-button timeline-extra" title="Задача из этого письма" aria-label="Задача из письма" onClick={() => onTask(i.m)}><SquareKanban size={14} /></button>}
+                    {i.kind === 'file' && <button className="timeline-card" onClick={() => onOpen?.({ kind: 'file', f: i.f })} title="Показать в «Файлах»">
+                      <span className="timeline-line"><b>{i.f.name}</b><time>{i.date.getTime() > 0 ? fmtDay(i.date) : ''}</time></span>
+                      <small className="muted">Nextcloud · {i.f.path.replace(/\/[^/]*$/, '') || '/'}</small>
+                    </button>}
+                    {i.kind === 'task' && <button className={`timeline-card ${i.h.card.done ? 'done' : ''}`} onClick={() => onOpen?.({ kind: 'card', h: i.h })} title="Открыть задачу в Deck">
+                      <span className="timeline-line"><b>{i.h.card.title}</b><time>{fmtDay(i.date)}</time></span>
+                      <small className="muted">{i.h.board} › {i.h.stack}{i.h.card.done ? ' · выполнена' : i.h.card.duedate ? ` · срок ${fmtDay(new Date(i.h.card.duedate))}` : ''}</small>
+                    </button>}
+                    {i.kind === 'chat' && <button className="timeline-card" onClick={() => onOpen?.({ kind: 'chat', h: i.h })} title="Открыть сообщение в чате">
+                      <span className="timeline-line"><b>{i.h.author}: {i.h.text.length > 140 ? `${i.h.text.slice(0, 140)}…` : i.h.text}</b><time>{fmtDay(i.date)} {fmtTime(i.date)}</time></span>
+                      <small className="muted">чат «{i.h.room}»</small>
+                    </button>}
                     {i.kind === 'document' && <button className="timeline-card" onClick={() => openMessage(i.m)} title="Открыть письмо с документом">
                       <span className="timeline-line"><b>{i.name}</b><time>{fmtDay(i.date)}</time></span>
                       <small className="muted">{i.incoming ? 'получен' : 'отправлен'} в письме «{i.m.subject || '(без темы)'}»</small>
@@ -302,6 +371,7 @@ export default function CounterpartyView({ domain, onDomain, onCompose, onNotice
                         {i.e.organizer && <div>Организатор: {i.e.organizer}</div>}
                         {(i.e.participants ?? []).length > 0 && <div>Участники: {(i.e.participants ?? []).join(', ')}</div>}
                         {i.e.description && <div className="timeline-description">{i.e.description}</div>}
+                        {onOpen && <button className="text-button" onClick={(ev) => { ev.stopPropagation(); onOpen({ kind: 'event', e: i.e }) }}>Открыть в календаре</button>}
                       </div>}
                     </div>}
                     {i.kind === 'agreement' && <div className={`timeline-card agreement-card ${i.a.done ? 'done' : ''} ${overdue(i.a) ? 'overdue' : ''}`}>
@@ -399,6 +469,9 @@ function icon(i: Item) {
     case 'document': return <Paperclip size={14} />
     case 'event': return <CalendarDays size={14} />
     case 'agreement': return <Handshake size={14} />
+    case 'file': return <Cloud size={14} />
+    case 'task': return <SquareKanban size={14} />
+    case 'chat': return <MessageCircle size={14} />
   }
 }
 

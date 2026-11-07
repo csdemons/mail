@@ -447,7 +447,7 @@ class H(BaseHTTPRequestHandler):
                             return self.send(400, {'message': f'{f} missing'})
                     c = {'id': next(ids), 'stackId': stack, 'title': b['title'], 'description': b.get('description', ''),
                          'type': b['type'], 'order': b['order'], 'duedate': b.get('duedate'), 'done': None, 'archived': False,
-                         'owner': {'uid': UID, 'displayname': 'Тестовый'}, 'labels': [], 'assignedUsers': None, 'commentsUnread': 0}
+                         'owner': {'uid': UID, 'displayname': 'Тестовый'}, 'labels': [], 'assignedUsers': None, 'commentsUnread': 0, 'createdAt': int(time.time()), 'lastModified': int(time.time())}
                     state['cards'].append(c)
                     return self.send(200, c)
                 card = next((c for c in state['cards'] if c['id'] == int(parts[4])), None) if len(parts) >= 5 else None
@@ -488,6 +488,21 @@ class H(BaseHTTPRequestHandler):
                     state['cards'].remove(card)
                     return self.send(200, card)
 
+        # --- Поиск файлов по имени (WebDAV SEARCH, как в Nextcloud)
+        if method == 'SEARCH' and p.rstrip('/') == '/remote.php/dav':
+            import re as _re
+            body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
+            state.setdefault('dav_search', []).append(body)
+            m = _re.search(r'<d:literal>%(.*?)%</d:literal>', body)
+            term = (m.group(1) if m else '').replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').lower()
+            limit = int((_re.search(r'<d:nresults>(\d+)</d:nresults>', body) or [0, 50])[1])
+            hits = [(f, False) for f in state['files'] if term in f.rsplit('/', 1)[-1].lower()]
+            hits += [(d_, True) for d_ in state['dirs'] if d_ != '/' and term in d_.rsplit('/', 1)[-1].lower()]
+            prefix = f'/remote.php/dav/files/{UID}/'
+            out = ('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">' + ''.join(self.dav_entry(x, isd, prefix) for x, isd in hits[:limit]) + '</d:multistatus>').encode()
+            self.send_response(207); self.send_header('Content-Type', 'application/xml; charset=utf-8')
+            self.send_header('Content-Length', str(len(out))); self.end_headers(); self.wfile.write(out)
+            return
         # --- Файлы (WebDAV) и публикация в беседу
         F = f'/remote.php/dav/files/{UID}/'
         if p.startswith(F):
@@ -602,6 +617,15 @@ class H(BaseHTTPRequestHandler):
                 return self.send(404, {})
             r['favorite'] = method == 'POST'
             return self.ocs({})
+        if method == 'GET' and p == '/ocs/v2.php/search/providers/talk-message/search':
+            # Общий поиск Nextcloud по сообщениям всех бесед.
+            term = q.get('term', '').lower()
+            hits = [(tok, m) for tok, msgs in state['messages'].items() for m in msgs if m.get('systemMessage', '') == '' and term in m['message'].lower()]
+            hits.sort(key=lambda x: -x[1]['timestamp'])
+            return self.ocs({'name': 'Сообщения', 'isPaginated': False, 'cursor': None, 'entries': [
+                {'title': m['actorDisplayName'], 'subline': m['message'], 'resourceUrl': f"/call/{tok}#message_{m['id']}",
+                 'attributes': {'conversation': tok, 'messageId': str(m['id']), 'actorType': 'users', 'actorId': m['actorId'], 'timestamp': str(m['timestamp'])}}
+                for tok, m in hits[:int(q.get('limit', 20))]]})
         if method == 'GET' and p == '/ocs/v2.php/search/providers/talk-message-current/search':
             # Общий поиск Nextcloud по сообщениям текущей беседы (from=/call/<token>).
             token = q.get('from', '').rsplit('/', 1)[-1]
@@ -817,7 +841,22 @@ class H(BaseHTTPRequestHandler):
     def do_DELETE(self): self.route('DELETE')
     def do_MKCOL(self): self.route('MKCOL')
     def do_PROPFIND(self): self.route('PROPFIND')
+    def do_SEARCH(self): self.route('SEARCH')
     def do_MOVE(self): self.route('MOVE')
+
+    def dav_entry(self, pth, is_dir, prefix):
+        from urllib.parse import quote
+        href = prefix.rstrip('/') + quote(pth) + ('/' if is_dir and pth != '/' else '')
+        fid = state['dir_ids'].setdefault(pth, next(ids)) if is_dir else state['files'][pth]['id']
+        shared = any(x['path'] == pth for x in state['shares'])
+        props = f'<oc:fileid>{fid}</oc:fileid><oc:permissions>RGDNVCK</oc:permissions><d:getlastmodified>Tue, 27 Oct 2026 10:00:00 GMT</d:getlastmodified>'
+        props += '<oc:share-types>' + ('<oc:share-type>3</oc:share-type>' if shared else '') + '</oc:share-types>'
+        if is_dir:
+            size = sum(len(v['data']) for k, v in state['files'].items() if k.startswith(pth.rstrip('/') + '/'))
+            props += f'<d:resourcetype><d:collection/></d:resourcetype><oc:size>{size}</oc:size>'
+        else:
+            props += f'<d:resourcetype/><d:getcontentlength>{len(state["files"][pth]["data"])}</d:getcontentlength><d:getcontenttype>text/plain</d:getcontenttype>'
+        return f'<d:response><d:href>{href}</d:href><d:propstat><d:prop>{props}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
 
     def propfind(self, path, prefix):
         from urllib.parse import quote
@@ -826,17 +865,7 @@ class H(BaseHTTPRequestHandler):
         if path not in state['dirs'] and path not in state['files']:
             return self.send(404)
         def entry(pth, is_dir):
-            href = prefix.rstrip('/') + quote(pth) + ('/' if is_dir and pth != '/' else '')
-            fid = state['dir_ids'].setdefault(pth, next(ids)) if is_dir else state['files'][pth]['id']
-            shared = any(x['path'] == pth for x in state['shares'])
-            props = f'<oc:fileid>{fid}</oc:fileid><oc:permissions>RGDNVCK</oc:permissions><d:getlastmodified>Tue, 27 Oct 2026 10:00:00 GMT</d:getlastmodified>'
-            props += '<oc:share-types>' + ('<oc:share-type>3</oc:share-type>' if shared else '') + '</oc:share-types>'
-            if is_dir:
-                size = sum(len(v['data']) for k, v in state['files'].items() if k.startswith(pth.rstrip('/') + '/'))
-                props += f'<d:resourcetype><d:collection/></d:resourcetype><oc:size>{size}</oc:size>'
-            else:
-                props += f'<d:resourcetype/><d:getcontentlength>{len(state["files"][pth]["data"])}</d:getcontentlength><d:getcontenttype>text/plain</d:getcontenttype>'
-            return f'<d:response><d:href>{href}</d:href><d:propstat><d:prop>{props}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+            return self.dav_entry(pth, is_dir, prefix)
         items = [entry(path, path in state['dirs'])]
         if path in state['dirs'] and self.headers.get('Depth') == '1':
             base_ = path.rstrip('/') + '/'

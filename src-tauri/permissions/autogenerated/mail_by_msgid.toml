@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mail-by-msgid"
+description = "Enables the mail_by_msgid command without any pre-configured scope."
+commands.allow = ["mail_by_msgid"]
+
+[[permission]]
+identifier = "deny-mail-by-msgid"
+description = "Denies the mail_by_msgid command without any pre-configured scope."
+commands.deny = ["mail_by_msgid"]

@@ -478,13 +478,13 @@ impl Nc {
         Ok(stacks)
     }
 
-    pub async fn deck_create_card(&self, board: i64, stack: i64, title: &str, description: &str, duedate: Option<&str>) -> Result<()> {
+    pub async fn deck_create_card(&self, board: i64, stack: i64, title: &str, description: &str, duedate: Option<&str>) -> Result<i64> {
         let title = title.trim();
         if title.is_empty() { return Err(AppError::Other("Укажите название карточки".into())); }
         let mut body = json!({ "title": title.chars().take(255).collect::<String>(), "type": "plain", "order": 999, "description": description });
         if let Some(d) = duedate { body["duedate"] = json!(d); }
-        self.call(Method::POST, &format!("{DECK}boards/{board}/stacks/{stack}/cards"), &[], Some(body), "Новая карточка").await?;
-        Ok(())
+        let (_, _, v) = self.call(Method::POST, &format!("{DECK}boards/{board}/stacks/{stack}/cards"), &[], Some(body), "Новая карточка").await?;
+        Ok(int(&v["id"]))
     }
 
     /// PUT карточки требует все поля — берём текущую версию и меняем нужное.
@@ -696,6 +696,57 @@ pub struct TalkRoom {
     pub can_delete: bool,
     /// Исчезающие сообщения: через сколько секунд удаляются; 0 — выключено.
     pub message_expiration: i64,
+}
+
+/// Найденная карточка Deck — с доской и колонкой, чтобы открыть её на месте.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeckHit {
+    pub board_id: i64,
+    pub board: String,
+    pub stack_id: i64,
+    pub stack: String,
+    pub card: DeckCard,
+}
+
+/// Найденное в чате: сообщение (`message_id`) или сама беседа по названию (без него).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatHit {
+    pub token: String,
+    pub room: String,
+    pub message_id: Option<i64>,
+    pub author: String,
+    pub text: String,
+    pub timestamp: i64,
+}
+
+/// Общий поиск по Nextcloud: файлы, карточки Deck, чат. Источник, который не
+/// ответил, не мешает остальным — его ошибка в `errors`.
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NcSearch {
+    pub files: Vec<NcFile>,
+    pub cards: Vec<DeckHit>,
+    pub chat: Vec<ChatHit>,
+    pub errors: Vec<String>,
+}
+
+/// Совпадение без учёта регистра и «ё».
+pub fn fold(s: &str) -> String {
+    s.to_lowercase().replace('ё', "е")
+}
+
+/// Запрос WebDAV SEARCH: файлы, в имени которых есть `term`, новые сверху.
+fn dav_search_body(user: &str, term: &str, limit: usize) -> String {
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    // В LIKE «%» и «_» — подстановочные; экранировать их DAV не умеет, поэтому убираем.
+    let t: String = term.chars().filter(|c| *c != '%' && *c != '_').collect();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns"><d:basicsearch><d:select><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/><d:getcontenttype/><oc:fileid/><oc:size/><oc:favorite/><oc:share-types/><oc:permissions/></d:prop></d:select><d:from><d:scope><d:href>/files/{}</d:href><d:depth>infinity</d:depth></d:scope></d:from><d:where><d:like><d:prop><d:displayname/></d:prop><d:literal>%{}%</d:literal></d:like></d:where><d:orderby><d:order><d:prop><d:getlastmodified/></d:prop><d:descending/></d:order></d:orderby><d:limit><d:nresults>{limit}</d:nresults></d:limit></d:basicsearch></d:searchrequest>"#,
+        esc(user),
+        esc(&t)
+    )
 }
 
 /// Найденное сообщение беседы (поиск Nextcloud по сообщениям Talk).
@@ -1112,6 +1163,102 @@ impl Nc {
             })
         }).collect()).unwrap_or_default();
         Ok(hits)
+    }
+
+    // --- Общий поиск ---
+
+    /// Файлы по имени (WebDAV SEARCH по всему хранилищу), новые сверху.
+    pub async fn files_search(&self, term: &str, limit: usize) -> Result<Vec<NcFile>> {
+        let term = term.trim();
+        if term.chars().count() < 2 { return Ok(Vec::new()); }
+        let url = self.creds.base.join("remote.php/dav/").map_err(|e| AppError::Other(e.to_string()))?;
+        let resp = self
+            .dav(Method::from_bytes(b"SEARCH").expect("SEARCH"), url)
+            .header("Content-Type", "text/xml; charset=utf-8")
+            .body(dav_search_body(&self.me, term, limit))
+            .send()
+            .await
+            .map_err(net_error)?;
+        if resp.status().as_u16() != 207 {
+            return Err(status_error(resp.status(), "Поиск файлов"));
+        }
+        let xml = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
+        let root = self.files_root_path()?;
+        let decoded_root = percent_encoding::percent_decode_str(&root).decode_utf8_lossy().to_string();
+        let mut list = parse_file_list(&xml, &decoded_root)?;
+        list.retain(|f| f.path != "/");
+        list.truncate(limit);
+        Ok(list)
+    }
+
+    /// Все файлы папки и её подпапок (до `depth` уровней); нет папки — пусто.
+    pub async fn files_tree(&self, path: &str, depth: u32) -> Result<Vec<NcFile>> {
+        let mut out = Vec::new();
+        let mut level = vec![clean_path(path)?];
+        for _ in 0..depth.max(1) {
+            let mut next = Vec::new();
+            for dir in level {
+                let list = match self.files_list(&dir).await {
+                    Ok(l) => l,
+                    Err(AppError::Other(e)) if e.contains("404") || e.contains("не найден") => continue,
+                    Err(e) => return Err(e),
+                };
+                for f in list {
+                    if f.is_dir { next.push(f.path.clone()) } else { out.push(f) }
+                }
+            }
+            level = next;
+            if level.is_empty() { break }
+        }
+        Ok(out)
+    }
+
+    /// Карточки Deck, в названии или описании которых есть `term` (все доски, кроме архивных).
+    pub async fn deck_search(&self, term: &str, limit: usize) -> Result<Vec<DeckHit>> {
+        let t = fold(term.trim());
+        if t.chars().count() < 2 { return Ok(Vec::new()); }
+        let boards: Vec<DeckBoard> = self.deck_boards().await?.into_iter().filter(|b| !b.archived).collect();
+        let stacks = futures::future::join_all(boards.iter().map(|b| self.deck_stacks(b.id))).await;
+        let mut out = Vec::new();
+        for (b, st) in boards.iter().zip(stacks) {
+            let Ok(st) = st else { continue };
+            for s in st {
+                for c in s.cards {
+                    if fold(&c.title).contains(&t) || fold(&c.description).contains(&t) {
+                        out.push(DeckHit { board_id: b.id, board: b.title.clone(), stack_id: s.id, stack: s.title.clone(), card: c });
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|h| std::cmp::Reverse(h.card.last_modified.max(h.card.created_at)));
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    /// Чат: беседы по названию и сообщения во всех беседах (поиск Nextcloud), новые сверху.
+    pub async fn chat_search(&self, term: &str, limit: usize) -> Result<Vec<ChatHit>> {
+        let term = term.trim();
+        if term.chars().count() < 2 { return Ok(Vec::new()); }
+        let rooms = self.talk_rooms().await?;
+        let t = fold(term);
+        let mut out: Vec<ChatHit> = rooms
+            .iter()
+            .filter(|r| fold(&r.name).contains(&t))
+            .map(|r| ChatHit { token: r.token.clone(), room: r.name.clone(), message_id: None, author: String::new(), text: "Беседа".into(), timestamp: 0 })
+            .collect();
+        let q = [("term", term.to_string()), ("limit", limit.to_string())];
+        let (_, _, d) = self.ocs(Method::GET, "ocs/v2.php/search/providers/talk-message/search", &q, None, "Поиск в чате").await?;
+        for e in d["entries"].as_array().into_iter().flatten() {
+            let a = &e["attributes"];
+            let num = |v: &Value| v.as_str().and_then(|x| x.parse().ok()).or_else(|| v.as_i64());
+            let token = text(&a["conversation"]);
+            if token.is_empty() { continue }
+            let room = rooms.iter().find(|r| r.token == token).map(|r| r.name.clone()).unwrap_or_default();
+            out.push(ChatHit { token, room, message_id: num(&a["messageId"]), author: text(&e["title"]), text: text(&e["subline"]), timestamp: num(&a["timestamp"]).unwrap_or(0) });
+        }
+        out.sort_by_key(|h| std::cmp::Reverse(h.timestamp));
+        out.truncate(limit);
+        Ok(out)
     }
 
     // --- Опросы ---

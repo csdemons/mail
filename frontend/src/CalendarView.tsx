@@ -78,7 +78,11 @@ function layoutDay(events: CalEvent[], day: Date): Placed[] {
   return placed
 }
 
-export default function CalendarView({ onNotice }: { onNotice: (text: string) => void }) {
+
+/** Последний выполненный переход из общего поиска. */
+let eventFocusSeen = 0
+
+export default function CalendarView({ onNotice, focus }: { onNotice: (text: string) => void; focus?: { e: CalEvent; n: number } | null }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()))
   const [data, setData] = useState<EventsResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -88,6 +92,15 @@ export default function CalendarView({ onNotice }: { onNotice: (text: string) =>
   const [now, setNow] = useState(new Date())
   const [editor, setEditor] = useState<EditorTarget | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  // Переход из общего поиска или истории организации: неделя встречи и сама встреча.
+  useEffect(() => {
+    // Каждый переход — один раз: при повторном открытии раздела он не повторяется.
+    if (!focus || focus.n <= eventFocusSeen) return
+    eventFocusSeen = focus.n
+    const d = focus.e.allDay ? new Date(`${focus.e.start}T12:00:00`) : new Date(focus.e.start)
+    if (!Number.isNaN(d.getTime())) setWeekStart(startOfWeek(d))
+    setSelected(focus.e)
+  }, [focus])
   const gridRef = useRef<HTMLDivElement>(null)
   const request = useRef(0)
 

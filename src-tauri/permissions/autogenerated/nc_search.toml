@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-search"
+description = "Enables the nc_search command without any pre-configured scope."
+commands.allow = ["nc_search"]
+
+[[permission]]
+identifier = "deny-nc-search"
+description = "Denies the nc_search command without any pre-configured scope."
+commands.deny = ["nc_search"]

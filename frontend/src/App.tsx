@@ -3,7 +3,7 @@ import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, Layers, LogOut, Mail, Bookmark, BookmarkPlus, Zap,
   MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
-  Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen, Handshake, CloudOff,
+  Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, SquareKanban, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen, Handshake, CloudOff,
 } from 'lucide-react'
 
 import {
@@ -19,13 +19,15 @@ import DeckView from './DeckView'
 import TalkView from './TalkView'
 import NcConnect from './NcConnect'
 import FilesView from './FilesView'
-import type { NcStatus } from './types'
+import type { CalEvent, NcStatus } from './types'
 import ContactsView from './ContactsView'
 import CounterpartyView from './CounterpartyView'
 import { OfflineBanner, QueuePanel, useConnection } from './OfflineQueue'
 import CalendarView from './CalendarView'
 import MailFilters from './MailFilters'
 import ContextMenu from './ContextMenu'
+import GlobalSearch, { type Found } from './GlobalSearch'
+import TaskFromMail from './TaskFromMail'
 import type { MenuItem } from './ContextMenu'
 import { AttachmentList } from './AttachmentViewer'
 import MessageBody from './MessageBody'
@@ -140,6 +142,11 @@ interface Props {
   /** Письмо, которое открыть сразу (выбрано в «Все входящие» другой учётной записи). */
   initialOpen?: MessageSummary | null
 }
+
+
+/** Номер перехода к найденному: растёт всё время работы окна, разделы открывают каждый переход один раз. */
+let focusSeq = 0
+const nextFocus = () => ++focusSeq
 
 export default function App({ account, initialNotice, onLogout, onLock, onSwitch, initialOpen }: Props) {
   // Контекст этой учётной записи с прошлого раза (переключение туда и обратно).
@@ -280,6 +287,14 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const [cpDomain, setCpDomain] = useState<string | null>(null)
   const openHistory = useCallback((domain: string) => { setCpDomain(domain); setModule('counterparty') }, [])
   const [ncStatus, setNcStatus] = useState<NcStatus | null>(null)
+  /** Общий поиск (Ctrl+K), задача из письма и переходы к найденному в других разделах. */
+  const [globalOpen, setGlobalOpen] = useState(false)
+  const [taskFor, setTaskFor] = useState<MessageSummary | null>(null)
+  const [deckFocus, setDeckFocus] = useState<{ boardId: number; cardId: number; n: number } | null>(null)
+  const [talkFocus, setTalkFocus] = useState<{ token: string; messageId: number | null; n: number } | null>(null)
+  const [filesFocus, setFilesFocus] = useState<{ path: string; isDir: boolean; n: number } | null>(null)
+  const [contactFocus, setContactFocus] = useState<{ contact: Contact; n: number } | null>(null)
+  const [eventFocus, setEventFocus] = useState<{ e: CalEvent; n: number } | null>(null)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [signature, setSignature] = useState('')
@@ -618,7 +633,11 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setGlobalOpen(true)
+      } else if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'k') {
+        // Ctrl+Shift+K — поиск в почте, как раньше по Ctrl+K.
         event.preventDefault()
         searchRef.current?.focus()
       }
@@ -690,6 +709,33 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     scrollRestored.current = true
     if (saved && saved.folderId === folderId && saved.scrollTop > 0 && listRef.current) listRef.current.scrollTop = saved.scrollTop
   }, [loading, messages.length, unified, folderId, saved])
+
+  /** Открыть найденное (общий поиск, история организации) в его разделе. */
+  function openFound(f: Found) {
+    const n = nextFocus()
+    switch (f.kind) {
+      case 'mail':
+        setModule('mail')
+        clearSearch()
+        setUnified(null)
+        setFolderId(f.m.folder)
+        void openMessage(f.m)
+        break
+      case 'file': setFilesFocus({ path: f.f.path, isDir: f.f.isDir, n }); setModule('files'); break
+      case 'contact': setContactFocus({ contact: f.c, n }); setModule('contacts'); break
+      case 'event': setEventFocus({ e: f.e, n }); setModule('calendar'); break
+      case 'card': setDeckFocus({ boardId: f.h.boardId, cardId: f.h.card.id, n }); setModule('deck'); break
+      case 'chat': setTalkFocus({ token: f.h.token, messageId: f.h.messageId, n }); setModule('chat'); break
+      case 'org': openHistory(f.domain); break
+    }
+  }
+
+  /** Письмо по Message-ID (ссылка из карточки Deck). */
+  async function openMailById(msgId: string) {
+    const m = await api.mailByMsgid(msgId).catch(() => null)
+    if (m) openFound({ kind: 'mail', m })
+    else setNotice('Письмо не найдено среди хранящихся на компьютере — найдите его поиском по теме.')
+  }
 
   async function openMessage(message: MessageSummary) {
     lastOpened.current = message
@@ -1307,6 +1353,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         { label: 'Ответить', icon: <Reply size={15} />, hint: 'Ctrl+R', onSelect: () => void composeFor(one, 'reply') },
         { label: 'Ответить всем', icon: <ReplyAll size={15} />, hint: 'Ctrl+Shift+R', onSelect: () => void composeFor(one, 'replyAll') },
         { label: 'Переслать', icon: <Forward size={15} />, hint: 'Ctrl+Shift+F', onSelect: () => void composeFor(one, 'forward') },
+        ...(ncStatus?.connected ? [{ label: 'Создать задачу…', icon: <SquareKanban size={15} />, onSelect: () => setTaskFor(one) }] : []),
         { separator: true },
       )
     }
@@ -1410,6 +1457,9 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         <button className="primary-button compose-top" onClick={() => openComposer('new')}>
           <SquarePen size={17} /> Новое сообщение
         </button>
+        <button className="global-search-open" onClick={() => setGlobalOpen(true)} aria-label="Общий поиск" title="Искать везде: письма, файлы, контакты, встречи, задачи, чат (Ctrl+K)">
+          <Search size={16} /><span>Искать везде…</span><kbd>Ctrl+K</kbd>
+        </button>
         <div className="topbar-actions">
           <button className="icon-button" aria-label="Тема" onClick={() => setDark(!dark)}>{dark ? <Sun /> : <Moon />}</button>
           <button className="icon-button" aria-label="Настройки" onClick={() => setShowSettings(true)}><Settings /></button>
@@ -1444,19 +1494,21 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           <div className="rail-spacer" />
         </nav>
 
-        {module === 'calendar' && <CalendarView onNotice={setNotice} />}
-        {module === 'counterparty' && <CounterpartyView domain={cpDomain} onDomain={setCpDomain} onCompose={composeTo} onNotice={setNotice} />}
+        {module === 'calendar' && <CalendarView onNotice={setNotice} focus={eventFocus} />}
+        {module === 'counterparty' && <CounterpartyView domain={cpDomain} onDomain={setCpDomain} onCompose={composeTo} onNotice={setNotice} onOpen={openFound}
+          ncConnected={Boolean(ncStatus?.connected)} onTask={ncStatus?.connected ? setTaskFor : undefined} />}
         {(module === 'deck' || module === 'chat' || module === 'files') && ncStatus && !ncStatus.connected && (
           <div className="module-view nc-gate"><NcConnect status={ncStatus} onChange={setNcStatus} /></div>
         )}
-        {module === 'deck' && ncStatus?.connected && <DeckView onNotice={setNotice} />}
-        {module === 'chat' && ncStatus?.connected && <TalkView onUnread={setChatUnread} onNotice={setNotice} />}
-        {module === 'files' && ncStatus?.connected && <FilesView onNotice={setNotice} onSendLinks={sendLinks} />}
+        {module === 'deck' && ncStatus?.connected && <DeckView onNotice={setNotice} focus={deckFocus} onOpenMail={openMailById} onOpenFolder={(path) => openFound({ kind: 'file', f: { path, name: '', isDir: true, size: 0, modified: '', mime: '', fileId: null, shared: false, favorite: false, canWrite: true } })} onOpenOrg={openHistory} />}
+        {module === 'chat' && ncStatus?.connected && <TalkView onUnread={setChatUnread} onNotice={setNotice} focus={talkFocus} />}
+        {module === 'files' && ncStatus?.connected && <FilesView onNotice={setNotice} onSendLinks={sendLinks} focus={filesFocus} />}
         {module === 'contacts' && (
           <ContactsView
             onLoaded={(list) => { setContacts(list); contactsRequested.current = true }}
             onNotice={setNotice}
             onWrite={(address) => composeTo(address)}
+            focus={contactFocus}
           />
         )}
         {module === 'mail' && <>
@@ -1722,6 +1774,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               <button className="icon-button" aria-label="Ответить" title="Ответить" disabled={!detail} onClick={() => openComposer('reply')}><Reply size={18} /></button>
               <button className="icon-button" aria-label="Ответить всем" title="Ответить всем" disabled={!detail} onClick={() => openComposer('replyAll')}><ReplyAll size={18} /></button>
               <button className="icon-button" aria-label="Переслать" title="Переслать" disabled={!detail} onClick={() => openComposer('forward')}><Forward size={18} /></button>
+              {ncStatus?.connected && <button className="icon-button" aria-label="Создать задачу" title="Создать задачу Deck из письма: срок, организация, документы в Nextcloud" onClick={() => setTaskFor(selected)}><SquareKanban size={18} /></button>}
               <span className="toolbar-sep" />
               <button className={`icon-button ${selected.important ? 'important-on' : ''}`} aria-label="Важное" aria-pressed={selected.important} title={selected.important ? 'Снять «Важное»' : 'Пометить как важное'} onClick={() => void toggleFlag(selected, 'important')}>
                 <CircleAlert size={18} />
@@ -1819,6 +1872,9 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       )}
 
       {outbox.element}
+      {globalOpen && <GlobalSearch ncConnected={Boolean(ncStatus?.connected)} onOpen={openFound} onClose={() => setGlobalOpen(false)} />}
+      {taskFor && <TaskFromMail message={taskFor} ownAddress={myAddress} onClose={() => setTaskFor(null)} onNotice={setNotice}
+        onOpenCard={(boardId, cardId) => { const n = nextFocus(); setDeckFocus({ boardId, cardId, n }); setModule('deck') }} />}
       {popMenu && <ContextMenu x={popMenu.x} y={popMenu.y} items={popMenu.items} onClose={() => setPopMenu(null)} />}
       {snoozePick && <DuePicker title="Отложить письмо" hint="В это время письмо вернётся во «Входящие» непрочитанным" action="Отложить" onClose={() => setSnoozePick(null)} onPick={(d) => { const items = snoozePick; setSnoozePick(null); void snoozeItems(items, d) }} />}
       {duePick && <DuePicker onClose={() => setDuePick(null)} onPick={(d) => { const items = duePick; setDuePick(null); void setDueFor(items, d) }} />}

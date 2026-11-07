@@ -2,7 +2,7 @@ import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
+  MessageSummary, NcSearch, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
 export interface LoginParams {
@@ -46,6 +46,7 @@ const READ_ONLY = new Set([
   'cached_messages', 'search_mail', 'search_server', 'offline_status', 'offline_queue', 'signature_get', 'list_folders', 'list_messages',
   'nc_editors', 'nc_avatar', 'attachment_data', 'mail_filters_get', 'rules_get', 'counterparties', 'counterparty_timeline',
   'calendar_file_preview', 'diagnostics', 'talk_participants', 'talk_search', 'talk_poll_get', 'talk_shared', 'nc_link_preview',
+  'nc_search', 'mail_by_msgid',
 ])
 /** Опросы и служебные вызовы: ничего не меняют, разделённые запросы не сбрасывают. */
 const PASSIVE = new Set(['talk_poll', 'job_status', 'update_progress', 'nc_connect_poll', 'send_wait', 'notify', 'notify_poll_secs', 'nc_open', 'open_link'])
@@ -169,7 +170,7 @@ export const api = {
   deckCommentDelete: (cardId: number, commentId: number) => invoke<void>('deck_comment_delete', { cardId, commentId }),
   deckAttachments: (boardId: number, stackId: number, cardId: number) => invoke<DeckAttachment[]>('deck_attachments', { boardId, stackId, cardId }),
   deckCreateCard: (boardId: number, stackId: number, title: string, description = '', duedate: string | null = null) =>
-    invoke<void>('deck_create_card', { boardId, stackId, title, description, duedate }),
+    invoke<number>('deck_create_card', { boardId, stackId, title, description, duedate }),
   deckUpdateCard: (boardId: number, stackId: number, cardId: number, title: string, description: string, duedate: string | null, done: boolean) =>
     invoke<void>('deck_update_card', { boardId, stackId, cardId, title, description, duedate, done }),
   deckMoveCard: (boardId: number, stackId: number, cardId: number, targetStackId: number, order: number) =>
@@ -228,6 +229,8 @@ export const api = {
   talkShared: (token: string, kind: string, before: number | null = null) => invoke<TalkMessage[]>('talk_shared', { token, kind, before }),
   ncLinkPreview: (url: string) => invoke<LinkPreview | null>('nc_link_preview', { url }),
   talkCallWindow: (token: string) => invoke<void>('talk_call_window', { token }),
+  ncSearch: (term: string, domain: string | null = null, limit = 20) => invoke<NcSearch>('nc_search', { term, domain, limit }),
+  mailByMsgid: (msgId: string) => invoke<MessageSummary | null>('mail_by_msgid', { msgId }),
   autoLogin: () => invoke<Account | null>('auto_login'),
   logout: (resetTotp = false) => invoke<void>('logout', { resetTotp }),
   totpStatus: () => invoke<TotpStatus>('totp_status'),

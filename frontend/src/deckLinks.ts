@@ -8,14 +8,32 @@
  *     ⏭ Выполняется после: [Сборка](https://next.example/index.php/apps/deck/card/10)
  *
  * Связь хранится у подчинённой карточки; обратные (подзадачи, «следующие») вычисляются по доске.
+ *
+ * Карточка, созданная из письма, хранит в том же блоке организацию, письмо и папку документов:
+ *
+ *     🏢 Контрагент: niiar.ru
+ *     ✉ Письмо: [Запрос документов](mid:abc%40niiar.ru)
+ *     📁 Документы: [Контрагенты/niiar.ru/Запрос](https://next.example/index.php/apps/files/?dir=%2F…)
  */
 import type { DeckCard, DeckStack } from './types'
 
 export interface CardLink { id: number; title: string }
-export interface CardLinks { parent: CardLink | null; after: CardLink[] }
+export interface CardLinks {
+  parent: CardLink | null
+  after: CardLink[]
+  /** Организация (домен), с которой связана задача. */
+  org?: string | null
+  /** Письмо, из которого создана задача (Message-ID без угловых скобок). */
+  mail?: { title: string; msgId: string } | null
+  /** Папка документов задачи в Nextcloud. */
+  folder?: { title: string; path: string } | null
+}
 
 const PARENT_RE = /^\s*(?:🔗\s*)?Главная задача:\s*\[(.*)\]\((\S+?)\)\s*$/
 const AFTER_RE = /^\s*(?:⏭\s*)?(?:Выполняется\s+)?[Пп]осле:\s*\[(.*)\]\((\S+?)\)\s*$/
+const ORG_RE = /^\s*(?:🏢\s*)?Контрагент:\s*@?([\p{L}\d-]+(?:\.[\p{L}\d-]+)+)\s*$/u
+const MAIL_RE = /^\s*(?:✉️?\s*)?Письмо:\s*\[(.*)\]\(mid:(\S+?)\)\s*$/u
+const FOLDER_RE = /^\s*(?:📁\s*)?Документы:\s*\[(.*)\]\((\S+?)\)\s*$/u
 const CARD_ID_RE = /\/card\/(\d+)(?:[/?#]|$)/
 
 function idOf(url: string): number | null {
@@ -28,12 +46,19 @@ export function splitLinks(description: string): { body: string; links: CardLink
   const links: CardLinks = { parent: null, after: [] }
   const keep: string[] = []
   for (const line of description.split('\n')) {
+    const o = ORG_RE.exec(line)
+    if (o) { links.org = o[1].toLowerCase(); continue }
+    const ml = MAIL_RE.exec(line)
+    if (ml) { links.mail = { title: unesc(ml[1]), msgId: safeDecode(ml[2]) }; continue }
+    const f = FOLDER_RE.exec(line)
+    const fp = f ? folderPath(f[2]) : null
+    if (f && fp) { links.folder = { title: unesc(f[1]), path: fp }; continue }
     const p = PARENT_RE.exec(line)
     const a = p ? null : AFTER_RE.exec(line)
     const m = p ?? a
     const id = m ? idOf(m[2]) : null
     if (m && id !== null) {
-      const link = { id, title: m[1].replace(/\\([[\]])/g, '$1') }
+      const link = { id, title: unesc(m[1]) }
       if (p) links.parent = link
       else if (!links.after.some((x) => x.id === id)) links.after.push(link)
       continue
@@ -42,9 +67,25 @@ export function splitLinks(description: string): { body: string; links: CardLink
   }
   // Разделитель «---», оставшийся в конце от блока связей, тоже убираем.
   while (keep.length && /^\s*$/.test(keep[keep.length - 1])) keep.pop()
-  if (keep.length && /^\s*---\s*$/.test(keep[keep.length - 1]) && (links.parent || links.after.length)) keep.pop()
+  if (keep.length && /^\s*---\s*$/.test(keep[keep.length - 1]) && hasLinks(links)) keep.pop()
   while (keep.length && /^\s*$/.test(keep[keep.length - 1])) keep.pop()
   return { body: keep.join('\n'), links }
+}
+
+const unesc = (t: string) => t.replace(/\\([[\]])/g, '$1')
+function safeDecode(s: string): string {
+  try { return decodeURIComponent(s) } catch { return s }
+}
+/** Путь папки из ссылки на приложение «Файлы» (`?dir=…`). */
+function folderPath(url: string): string | null {
+  try { const d = new URL(url).searchParams.get('dir'); return d && d.startsWith('/') ? d : null } catch { return null }
+}
+function hasLinks(l: CardLinks): boolean {
+  return !!(l.parent || l.after.length || l.org || l.mail || l.folder)
+}
+
+export function folderUrl(base: string, path: string): string {
+  return `${base.replace(/\/+$/, '')}/index.php/apps/files/?dir=${encodeURIComponent(path)}`
 }
 
 export function cardUrl(base: string, id: number): string {
@@ -56,6 +97,9 @@ const esc = (t: string) => t.replace(/[[\]]/g, (c) => `\\${c}`).replace(/\n/g, '
 /** Собрать описание обратно: текст + блок связей (если связи есть). */
 export function joinLinks(body: string, links: CardLinks, base: string): string {
   const lines: string[] = []
+  if (links.org) lines.push(`🏢 Контрагент: ${links.org}`)
+  if (links.mail) lines.push(`✉ Письмо: [${esc(links.mail.title)}](mid:${encodeURIComponent(links.mail.msgId)})`)
+  if (links.folder) lines.push(`📁 Документы: [${esc(links.folder.title)}](${folderUrl(base, links.folder.path)})`)
   if (links.parent) lines.push(`🔗 Главная задача: [${esc(links.parent.title)}](${cardUrl(base, links.parent.id)})`)
   for (const a of links.after) lines.push(`⏭ Выполняется после: [${esc(a.title)}](${cardUrl(base, a.id)})`)
   const text = body.replace(/\s+$/, '')

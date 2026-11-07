@@ -107,8 +107,14 @@ const drafts = new Map<string, Draft>()
 let lastRoom: string | null = null
 onSessionReset(() => { drafts.clear(); lastRoom = null })
 
-export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number) => void; onNotice?: (t: string) => void }) {
+
+/** Последний выполненный переход из общего поиска. */
+let talkFocusSeen = 0
+
+export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: number) => void; onNotice?: (t: string) => void; focus?: { token: string; messageId: number | null; n: number } | null }) {
   const [rooms, setRooms] = useState<TalkRoom[] | null>(null)
+  /** Беседа, история которой уже загружена (для перехода к сообщению из поиска). */
+  const historyFor = useRef<string | null>(null)
   const [token, setToken] = useState<string | null>(() => lastRoom)
   const [messages, setMessages] = useState<TalkMessage[]>([])
   const [loading, setLoading] = useState(false)
@@ -268,12 +274,14 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     setDraft(saved?.text ?? '')
     setFiles((list) => { list.forEach((f) => void api.forgetAttachment(f.id)); return [] })
     setLoading(true)
+    historyFor.current = null
     stickToBottom.current = true
     void (async () => {
       try {
         const hist = await api.talkHistory(token)
         if (pollSession.current !== session) return
         setMessages(merge([], hist.messages))
+        historyFor.current = token
         setHasOlder(hist.more)
         setReadUpTo((r) => Math.max(r, hist.lastCommonRead ?? 0))
         lastId = hist.lastId
@@ -509,6 +517,23 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     return () => { cancelled = true; window.clearTimeout(t) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQ, searchOpen, token])
+
+  // Переход из общего поиска: открыть беседу и, когда история загрузится, — сообщение.
+  const pendingJump = useRef<{ token: string; id: number | null } | null>(null)
+  useEffect(() => {
+    // Каждый переход — один раз: при повторном открытии раздела он не повторяется.
+    if (!focus || focus.n <= talkFocusSeen) return
+    talkFocusSeen = focus.n
+    pendingJump.current = { token: focus.token, id: focus.messageId }
+    setToken(focus.token)
+  }, [focus])
+  useEffect(() => {
+    const p = pendingJump.current
+    if (!p || p.token !== token || loading || historyFor.current !== token) return
+    pendingJump.current = null
+    if (p.id) void jumpTo(p.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, loading, messages, focus])
 
   /** Перейти к сообщению: догрузить историю до него, прокрутить и подсветить. */
   async function jumpTo(id: number) {

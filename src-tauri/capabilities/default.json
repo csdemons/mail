@@ -97,6 +97,8 @@
     "allow-talk-favorite",
     "allow-talk-participants",
     "allow-talk-search",
+    "allow-nc-search",
+    "allow-mail-by-msgid",
     "allow-talk-manage",
     "allow-talk-rooms",
     "allow-talk-send",

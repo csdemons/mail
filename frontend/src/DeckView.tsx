@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, ArchiveRestore, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CornerDownRight, ExternalLink, FileText, Filter, FolderInput, FolderMinus, GitBranch, History, Link2, ListChecks, ListTree, Lock, Maximize2, MessageSquare, Minimize2, Minus, MoveHorizontal, Paperclip, Pencil, Plus, RefreshCw, Search, SkipForward, Trash2, Upload, X } from 'lucide-react'
+import { Archive, ArchiveRestore, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CornerDownRight, ExternalLink, FileText, Filter, FolderInput, FolderMinus, FolderOpen, GitBranch, Handshake, History, Link2, ListChecks, ListTree, Lock, Mail, Maximize2, MessageSquare, Minimize2, Minus, MoveHorizontal, Paperclip, Pencil, Plus, RefreshCw, Search, SkipForward, Trash2, Upload, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
 import { addItem, checklistProgress, parseChecklist, removeItem, renameItem, toggleItem } from './checklist'
@@ -97,7 +97,18 @@ function dateInputValue(iso: string | null) {
   return Number.isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-export default function DeckView({ onNotice }: { onNotice: (t: string) => void }) {
+/** Переходы из блока «Связи»: письмо, папка документов, история организации. */
+export interface ChainActions {
+  onOpenMail?: (msgId: string) => void
+  onOpenFolder?: (path: string) => void
+  onOpenOrg?: (domain: string) => void
+}
+
+
+/** Последний выполненный переход из общего поиска. */
+let deckFocusSeen = 0
+
+export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, onOpenOrg }: { onNotice: (t: string) => void; focus?: { boardId: number; cardId: number; n: number } | null } & ChainActions) {
   const [boards, setBoards] = useState<DeckBoard[] | null>(null)
   const [boardId, setBoardId] = useState<number | null>(() => {
     try { return Number(localStorage.getItem(LAST_BOARD_KEY)) || null } catch { return null }
@@ -148,12 +159,33 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
       .catch((e) => setError(errorText(e)))
   }, [])
 
+  /** Доска, колонки которой загружены, и карточка, которую открыть (переход из поиска). */
+  const stacksFor = useRef<number | null>(null)
+  const pendingCard = useRef<{ boardId: number; cardId: number } | null>(null)
+  useEffect(() => {
+    // Каждый переход — один раз: при повторном открытии раздела он не повторяется.
+    if (!focus || focus.n <= deckFocusSeen) return
+    deckFocusSeen = focus.n
+    pendingCard.current = { boardId: focus.boardId, cardId: focus.cardId }
+    setBoardId(focus.boardId)
+  }, [focus])
+  useEffect(() => {
+    const p = pendingCard.current
+    if (!p || p.boardId !== boardId || loading || stacksFor.current !== boardId) return
+    pendingCard.current = null
+    const card = stacks.flatMap((x) => x.cards).find((c) => c.id === p.cardId)
+    if (card) setSelected(card)
+    else onNotice('Карточка не найдена на доске (возможно, она в архиве)')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, loading, stacks, focus])
+
   const loadStacks = useCallback(async (id: number, quiet = false) => {
     if (!quiet) setLoading(true)
     setError('')
     try {
       const s = await api.deckStacks(id)
       setStacks(s)
+      stacksFor.current = id
       setSelected((cur) => (cur ? s.flatMap((x) => x.cards).find((c) => c.id === cur.id) ?? null : null))
     } catch (e) {
       setError(errorText(e))
@@ -165,6 +197,7 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   useEffect(() => {
     if (boardId === null) return
     try { localStorage.setItem(LAST_BOARD_KEY, String(boardId)) } catch { /* не критично */ }
+    stacksFor.current = null
     setSelected(null)
     setFilter(loadFilter(boardId))
     setDetails(null)
@@ -511,6 +544,7 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           links={links}
           ncUrl={ncUrl}
           onOpenCard={(id) => { const c = links.cards.get(id); if (c) setSelected(c) }}
+          chain={{ onOpenMail, onOpenFolder, onOpenOrg }}
         />
       )}
     </div>
@@ -546,7 +580,7 @@ function when(ts: string | number) {
   return Number.isNaN(d.getTime()) || d.getTime() <= 0 ? '' : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRefresh, onMove, links, ncUrl, onOpenCard }: {
+function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRefresh, onMove, links, ncUrl, onOpenCard, chain }: {
   board: DeckBoard
   card: DeckCard
   stacks: DeckStack[]
@@ -559,6 +593,7 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
   links: BoardLinks
   ncUrl: string
   onOpenCard: (id: number) => void
+  chain: ChainActions
 }) {
   const [title, setTitle] = useState(card.title)
   const [description, setDescription] = useState(card.description)
@@ -740,6 +775,13 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
   const sectionLinks = (
     <div className="deck-section deck-links">
       <div className="deck-section-head"><b><Link2 size={14} /> Связи</b></div>
+      {(own.org || own.mail || own.folder) && (
+        <div className="deck-chain" aria-label="Цепочка задачи">
+          {own.org && <button type="button" className="deck-chain-item" title="История взаимодействия с организацией" onClick={() => chain.onOpenOrg?.(own.org!)}><Handshake size={13} /> {own.org}</button>}
+          {own.mail && <button type="button" className="deck-chain-item" title="Открыть письмо, из которого создана задача" onClick={() => chain.onOpenMail?.(own.mail!.msgId)}><Mail size={13} /> {own.mail.title}</button>}
+          {own.folder && <button type="button" className="deck-chain-item" title={`Папка документов: ${own.folder.path}`} onClick={() => chain.onOpenFolder?.(own.folder!.path)}><FolderOpen size={13} /> Документы</button>}
+        </div>
+      )}
       <div className="deck-link-row">
         <span className="deck-link-label"><CornerDownRight size={13} /> Главная задача</span>
         {own.parent

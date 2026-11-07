@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronRight, Cloud, Copy, Download, ExternalLink, File, FilePen, FilePlus, FileSpreadsheet, FileText, Folder, FolderPlus, Home, Image, Link2, Lock, Mail,
   Pencil, Presentation, RefreshCw, Search, Share2, Trash2, Upload, UserPlus, X,
@@ -22,9 +22,15 @@ function when(modified: string) {
 
 const FILES_PAGE = 300
 
-export default function FilesView({ onNotice, onSendLinks }: {
+
+/** Последний выполненный переход из общего поиска. */
+let filesFocusSeen = 0
+
+export default function FilesView({ onNotice, onSendLinks, focus }: {
   onNotice: (t: string) => void
   onSendLinks: (links: { name: string; url: string }[]) => void
+  /** Переход из общего поиска: открыть папку или выделить файл в его папке. */
+  focus?: { path: string; isDir: boolean; n: number } | null
 }) {
   const [path, setPath] = useState('/')
   const [files, setFiles] = useState<NcFile[] | null>(null)
@@ -55,6 +61,32 @@ export default function FilesView({ onNotice, onSendLinks }: {
   }, [])
 
   useEffect(() => { setSelected(null); void load(path) }, [path, load])
+
+  const pendingFile = useRef<string | null>(null)
+  useEffect(() => {
+    // Каждый переход — один раз: при повторном открытии раздела он не повторяется.
+    if (!focus || focus.n <= filesFocusSeen) return
+    filesFocusSeen = focus.n
+    const parent = focus.path.replace(/\/[^/]*$/, '') || '/'
+    pendingFile.current = focus.isDir ? null : focus.path
+    if (!focus.isDir && parent === path && files) {
+      // Та же папка уже открыта — сразу выделить.
+      const f = files.find((x) => x.path === focus.path)
+      if (f) { pendingFile.current = null; setSelected(f) }
+    }
+    setFilter('')
+    setPath(focus.isDir ? focus.path : parent)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus])
+  useEffect(() => {
+    const want = pendingFile.current
+    if (!want || !files || loading) return
+    const f = files.find((x) => x.path === want)
+    if (!f) return
+    pendingFile.current = null
+    setSelected(f)
+    requestAnimationFrame(() => document.querySelector(`[data-path="${CSS.escape(want)}"]`)?.scrollIntoView({ block: 'center' }))
+  }, [files, loading])
 
   const crumbs = useMemo(() => {
     const parts = path.split('/').filter(Boolean)
@@ -167,7 +199,7 @@ export default function FilesView({ onNotice, onSendLinks }: {
         {error && <div className="inline-warning" role="alert">{error.includes('не найдено') && path === NC_MAIL_DIR ? 'Папки «Почта» пока нет — она появится при первом сохранении вложения или отправке файла ссылкой.' : error}</div>}
         <div className="files-list" role="list">
           {visible.slice(0, shown).map((f) => (
-            <div key={f.path} role="listitem" className={`file-row ${selected?.path === f.path ? 'selected' : ''}`}
+            <div key={f.path} role="listitem" data-path={f.path} className={`file-row ${selected?.path === f.path ? 'selected' : ''}`}
               onClick={() => setSelected(f)} onDoubleClick={() => (f.isDir ? setPath(f.path) : isOfficeFile(f.name) ? void edit(f) : void api.ncOpen(f.fileId ? `f/${f.fileId}` : 'apps/files'))}>
               {fileIcon(f)}
               {f.isDir
