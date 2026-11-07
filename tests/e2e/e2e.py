@@ -884,11 +884,13 @@ try:
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Отправить голосовое"]').click()
     W(d, 20).until(lambda d: any(m.get('messageType') == 'voice-message' and m['actorId'] == 'test' and m['messageParameters']['file']['name'].startswith('Голосовое ') for m in st()['messages']['abc123']))
     nc_mock('POST', '/test/inject?voice=1&token=abc123')
-    vbtn = W(d, 15).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-voice button') if 'Прослушать' in b.text])
-    vbtn[-1].click()
-    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-voice audio[src^="blob:"]'))
+    # Голосовое коллеги (настоящий WAV): ждём именно его — оно приходит через long-poll.
+    peer_voice = lambda: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg:not(.own)') if m.find_elements(By.CSS_SELECTOR, '.talk-voice') and 'Иванов Иван' in m.get_attribute('textContent')]
+    W(d, 15).until(lambda d: peer_voice() and peer_voice()[-1].find_elements(By.CSS_SELECTOR, '.talk-voice button'))
+    peer_voice()[-1].find_element(By.CSS_SELECTOR, '.talk-voice button').click()
+    W(d, 10).until(lambda d: peer_voice()[-1].find_elements(By.CSS_SELECTOR, '.talk-voice audio[src^="blob:"]'))
     # Звук действительно открывается (не заблокирован политикой содержимого).
-    W(d, 10).until(lambda d: d.execute_script("const a = [...document.querySelectorAll('.talk-voice audio')].pop(); return a && !a.error && a.readyState >= 1"))
+    W(d, 10).until(lambda d: d.execute_script("const a = arguments[0].querySelector('.talk-voice audio'); return a && !a.error && a.readyState >= 1", peer_voice()[-1]))
     ok('chat voice messages: record and send as voice message, play a received one')
 
     # Медиа и файлы беседы: фото (просмотр с листанием), файлы, голосовые, ссылки.
