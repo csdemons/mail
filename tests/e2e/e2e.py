@@ -777,6 +777,17 @@ try:
     chip.click()
     W(d, 10).until(lambda d: not msg_state(1).get('reactionsSelf') and not talk_msg('обновление в среду').find_elements(By.CSS_SELECTOR, '.talk-reaction'))
     ok('reaction added and removed')
+    # Любая реакция из полного набора: «＋» в быстрых реакциях.
+    action(talk_msg('обновление в среду'), 'Реакция')
+    d.execute_script("arguments[0].click()", wait(d, '.talk-react-picker button[aria-label="Другая реакция"]'))
+    wait(d, '.emoji-picker.talk-react-full input[aria-label="Найти эмодзи"]').send_keys('ракета')
+    rocket = W(d, 5).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-react-full .emoji-grid button') if b.text == '🚀'])[0]
+    d.execute_script("arguments[0].click()", rocket)
+    W(d, 10).until(lambda d: '🚀' in msg_state(1).get('reactionsSelf', []))
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-react-full'))
+    talk_msg('обновление в среду').find_element(By.CSS_SELECTOR, '.talk-reaction.own').click()
+    W(d, 10).until(lambda d: not msg_state(1).get('reactionsSelf'))
+    ok('reaction from the full emoji set (search «ракета»)')
 
     # Правка своего сообщения: обновление приходит через long-poll (служебное сообщение с parent).
     action(talk_msg('Добрый день, принято'), 'Изменить')
@@ -809,11 +820,29 @@ try:
 
     # Эмодзи из панели.
     d.find_element(By.CSS_SELECTOR, '.talk-emoji').click()
-    d.find_element(By.CSS_SELECTOR, '.emoji-grid button[aria-label="😀"]').click()
-    W(d, 5).until(lambda d: '😀' in d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value'))
+    # Полный набор, как в Talk: все категории (больше 1500 эмодзи).
+    W(d, 10).until(lambda d: d.execute_script("return document.querySelectorAll('.emoji-picker .emoji-section .emoji-grid button').length") > 1500)
+    assert len(d.find_elements(By.CSS_SELECTOR, '.emoji-picker .emoji-tabs button')) == 10
+    # Поиск по-русски.
+    d.find_element(By.CSS_SELECTOR, '.emoji-picker input[aria-label="Найти эмодзи"]').send_keys('пицца')
+    W(d, 5).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.emoji-picker .emoji-grid button') if b.text == '🍕'])[0].click()
+    W(d, 5).until(lambda d: '🍕' in d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value'))
+    # Оттенок кожи.
+    d.find_element(By.CSS_SELECTOR, '.emoji-picker .emoji-tones button[aria-label="Оттенок 3"]').click()
+    srch = d.find_element(By.CSS_SELECTOR, '.emoji-picker input[aria-label="Найти эмодзи"]'); clear(srch); srch.send_keys('большой палец вверх')
+    W(d, 5).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.emoji-picker .emoji-grid button') if b.text == '👍🏽'])[0].click()
+    W(d, 5).until(lambda d: '👍🏽' in d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value'))
+    d.find_element(By.CSS_SELECTOR, '.emoji-picker .emoji-tones button[aria-label="Без оттенка"]').click()
+    clear(d.find_element(By.CSS_SELECTOR, '.emoji-picker input[aria-label="Найти эмодзи"]'))
+    # Недавние — первыми.
+    W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.emoji-picker .emoji-section .emoji-grid button'))
+    first = d.find_element(By.CSS_SELECTOR, '.emoji-picker .emoji-section .emoji-grid button').text
+    assert first.replace('\ufe0f', '') == '👍', first
+    d.find_element(By.CSS_SELECTOR, '.talk-emoji').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.emoji-picker'))
     d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').send_keys(Keys.ENTER)
-    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw') == '😀')
-    ok('emoji picker inserts and sends')
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw', '').replace('\ufe0f', '') == '🍕👍🏽')
+    ok('emoji picker: full Unicode set by category, Russian search, skin tone, recent first; sends')
     # Окно эмодзи закрывается щелчком по свободному месту ленты.
     d.find_element(By.CSS_SELECTOR, '.talk-emoji').click()
     wait(d, '.emoji-picker')

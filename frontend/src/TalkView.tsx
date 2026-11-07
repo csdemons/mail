@@ -121,6 +121,9 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   const [files, setFiles] = useState<PickedFile[]>([])
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [reactFor, setReactFor] = useState<number | null>(null)
+  // Полный выбор эмодзи для реакции (после «＋» в быстрых реакциях).
+  const [reactFull, setReactFull] = useState(false)
+  useEffect(() => { if (reactFor === null) setReactFull(false) }, [reactFor])
   // Выбор эмодзи и реакции закрываются щелчком мимо (в ленте, списке бесед — где угодно) и Esc.
   useEffect(() => {
     if (!emojiOpen && reactFor === null) return
@@ -569,7 +572,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     const sel = window.getSelection()?.toString() ?? ''
     const items: MenuItem[] = []
     if (canWrite) {
-      items.push({ custom: <>{QUICK_REACTIONS.map((e) => <button key={e} type="button" aria-label={`Реакция ${e}`} onClick={() => void react(m, e)}>{e}</button>)}</> })
+      items.push({ custom: <>{QUICK_REACTIONS.map((e) => <button key={e} type="button" aria-label={`Реакция ${e}`} onClick={() => void react(m, e)}>{e}</button>)}<button type="button" aria-label="Другая реакция" title="Все эмодзи" onClick={() => { setReactFor(m.id); setReactFull(true) }}>＋</button></> })
       items.push({ label: 'Ответить', icon: <CornerUpLeft size={15} />, onClick: () => { setReplyTo(m); setEditing(null); inputRef.current?.focus() } })
     }
     if (sel.trim()) items.push({ label: 'Копировать выделенное', icon: <Copy size={15} />, onClick: () => copyText(sel) })
@@ -835,9 +838,12 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                       </div>
                     )}
                     {reactFor === m.id && (
-                      <div className="talk-react-picker popover">
-                        {QUICK_REACTIONS.map((e) => <button key={e} aria-label={`Реакция ${e}`} onClick={() => void react(m, e)}>{e}</button>)}
-                      </div>
+                      reactFull
+                        ? <EmojiPicker className="talk-react-full" label="Реакция" onPick={(e) => { setReactFor(null); void react(m, e) }} />
+                        : <div className="talk-react-picker popover">
+                          {QUICK_REACTIONS.map((e) => <button key={e} aria-label={`Реакция ${e}`} onClick={() => void react(m, e)}>{e}</button>)}
+                          <button aria-label="Другая реакция" title="Все эмодзи" onClick={() => setReactFull(true)}>＋</button>
+                        </div>
                     )}
                   </div>
                 </div>
