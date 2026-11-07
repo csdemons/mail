@@ -455,7 +455,7 @@ try:
     W(d, 10).until(lambda d: '2/3' in tile('Обновить RuPost').get_attribute('textContent'))
     add = d.find_element(By.CSS_SELECTOR, '.deck-tasks .deck-add-item input'); add.send_keys('Сообщить пользователям'); add.send_keys(Keys.ENTER)
     W(d, 10).until(lambda d: card1()['description'].endswith('- [ ] Проверить почту\n- [ ] Сообщить пользователям'))
-    d.execute_script("arguments[0].click()", d.find_element(By.CSS_SELECTOR, 'button[aria-label="Удалить подзадачу Проверить почту"]'))
+    d.execute_script("arguments[0].click()", d.find_element(By.CSS_SELECTOR, 'button[aria-label="Удалить пункт Проверить почту"]'))
     W(d, 10).until(lambda d: 'Проверить почту' not in card1()['description'] and len(d.find_elements(By.CSS_SELECTOR, '.deck-checklist li')) == 3)
     assert card1()['description'].startswith('Окно работ в среду'), card1()['description']
     ok('subtasks: toggle, add, delete saved to card description')
