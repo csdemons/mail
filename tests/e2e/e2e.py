@@ -251,6 +251,10 @@ try:
     Select(d.find_element(By.CSS_SELECTOR, '.rt-font')).select_by_visible_text('Georgia')
     d.find_element(By.CSS_SELECTOR, '.rt-btn[aria-label^="Жирный"]').click()
     Select(d.find_element(By.CSS_SELECTOR, '.rt-size')).select_by_visible_text('Очень крупный')
+    # Цвет текста — из палитры, одним щелчком (без Enter и «ОК»).
+    d.find_element(By.CSS_SELECTOR, '.rt-color[aria-label="Цвет текста"]').click()
+    wait(d, '.rt-palette .rt-swatch[aria-label="Цвет #1f5fbf"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.rt-palette'))
     W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.rt-btn[aria-label^="Жирный"]').get_attribute('aria-pressed') == 'true')
     d.save_screenshot(f'{OUT}/05-compose-format.png')
     d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
@@ -260,6 +264,8 @@ try:
     assert s1 == 'Проверка отправки из RRCKI Mail' and b'ivanov@inst.test' in raw1, s1; ok('sent via SMTP, Cyrillic subject intact')
     m1 = email.message_from_bytes(raw1)
     parts = {p.get_content_type(): p.get_payload(decode=True).decode(p.get_content_charset() or 'utf-8') for p in m1.walk() if not p.is_multipart()}
+    assert 'rgb(31, 95, 191)' in parts['text/html'] or '#1f5fbf' in parts['text/html'].lower(), 'text colour from palette'
+    ok('editor: text colour applied from the palette with one click')
     assert m1.get_content_type() == 'multipart/alternative' and set(parts) == {'text/plain', 'text/html'}, (m1.get_content_type(), list(parts))
     assert parts['text/plain'].replace('\r\n', '\n').strip() == 'Добрый день!\nЭто тест.', repr(parts['text/plain'])
     h = parts['text/html']
@@ -542,7 +548,7 @@ try:
     dlg = wait(d, '.deck-full', 10)
     assert d.find_element(By.CSS_SELECTOR, '.deck-full .deck-title-input').get_attribute('value') == 'E2E полная карточка'
     heads = [h.get_attribute('textContent') for h in dlg.find_elements(By.CSS_SELECTOR, '.deck-section-head b')]
-    assert any('Описание' in h for h in heads) and any('Подзадачи' in h for h in heads) and any('Вложения' in h for h in heads) and any('Комментарии' in h for h in heads), heads
+    assert any('Описание' in h for h in heads) and any('Чек-лист' in h for h in heads) and any('Связи' in h for h in heads) and any('Вложения' in h for h in heads) and any('Комментарии' in h for h in heads), heads
     W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.deck-full .deck-markdown h3').get_attribute('textContent') == 'Цель')
     assert d.find_element(By.CSS_SELECTOR, '.deck-full .deck-markdown b').get_attribute('textContent') == 'сеть'
     assert 'коммутаторы' not in d.find_element(By.CSS_SELECTOR, '.deck-full .deck-markdown').get_attribute('textContent'), 'checklist shown separately'
@@ -604,6 +610,57 @@ try:
     d.find_element(By.CSS_SELECTOR, '.settings-modal .compose-header button[aria-label="Закрыть"]').click()
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.appearance-settings'))
     ok('appearance: zoom with Ctrl +/0 and in settings, chat/mail text size')
+
+    # Группы досок (по проекту): вручную через меню правой кнопки; запоминается.
+    def dctx(el):
+        d.execute_script("const r = arguments[0].getBoundingClientRect(); arguments[0].dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 8}))", el)
+        return wait(d, '.ctx-menu')
+    def dpick(label):
+        [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.strip() == label][0].click()
+        W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.ctx-menu'))
+    board_btn = lambda title: [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item') if title in b.get_attribute('textContent')][0]
+    d.execute_script("window.prompt = () => 'Проект Альфа'")
+    dctx(board_btn('Объявления')); dpick('В новую группу…')
+    W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"]'))
+    dctx(board_btn('УИТ — задачи')); dpick('В группу «Проект Альфа»')
+    W(d, 5).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"] .folder-item')) == 2)
+    assert not [h for h in d.find_elements(By.CSS_SELECTOR, '.board-group-head.static')], 'no "Без группы" when every board is grouped'
+    d.find_element(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"] .board-group-head').click()
+    W(d, 5).until(lambda d: 'Проект Альфа' in (d.execute_script("return localStorage.getItem('atom.deck.folded')") or ''))
+    d.find_element(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"] .board-group-head').click()
+    dctx(board_btn('Объявления')); dpick('Группа по названию (как было)')
+    dctx(board_btn('УИТ — задачи')); dpick('Группа по названию (как было)')
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.board-group'))
+    ok('deck: boards grouped by project via right-click menu, groups fold, back to automatic grouping')
+
+    # Связи карточек: подзадача-карточка видна на доске под главной, «выполняется после» — с замком.
+    board_btn('УИТ — задачи').click()
+    deck_card = lambda title: [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if title in c.get_attribute('textContent')][0]
+    W(d, 10).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'Обновить RuPost' in c.get_attribute('textContent')])
+    deck_card('Обновить RuPost').click()
+    sub_in = wait(d, '.deck-links input[aria-label="Новая подзадача-карточка"]')
+    sub_in.send_keys('Проверить резервные копии', Keys.ENTER)
+    W(d, 15).until(lambda d: any(c['title'] == 'Проверить резервные копии' and '/apps/deck/card/1)' in c['description'] and 'Главная задача: [Обновить RuPost]' in c['description'] for c in nc_mock('GET', '/test/state')['cards']))
+    W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card.sub') if 'Проверить резервные копии' in c.get_attribute('textContent')])
+    W(d, 10).until(lambda d: '0/1' in deck_card('Обновить RuPost').find_element(By.CSS_SELECTOR, '.deck-kids').text)
+    # Порядок: подзадача сразу под главной в той же колонке.
+    order = [c.get_attribute('textContent') for c in d.find_elements(By.CSS_SELECTOR, '.deck-column[data-stack="10"] .deck-card')]
+    i_parent = next(i for i, t in enumerate(order) if 'Обновить RuPost' in t)
+    assert 'Проверить резервные копии' in order[i_parent + 1], order
+    deck_card('Настроить брокер X2Go').click()
+    sel = wait(d, '.deck-links select[aria-label="Добавить предыдущую…"]')
+    Select(sel).select_by_visible_text('Обновить RuPost')
+    W(d, 15).until(lambda d: any(c['id'] == 2 and 'Выполняется после: [Обновить RuPost]' in c['description'] for c in nc_mock('GET', '/test/state')['cards']))
+    W(d, 15).until(lambda d: 'после: Обновить RuPost' in deck_card('Настроить брокер X2Go').get_attribute('textContent') and 'blocked' in deck_card('Настроить брокер X2Go').get_attribute('class'))
+    # Наведение на главную подсвечивает связанные карточки.
+    ActionChains(d).move_to_element(deck_card('Обновить RuPost')).perform()
+    W(d, 5).until(lambda d: 'related' in deck_card('Проверить резервные копии').get_attribute('class') and 'related' in deck_card('Настроить брокер X2Go').get_attribute('class'))
+    # Связь убирается; описание остаётся без служебного блока.
+    deck_card('Настроить брокер X2Go').click()
+    wait(d, '.deck-links .deck-link-x').click()
+    W(d, 15).until(lambda d: any(c['id'] == 2 and c['description'] == '' for c in nc_mock('GET', '/test/state')['cards']))
+    W(d, 10).until(lambda d: 'blocked' not in deck_card('Настроить брокер X2Go').get_attribute('class'))
+    ok('deck links: subtask cards shown under the main task with progress, "after" dependency with lock, related cards highlighted')
 
     # 19. Talk
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
@@ -754,6 +811,23 @@ try:
     d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').send_keys(Keys.ENTER)
     W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw') == '😀')
     ok('emoji picker inserts and sends')
+    # Окно эмодзи закрывается щелчком по свободному месту ленты.
+    d.find_element(By.CSS_SELECTOR, '.talk-emoji').click()
+    wait(d, '.emoji-picker')
+    d.execute_script("const l = document.querySelector('.talk-messages'), r = l.getBoundingClientRect(); for (const t of ['mousedown', 'mouseup', 'click']) l.dispatchEvent(new MouseEvent(t, {bubbles: true, cancelable: true, clientX: r.left + 30, clientY: r.top + 40}))")
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.emoji-picker'))
+    ok('emoji picker closes on a click in the empty chat area')
+
+    # Поиск по сообщениям беседы: результат, переход и подсветка.
+    d.find_element(By.CSS_SELECTOR, '.talk-search-toggle').click()
+    wait(d, '.talk-search input').send_keys('среду')
+    hit = W(d, 10).until(lambda d: [h for h in d.find_elements(By.CSS_SELECTOR, '.talk-search-hit') if 'обновление в среду' in h.get_attribute('textContent')])[0]
+    assert hit.find_elements(By.CSS_SELECTOR, 'mark'), 'match highlighted'
+    hit.click()
+    W(d, 10).until(lambda d: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.flash') if 'обновление в среду' in m.get_attribute('textContent')])
+    d.find_element(By.CSS_SELECTOR, '.talk-search input').send_keys(Keys.ESCAPE)
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-search'))
+    ok('chat: search in conversation messages, jump to the found message')
     d.save_screenshot(f'{OUT}/11-chat.png')
 
     # Карточка Deck из сообщения.

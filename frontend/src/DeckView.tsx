@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, ArchiveRestore, CalendarClock, CheckCircle2, ExternalLink, FileText, Filter, History, ListChecks, Lock, Maximize2, MessageSquare, Minimize2, Minus, MoveHorizontal, Paperclip, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-react'
+import { Archive, ArchiveRestore, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CornerDownRight, ExternalLink, FileText, Filter, FolderInput, FolderMinus, GitBranch, History, Link2, ListChecks, ListTree, Lock, Maximize2, MessageSquare, Minimize2, Minus, MoveHorizontal, Paperclip, Pencil, Plus, RefreshCw, Search, SkipForward, Trash2, Upload, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
 import { addItem, checklistProgress, parseChecklist, removeItem, renameItem, toggleItem } from './checklist'
@@ -7,13 +7,25 @@ import Avatar from './Avatar'
 import TalkText from './TalkText'
 import type { DeckActivity, DeckAttachment, DeckBoard, DeckBoardDetails, DeckCard, DeckComment, DeckLabel, DeckStack, DeckUser } from './types'
 import { SkeletonRows } from './Skeleton'
+import { openContextMenu, type MenuItem } from './PopupMenu'
+import { blockedBy, boardLinks, joinLinks, nestInColumn, projectOf, related, splitLinks, wouldCycle, type BoardLinks, type CardLinks } from './deckLinks'
+
+/** Ручные группы досок (id доски → название группы; '' — «без группы») и свёрнутые группы. */
+const GROUPS_KEY = 'atom.deck.groups'
+const FOLDED_KEY = 'atom.deck.folded'
+function loadJson<T>(key: string, fallback: T): T {
+  try { return (JSON.parse(localStorage.getItem(key) ?? 'null') as T | null) ?? fallback } catch { return fallback }
+}
+function saveJson(key: string, v: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(v)) } catch { /* без хранилища — до перезапуска */ }
+}
 
 /** Масштаб колонок и карточек Deck и растяжение по ширине окна — настройка рабочего места. */
 const DECK_SCALES = [0.85, 1, 1.15, 1.3, 1.5]
-function loadDeckView(): { scale: number; stretch: boolean } {
+function loadDeckView(): { scale: number; stretch: boolean; nest?: boolean } {
   try {
-    const v = JSON.parse(localStorage.getItem('atom.deck.view') ?? '{}') as { scale?: number; stretch?: boolean }
-    return { scale: DECK_SCALES.includes(Number(v.scale)) ? Number(v.scale) : 1, stretch: v.stretch !== false }
+    const v = JSON.parse(localStorage.getItem('atom.deck.view') ?? '{}') as { scale?: number; stretch?: boolean; nest?: boolean }
+    return { scale: DECK_SCALES.includes(Number(v.scale)) ? Number(v.scale) : 1, stretch: v.stretch !== false, ...(v.nest === false ? { nest: false } : {}) }
   } catch {
     return { scale: 1, stretch: true }
   }
@@ -108,7 +120,7 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   const suppressClick = useRef(false)
   const columnsRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState(loadDeckView)
-  function updateView(patch: Partial<{ scale: number; stretch: boolean }>) {
+  function updateView(patch: Partial<{ scale: number; stretch: boolean; nest: boolean }>) {
     setView((v) => {
       const next = { ...v, ...patch }
       try { localStorage.setItem('atom.deck.view', JSON.stringify(next)) } catch { /* без хранилища */ }
@@ -121,7 +133,8 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   const [filter, setFilter] = useState<CardFilter>(() => loadFilter(boardId))
   const [details, setDetails] = useState<DeckBoardDetails | null>(null)
   const [me, setMe] = useState('')
-  useEffect(() => { api.ncStatus().then((s) => setMe(s.uid || s.login)).catch(() => undefined) }, [])
+  const [ncUrl, setNcUrl] = useState('')
+  useEffect(() => { api.ncStatus().then((s) => { setMe(s.uid || s.login); setNcUrl(s.url) }).catch(() => undefined) }, [])
 
   const board = boards?.find((b) => b.id === boardId) ?? null
   const editable = Boolean(board?.canEdit)
@@ -292,6 +305,61 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
   }, [])
 
   const activeBoards = useMemo(() => (boards ?? []).filter((b) => !b.archived), [boards])
+  const links = useMemo(() => boardLinks(stacks), [stacks])
+  const [hover, setHover] = useState<number | null>(null)
+  const focusId = hover ?? selected?.id ?? null
+  const relatedIds = useMemo(() => (focusId === null ? new Set<number>() : related(focusId, links)), [focusId, links])
+  const nest = view.nest !== false
+
+  // Группы досок: вручную назначенные, иначе — по названию проекта (общая часть до «:», «—», «/», […]).
+  const [manualGroups, setManualGroups] = useState<Record<string, string>>(() => loadJson(GROUPS_KEY, {}))
+  const [folded, setFolded] = useState<string[]>(() => loadJson(FOLDED_KEY, []))
+  const grouped = useMemo(() => {
+    const auto = new Map<string, number>()
+    for (const b of activeBoards) { const p = projectOf(b.title); if (p) auto.set(p, (auto.get(p) ?? 0) + 1) }
+    const groupOf = (b: DeckBoard): string => {
+      const m = manualGroups[String(b.id)]
+      if (m !== undefined) return m
+      const p = projectOf(b.title)
+      return p && (auto.get(p) ?? 0) >= 2 ? p : ''
+    }
+    const map = new Map<string, DeckBoard[]>()
+    for (const b of activeBoards) { const g = groupOf(b); map.set(g, [...(map.get(g) ?? []), b]) }
+    const named = [...map.keys()].filter(Boolean).sort((a, b) => a.localeCompare(b, 'ru'))
+    return { named: named.map((g) => [g, map.get(g)!] as const), loose: map.get('') ?? [] }
+  }, [activeBoards, manualGroups])
+  function setGroup(b: DeckBoard, g: string | null) {
+    setManualGroups((m) => {
+      const next = { ...m }
+      if (g === null) delete next[String(b.id)]
+      else next[String(b.id)] = g
+      saveJson(GROUPS_KEY, next)
+      return next
+    })
+  }
+  function toggleFold(g: string) {
+    setFolded((f) => { const next = f.includes(g) ? f.filter((x) => x !== g) : [...f, g]; saveJson(FOLDED_KEY, next); return next })
+  }
+  function boardMenu(b: DeckBoard): MenuItem[] {
+    const current = grouped.named.find(([, list]) => list.some((x) => x.id === b.id))?.[0] ?? ''
+    const others = grouped.named.map(([g]) => g).filter((g) => g !== current)
+    return [
+      ...others.slice(0, 8).map((g): MenuItem => ({ label: `В группу «${g}»`, icon: <FolderInput size={15} />, onClick: () => setGroup(b, g) })),
+      { label: 'В новую группу…', icon: <FolderInput size={15} />, onClick: () => { const g = window.prompt('Название группы (проекта)', projectOf(b.title) ?? '')?.trim(); if (g) setGroup(b, g) } },
+      ...(current ? [{ label: 'Убрать из группы', icon: <FolderMinus size={15} />, onClick: () => setGroup(b, '') }] : []),
+      ...(manualGroups[String(b.id)] !== undefined ? [{ label: 'Группа по названию (как было)', icon: <ListTree size={15} />, onClick: () => setGroup(b, null) }] : []),
+      { separator: true },
+      { label: 'Открыть в Nextcloud', icon: <ExternalLink size={15} />, onClick: () => void api.ncOpen(`apps/deck/board/${b.id}`) },
+    ]
+  }
+  const boardButton = (b: DeckBoard, inGroup: boolean) => (
+    <button key={b.id} className={`folder-item ${inGroup ? 'in-group' : ''} ${b.id === boardId ? 'selected' : ''}`} onClick={() => setBoardId(b.id)} title={`Владелец: ${b.owner}`}
+      onContextMenu={(e) => openContextMenu(e, boardMenu(b))}>
+      <span className="board-dot" style={{ background: `#${b.color || '0082c9'}` }} />
+      <span>{b.title}</span>
+      {!b.canEdit && <Lock size={13} />}
+    </button>
+  )
 
   return (
     <div className="module-view deck-view">
@@ -299,13 +367,19 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
         <div className="sidebar-heading"><span>Доски</span></div>
         <div className="folder-list">
           {boards === null && !error && <SkeletonRows variant="folder" count={5} label="Загрузка досок…" />}
-          {activeBoards.map((b) => (
-            <button key={b.id} className={`folder-item ${b.id === boardId ? 'selected' : ''}`} onClick={() => setBoardId(b.id)} title={`Владелец: ${b.owner}`}>
-              <span className="board-dot" style={{ background: `#${b.color || '0082c9'}` }} />
-              <span>{b.title}</span>
-              {!b.canEdit && <Lock size={13} />}
-            </button>
-          ))}
+          {grouped.named.map(([g, list]) => {
+            const open = !folded.includes(g) || list.some((b) => b.id === boardId)
+            return (
+              <div key={g} className="board-group" data-group={g}>
+                <button className="board-group-head" aria-expanded={open} onClick={() => toggleFold(g)}>
+                  {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<span>{g}</span><b className="folder-count">{list.length}</b>
+                </button>
+                {open && list.map((b) => boardButton(b, true))}
+              </div>
+            )
+          })}
+          {grouped.named.length > 0 && grouped.loose.length > 0 && <div className="board-group-head static"><span>Без группы</span></div>}
+          {grouped.loose.map((b) => boardButton(b, false))}
           {boards && activeBoards.length === 0 && <div className="folder-placeholder">Досок нет. Создайте доску в Nextcloud или попросите доступ.</div>}
         </div>
       </aside>
@@ -322,6 +396,7 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
             <button className="icon-button soft" aria-label="Колонки мельче" title="Мельче" disabled={scaleIdx <= 0} onClick={() => updateView({ scale: DECK_SCALES[scaleIdx - 1] })}><Minus size={15} /></button>
             <span className="deck-scale-label" title="Размер колонок и карточек">{Math.round(view.scale * 100)} %</span>
             <button className="icon-button soft" aria-label="Колонки крупнее" title="Крупнее" disabled={scaleIdx >= DECK_SCALES.length - 1} onClick={() => updateView({ scale: DECK_SCALES[scaleIdx + 1] })}><Plus size={15} /></button>
+            <button className={`icon-button soft ${nest ? 'active' : ''}`} aria-pressed={nest} aria-label="Подзадачи под главной" title={nest ? 'Подзадачи показаны под главной задачей — нажмите, чтобы показывать по порядку колонки' : 'Показывать подзадачи под главной задачей'} onClick={() => updateView({ nest: !nest })}><ListTree size={16} /></button>
             <button className={`icon-button soft ${view.stretch ? 'active' : ''}`} aria-pressed={view.stretch} aria-label="По ширине окна" title={view.stretch ? 'Колонки растянуты по ширине окна — нажмите, чтобы сделать фиксированной ширины' : 'Растянуть колонки по ширине окна'} onClick={() => updateView({ stretch: !view.stretch })}><MoveHorizontal size={16} /></button>
           </span>
           {editable && <button className="secondary-button" onClick={() => void addStack()}><Plus size={15} /> Колонка</button>}
@@ -364,13 +439,22 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
             >
               <header><strong>{s.title}</strong><span>{filtered ? `${s.cards.filter((c) => cardMatches(c, filter, me)).length}/${s.cards.length}` : s.cards.length}</span></header>
               <div className="deck-cards">
-                {(filtered ? s.cards.filter((c) => cardMatches(c, filter, me)) : s.cards).map((c) => {
+                {(() => {
+                  const list = filtered ? s.cards.filter((c) => cardMatches(c, filter, me)) : s.cards
+                  return nest ? nestInColumn(list, links) : list.map((card) => ({ card, depth: 0 }))
+                })().map(({ card: c, depth }) => {
                   const due = dueInfo(c)
+                  const l = links.links.get(c.id)
+                  const kids = links.children.get(c.id) ?? []
+                  const waits = blockedBy(c, links)
+                  const parentTitle = l?.parent ? links.cards.get(l.parent.id)?.title ?? l.parent.title : null
                   return (
                     <button
                       key={c.id}
-                      className={`deck-card ${selected?.id === c.id ? 'selected' : ''} ${c.done ? 'done' : ''} ${dragging?.id === c.id ? 'drag-source' : ''}`}
+                      className={`deck-card ${selected?.id === c.id ? 'selected' : ''} ${c.done ? 'done' : ''} ${dragging?.id === c.id ? 'drag-source' : ''} ${relatedIds.has(c.id) ? 'related' : ''} ${waits.length ? 'blocked' : ''} ${depth ? `sub depth-${depth}` : ''} ${l?.parent ? 'is-subtask' : ''}`}
                       data-card={c.id}
+                      onMouseEnter={() => setHover(c.id)}
+                      onMouseLeave={() => setHover((h) => (h === c.id ? null : h))}
                       onPointerDown={(e) => {
                         if (!editable || e.button !== 0) return
                         const r = e.currentTarget.getBoundingClientRect()
@@ -382,11 +466,15 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
                       title="Двойной щелчок — открыть карточку целиком"
                     >
                       {c.labels.length > 0 && <div className="deck-labels">{c.labels.map((l) => <span key={l.id} style={{ background: `#${l.color}` }}>{l.title}</span>)}</div>}
+                      {parentTitle && !(nest && depth > 0) && <div className="deck-card-parent" title="Подзадача для этой карточки"><CornerDownRight size={12} /> {parentTitle}</div>}
                       <div className="deck-card-title">{c.done && <CheckCircle2 size={14} />} {c.title}</div>
+                      {waits.length > 0 && <div className="deck-card-wait" title="Начинать после выполнения"><Lock size={11} /> после: {waits.map((w) => w.title).join(', ')}</div>}
                       <div className="deck-card-meta">
                         {due && <span className={due.overdue ? 'overdue' : ''}><CalendarClock size={12} /> {due.text}</span>}
                         {c.commentsUnread > 0 && <span><MessageSquare size={12} /> {c.commentsUnread}</span>}
-                        {(() => { const p = checklistProgress(c.description); return p.total > 0 && <span className={p.done === p.total ? 'all-done' : ''} title="Подзадачи"><ListChecks size={12} /> {p.done}/{p.total}</span> })()}
+                        {kids.length > 0 && <span className={`deck-kids ${kids.every((k) => k.done) ? 'all-done' : ''}`} title={`Подзадачи: ${kids.map((k) => k.title).join(', ')}`}><GitBranch size={12} /> {kids.filter((k) => k.done).length}/{kids.length}</span>}
+                        {(links.next.get(c.id)?.length ?? 0) > 0 && <span title={`Далее: ${links.next.get(c.id)!.map((n) => n.title).join(', ')}`}><SkipForward size={12} /> {links.next.get(c.id)!.length}</span>}
+                        {(() => { const p = checklistProgress(c.description); return p.total > 0 && <span className={p.done === p.total ? 'all-done' : ''} title="Чек-лист"><ListChecks size={12} /> {p.done}/{p.total}</span> })()}
                         {c.attachmentCount > 0 && <span><Paperclip size={12} /> {c.attachmentCount}</span>}
                         <span className="deck-people">{c.assigned.map((a) => <Avatar key={a.uid} id={a.uid} name={a.name} className="deck-avatar" />)}</span>
                       </div>
@@ -420,6 +508,9 @@ export default function DeckView({ onNotice }: { onNotice: (t: string) => void }
           onChanged={async (text) => { onNotice(text); await loadStacks(board.id) }}
           onRefresh={() => loadStacks(board.id, true)}
           onMove={(target) => void move(selected, target)}
+          links={links}
+          ncUrl={ncUrl}
+          onOpenCard={(id) => { const c = links.cards.get(id); if (c) setSelected(c) }}
         />
       )}
     </div>
@@ -455,7 +546,7 @@ function when(ts: string | number) {
   return Number.isNaN(d.getTime()) || d.getTime() <= 0 ? '' : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRefresh, onMove }: {
+function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRefresh, onMove, links, ncUrl, onOpenCard }: {
   board: DeckBoard
   card: DeckCard
   stacks: DeckStack[]
@@ -465,6 +556,9 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
   onChanged: (text: string) => Promise<void>
   onRefresh: () => Promise<void>
   onMove: (stackId: number) => void
+  links: BoardLinks
+  ncUrl: string
+  onOpenCard: (id: number) => void
 }) {
   const [title, setTitle] = useState(card.title)
   const [description, setDescription] = useState(card.description)
@@ -486,6 +580,11 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
   const [editDesc, setEditDesc] = useState(false)
   const [picker, setPicker] = useState<'users' | 'labels' | null>(null)
   const ro = !board.canEdit
+  // Описание без блока связей (его не показываем и не даём случайно стереть) и сами связи.
+  const { body, links: own } = useMemo(() => splitLinks(description), [description])
+  const [bodyEdit, setBodyEdit] = useState<string | null>(null)
+  const [linkBusy, setLinkBusy] = useState(false)
+  const [newSub, setNewSub] = useState('')
   const items = useMemo(() => parseChecklist(description), [description])
   const progress = items.length ? Math.round((items.filter((i) => i.done).length / items.length) * 100) : 0
 
@@ -575,6 +674,116 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
     await saveDescription(addItem(description, text))
   }
 
+  // --- Связи карточек: главная задача, подзадачи, «выполняется после» ---
+  const base = ncUrl || 'https://nextcloud'
+  const kids = links.children.get(card.id) ?? []
+  const nextCards = links.next.get(card.id) ?? []
+  const titleOf = (id: number, fallback: string) => links.cards.get(id)?.title ?? fallback
+
+  async function setOwnLinks(next: CardLinks, done: string) {
+    setLinkBusy(true)
+    try {
+      await saveDescription(joinLinks(body, next, base))
+      await onChanged(done)
+    } finally {
+      setLinkBusy(false)
+    }
+  }
+  /** Изменить связи другой карточки (сделать её подзадачей этой и т. п.). */
+  async function setLinksOf(other: DeckCard, change: (l: CardLinks) => CardLinks, done: string) {
+    setLinkBusy(true)
+    try {
+      const { body: b, links: l } = splitLinks(other.description)
+      await api.deckUpdateCard(board.id, other.stackId, other.id, other.title, joinLinks(b, change(l), base), other.duedate, other.done)
+      await onChanged(done)
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setLinkBusy(false)
+    }
+  }
+  async function createSubtask() {
+    const t = newSub.trim()
+    if (!t) return
+    setNewSub('')
+    setLinkBusy(true)
+    try {
+      await api.deckCreateCard(board.id, card.stackId, t, joinLinks('', { parent: { id: card.id, title: title || card.title }, after: [] }, base))
+      await onChanged(`Подзадача «${t}» создана`)
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setLinkBusy(false)
+    }
+  }
+  /** Карточки доски для выбора связи (без самой карточки). */
+  const pickable = (exclude: (c: DeckCard) => boolean) => (
+    stacks.map((st) => ({ st, cards: st.cards.filter((c) => c.id !== card.id && !exclude(c)) })).filter((g) => g.cards.length > 0)
+  )
+  const cardSelect = (label: string, exclude: (c: DeckCard) => boolean, onPick: (c: DeckCard) => void) => (
+    <select className="deck-link-select" aria-label={label} value="" disabled={ro || linkBusy}
+      onChange={(e) => { const c = links.cards.get(Number(e.target.value)); if (c) onPick(c) }}>
+      <option value="">{label}</option>
+      {pickable(exclude).map(({ st, cards }) => (
+        <optgroup key={st.id} label={st.title}>{cards.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</optgroup>
+      ))}
+    </select>
+  )
+  const chip = (id: number, text: string, onRemove?: () => void) => (
+    <span className={`deck-link-chip ${links.cards.get(id)?.done ? 'done' : ''}`} key={id}>
+      <button type="button" className="deck-link-open" title="Открыть карточку" disabled={!links.cards.has(id)} onClick={() => onOpenCard(id)}>
+        {links.cards.get(id)?.done && <CheckCircle2 size={12} />}{text}
+      </button>
+      {onRemove && !ro && <button type="button" className="deck-link-x" aria-label={`Убрать связь с «${text}»`} title="Убрать связь" disabled={linkBusy} onClick={onRemove}><X size={12} /></button>}
+    </span>
+  )
+  const sectionLinks = (
+    <div className="deck-section deck-links">
+      <div className="deck-section-head"><b><Link2 size={14} /> Связи</b></div>
+      <div className="deck-link-row">
+        <span className="deck-link-label"><CornerDownRight size={13} /> Главная задача</span>
+        {own.parent
+          ? chip(own.parent.id, titleOf(own.parent.id, own.parent.title), () => void setOwnLinks({ ...own, parent: null }, 'Карточка больше не подзадача'))
+          : !ro && cardSelect('Сделать подзадачей…', (c) => kids.some((k) => k.id === c.id) || links.links.get(c.id)?.parent?.id === card.id,
+              (c) => void setOwnLinks({ ...own, parent: { id: c.id, title: c.title } }, `Теперь подзадача «${c.title}»`))}
+        {!own.parent && ro && <span className="muted">нет</span>}
+      </div>
+      <div className="deck-link-row">
+        <span className="deck-link-label"><GitBranch size={13} /> Подзадачи{kids.length ? ` ${kids.filter((k) => k.done).length}/${kids.length}` : ''}</span>
+        <span className="deck-link-chips">
+          {kids.map((k) => chip(k.id, k.title, () => void setLinksOf(k, (l) => ({ ...l, parent: null }), `«${k.title}» больше не подзадача`)))}
+          {kids.length === 0 && ro && <span className="muted">нет</span>}
+        </span>
+      </div>
+      {!ro && (
+        <div className="deck-link-row deck-link-add">
+          <form onSubmit={(e) => { e.preventDefault(); void createSubtask() }}>
+            <Plus size={14} />
+            <input value={newSub} disabled={linkBusy} onChange={(e) => setNewSub(e.target.value)} aria-label="Новая подзадача-карточка" placeholder="Новая подзадача-карточка — Enter" />
+          </form>
+          {cardSelect('Привязать существующую…', (c) => kids.some((k) => k.id === c.id) || own.parent?.id === c.id,
+            (c) => void setLinksOf(c, (l) => ({ ...l, parent: { id: card.id, title: title || card.title } }), `«${c.title}» — подзадача этой карточки`))}
+        </div>
+      )}
+      <div className="deck-link-row">
+        <span className="deck-link-label"><Lock size={13} /> Выполняется после</span>
+        <span className="deck-link-chips">
+          {own.after.map((a) => chip(a.id, titleOf(a.id, a.title), () => void setOwnLinks({ ...own, after: own.after.filter((x) => x.id !== a.id) }, 'Связь убрана')))}
+          {!ro && cardSelect('Добавить предыдущую…', (c) => own.after.some((a) => a.id === c.id) || wouldCycle(card.id, c.id, links),
+            (c) => void setOwnLinks({ ...own, after: [...own.after, { id: c.id, title: c.title }] }, `Выполняется после «${c.title}»`))}
+          {own.after.length === 0 && ro && <span className="muted">нет</span>}
+        </span>
+      </div>
+      {nextCards.length > 0 && (
+        <div className="deck-link-row">
+          <span className="deck-link-label"><SkipForward size={13} /> Следующие</span>
+          <span className="deck-link-chips">{nextCards.map((n) => chip(n.id, n.title))}</span>
+        </div>
+      )}
+      {blockedBy(card, links).length > 0 && <div className="inline-warning deck-wait-note"><Lock size={13} /> Ждёт выполнения: {blockedBy(card, links).map((c) => c.title).join(', ')}</div>}
+    </div>
+  )
+
   async function remove() {
     if (!window.confirm(`Удалить карточку «${card.title}»?`)) return
     try {
@@ -646,25 +855,27 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
             ) : (
               <span onDoubleClick={() => !ro && setEditingItem({ line: it.line, text: it.text })}>{it.text}</span>
             )}
-            {!ro && <button aria-label={`Удалить подзадачу ${it.text}`} title="Удалить" onClick={() => void saveDescription(removeItem(description, it.line))}><X size={13} /></button>}
+            {!ro && <button aria-label={`Удалить пункт ${it.text}`} title="Удалить" onClick={() => void saveDescription(removeItem(description, it.line))}><X size={13} /></button>}
           </li>
         ))}
       </ul>
       {!ro && (
         <form className="deck-add-item" onSubmit={(e) => { e.preventDefault(); void addSubtask() }}>
           <Plus size={15} />
-          <input value={newItem} onChange={(e) => setNewItem(e.target.value)} placeholder="Новая подзадача — Enter, чтобы добавить" />
+          <input value={newItem} onChange={(e) => setNewItem(e.target.value)} placeholder="Новый пункт чек-листа — Enter, чтобы добавить" />
         </form>
       )}
       {items.length === 0 && ro && <div className="muted">Подзадач нет.</div>}
     </div>
   )
 
-  const descriptionEditor = <textarea rows={full ? 10 : 6} value={description} disabled={ro} aria-label="Описание" onChange={(e) => setDescription(e.target.value)} placeholder="Поддерживается Markdown; подзадачи — строки «- [ ] …»" />
+  const descriptionEditor = <textarea rows={full ? 10 : 6} value={bodyEdit ?? body} disabled={ro} aria-label="Описание"
+    onChange={(e) => { setBodyEdit(e.target.value); setDescription(joinLinks(e.target.value, own, ncUrl || 'https://nextcloud')) }}
+    placeholder="Поддерживается Markdown; пункты чек-листа — строки «- [ ] …»" />
   const sectionDescription = full ? (
     <div className="deck-section">
       <div className="deck-section-head"><b>Описание</b>{!ro && <button className="text-button" onClick={() => setEditDesc(!editDesc)}><Pencil size={13} /> {editDesc ? 'Просмотр' : 'Изменить'}</button>}</div>
-      {editDesc ? descriptionEditor : description.replace(/^\s*[-*+]\s+\[[ xX]\].*$/gm, '').trim() ? <DeckMarkdown text={description} /> : <div className="muted">Описания нет.</div>}
+      {editDesc ? descriptionEditor : body.replace(/^\s*[-*+]\s+\[[ xX]\].*$/gm, '').trim() ? <DeckMarkdown text={body} /> : <div className="muted">Описания нет.</div>}
     </div>
   ) : <label className="login-field"><span>Описание</span>{descriptionEditor}</label>
 
@@ -786,7 +997,8 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
               {card.archived && <div className="inline-warning">Карточка в архиве доски.</div>}
               {meta}
               {sectionDescription}
-              <div className="deck-section"><div className="deck-section-head"><b><ListChecks size={14} /> Подзадачи{items.length ? ` ${items.filter((i) => i.done).length}/${items.length}` : ''}</b></div>{sectionTasks}</div>
+              {sectionLinks}
+              <div className="deck-section"><div className="deck-section-head"><b><ListChecks size={14} /> Чек-лист{items.length ? ` ${items.filter((i) => i.done).length}/${items.length}` : ''}</b></div>{sectionTasks}</div>
               <div className="deck-section"><div className="deck-section-head"><b><Paperclip size={14} /> Вложения{attachments?.length ? ` ${attachments.length}` : ''}</b></div>{sectionFiles}</div>
               {error && <div className="login-error" role="alert">{error}</div>}
               {actions}
@@ -808,11 +1020,11 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
         <input className="deck-title-input" value={title} disabled={ro} onChange={(e) => setTitle(e.target.value)} aria-label="Название" />
         {meta}
         <div className="deck-tabs" role="tablist">
-          <button role="tab" className={tab === 'tasks' ? 'active' : ''} onClick={() => setTab('tasks')}><ListChecks size={14} /> Подзадачи{items.length ? ` ${items.filter((i) => i.done).length}/${items.length}` : ''}</button>
+          <button role="tab" className={tab === 'tasks' ? 'active' : ''} onClick={() => setTab('tasks')}><ListChecks size={14} /> Задачи{items.length ? ` ${items.filter((i) => i.done).length}/${items.length}` : ''}</button>
           <button role="tab" className={tab === 'comments' ? 'active' : ''} onClick={() => setTab('comments')}><MessageSquare size={14} /> Комментарии{comments?.length ? ` ${comments.length}` : ''}</button>
           <button role="tab" className={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}><Paperclip size={14} /> Вложения{attachments?.length ? ` ${attachments.length}` : ''}</button>
         </div>
-        {tab === 'tasks' && <>{sectionTasks}{sectionDescription}</>}
+        {tab === 'tasks' && <>{sectionLinks}{sectionTasks}{sectionDescription}</>}
         {tab === 'comments' && sectionComments}
         {tab === 'files' && sectionFiles}
         {error && <div className="login-error" role="alert">{error}</div>}

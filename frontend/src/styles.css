@@ -1274,3 +1274,38 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 .talk-search-toggle.active { color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, transparent); }
 .talk-msg.flash .talk-bubble { animation: talk-flash 2.4s ease; }
 @keyframes talk-flash { 0%, 40% { box-shadow: 0 0 0 3px #f5a623; } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+/* Deck: группы досок */
+.board-group { display: flex; flex-direction: column; }
+.board-group-head { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 10px 12px 4px; cursor: pointer; text-align: left; }
+.board-group-head span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-group-head.static { cursor: default; padding-left: 14px; }
+.board-group-head:hover:not(.static) { color: var(--text); }
+.folder-item.in-group { padding-left: 26px; }
+
+/* Deck: связи карточек на доске */
+.deck-card.sub { margin-left: calc(var(--deck-sub, 14px) * 1); border-left: 3px solid color-mix(in srgb, var(--blue) 45%, transparent); }
+.deck-card.sub.depth-2 { margin-left: 28px; }
+.deck-card.sub.depth-3 { margin-left: 42px; }
+.deck-card.related { box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 55%, transparent); }
+.deck-card.blocked { background-image: repeating-linear-gradient(135deg, transparent 0 10px, color-mix(in srgb, #f5a623 7%, transparent) 10px 20px); }
+.deck-card-parent { display: flex; align-items: center; gap: 4px; font-size: .82em; color: var(--muted); margin-bottom: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.deck-card-wait { display: flex; align-items: center; gap: 4px; font-size: .8em; color: #b26a00; margin-top: 3px; }
+.theme-dark .deck-card-wait { color: #ffb84d; }
+.deck-kids.all-done { color: #2e7d32; }
+
+/* Deck: раздел «Связи» в карточке */
+.deck-links { display: flex; flex-direction: column; gap: 8px; }
+.deck-link-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.deck-link-label { display: inline-flex; align-items: center; gap: 5px; min-width: 150px; color: var(--muted); font-size: 12px; }
+.deck-link-chips { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.deck-link-chip { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); overflow: hidden; }
+.deck-link-chip.done .deck-link-open { color: #2e7d32; text-decoration: line-through; }
+.deck-link-open { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: inherit; font: inherit; font-size: 12px; padding: 3px 8px; cursor: pointer; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck-link-open:hover:not(:disabled) { color: var(--blue); }
+.deck-link-x { border: 0; background: transparent; color: var(--muted); padding: 3px 6px 3px 2px; cursor: pointer; display: grid; place-items: center; }
+.deck-link-x:hover { color: #c62828; }
+.deck-link-select { padding: 4px 8px; border: 1px dashed var(--line); border-radius: 14px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; max-width: 240px; cursor: pointer; }
+.deck-link-add form { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 220px; color: var(--muted); }
+.deck-link-add input { flex: 1; border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; background: var(--surface); color: inherit; font: inherit; font-size: 12px; }
+.deck-wait-note { display: flex; align-items: center; gap: 6px; }
