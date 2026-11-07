@@ -91,6 +91,7 @@ const COMMANDS: &[&str] = &[
         "talk_react",
         "talk_favorite",
         "talk_participants",
+        "talk_search",
         "talk_manage",
         "talk_rooms",
         "talk_send",

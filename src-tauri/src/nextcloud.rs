@@ -695,6 +695,16 @@ pub struct TalkRoom {
     pub can_delete: bool,
 }
 
+/// Найденное сообщение беседы (поиск Nextcloud по сообщениям Talk).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkSearchHit {
+    pub message_id: i64,
+    pub author: String,
+    pub text: String,
+    pub timestamp: i64,
+}
+
 /// Участник беседы (список, как в Talk).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -996,6 +1006,31 @@ impl Nc {
         let path = format!("{TALK_ROOM}/{}/favorite", seg(token));
         self.ocs(if on { Method::POST } else { Method::DELETE }, &path, &[], None, "Избранное").await?;
         Ok(())
+    }
+
+    /// Поиск по сообщениям беседы на сервере (провайдер «talk-message-current» общего поиска
+    /// Nextcloud; если его нет — общий «talk-message» с отбором по беседе).
+    pub async fn talk_search(&self, token: &str, term: &str) -> Result<Vec<TalkSearchHit>> {
+        let term = term.trim();
+        if term.chars().count() < 2 { return Ok(Vec::new()); }
+        let from = format!("/call/{token}");
+        let q = |t: &str| vec![("term", t.to_string()), ("from", from.clone()), ("limit", "50".to_string())];
+        let current = self.ocs(Method::GET, "ocs/v2.php/search/providers/talk-message-current/search", &q(term), None, "Поиск в беседе").await;
+        let (d, filter) = match current {
+            Ok((_, _, d)) => (d, false),
+            Err(_) => (self.ocs(Method::GET, "ocs/v2.php/search/providers/talk-message/search", &q(term), None, "Поиск в беседе").await?.2, true),
+        };
+        let hits = d["entries"].as_array().map(|a| a.iter().filter(|e| !filter || e["attributes"]["conversation"].as_str() == Some(token)).filter_map(|e| {
+            let a = &e["attributes"];
+            let id = a["messageId"].as_str().and_then(|v| v.parse().ok()).or_else(|| a["messageId"].as_i64())?;
+            Some(TalkSearchHit {
+                message_id: id,
+                author: text(&e["title"]),
+                text: text(&e["subline"]),
+                timestamp: a["timestamp"].as_str().and_then(|v| v.parse().ok()).or_else(|| a["timestamp"].as_i64()).unwrap_or(0),
+            })
+        }).collect()).unwrap_or_default();
+        Ok(hits)
     }
 
     /// Участники беседы с ролями и статусом (как боковая панель Talk).

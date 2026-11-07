@@ -1,3 +1,4 @@
+import ColorPalette from './ColorPalette'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import {
   AlignCenter, AlignLeft, AlignRight, Bold, Highlighter, IndentDecrease, IndentIncrease, Italic, Link, List,
@@ -170,6 +171,9 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
     }
   }
 
+  const [textColor, setTextColor] = useState('#d0021b')
+  const [markColor, setMarkColor] = useState('#fff59d')
+
   function exec(cmd: string, value?: string) {
     restore()
     try { document.execCommand('styleWithCSS', false, 'true') } catch { /* нет */ }
@@ -232,14 +236,10 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
         {btn('Курсив (Ctrl+I)', <Italic size={16} />, () => exec('italic'), state.italic)}
         {btn('Подчёркнутый (Ctrl+U)', <Underline size={16} />, () => exec('underline'), state.underline)}
         {btn('Зачёркнутый', <Strikethrough size={16} />, () => exec('strikeThrough'), state.strike)}
-        <label className="rt-btn rt-color" title="Цвет текста">
-          <span className="rt-a">A</span>
-          <input type="color" aria-label="Цвет текста" defaultValue="#d0021b" onChange={(e) => exec('foreColor', e.target.value)} />
-        </label>
-        <label className="rt-btn rt-color" title="Выделение цветом">
-          <Highlighter size={16} />
-          <input type="color" aria-label="Цвет выделения" defaultValue="#fff59d" onChange={(e) => exec('hiliteColor', e.target.value)} />
-        </label>
+        <ColorPalette label="Цвет текста" icon={<span className="rt-a">A</span>} current={textColor} clearLabel="Цвет по умолчанию"
+          onPick={(c) => { if (c) setTextColor(c); exec('foreColor', c ?? '#202939') }} />
+        <ColorPalette label="Выделение цветом" icon={<Highlighter size={16} />} current={markColor} clearLabel="Без выделения"
+          onPick={(c) => { if (c) setMarkColor(c); exec('hiliteColor', c ?? 'transparent') }} />
         <span className="rt-sep" />
         {btn('Маркированный список', <List size={16} />, () => exec('insertUnorderedList'), state.ul)}
         {btn('Нумерованный список', <ListOrdered size={16} />, () => exec('insertOrderedList'), state.ol)}

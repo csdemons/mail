@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  Bell, BellOff, Check, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
+  Bell, BellOff, Check, Loader2, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
   MoreHorizontal, Paperclip, Pencil, Phone, RefreshCw, Search, Send, Settings2, Smile, SmilePlus, Star, Trash2, Users, X,
 } from 'lucide-react'
 
@@ -9,6 +9,7 @@ import { EmojiPicker, QUICK_REACTIONS } from './Emoji'
 import TalkText from './TalkText'
 import Avatar from './Avatar'
 import AttachmentViewer, { previewKind } from './AttachmentViewer'
+import type { TalkSearchHit } from './types'
 import type { AttachmentInfo, DeckBoard, DeckStack, NcUser, PickedFile, TalkFile, TalkMention, TalkMessage, TalkRoom } from './types'
 import { SkeletonChat, SkeletonRows } from './Skeleton'
 import Splitter from './Splitter'
@@ -51,6 +52,20 @@ function TalkThumb({ file }: { file: TalkFile }) {
   }, [file.id])
   if (failed) return <span className="talk-image-placeholder"><FileText size={22} /></span>
   return src ? <img src={src} alt={file.name} draggable={false} /> : <span className="talk-image-placeholder">Загрузка…</span>
+}
+
+/** Найденные слова — полужирным (без HTML: только текст и <mark>). */
+function highlight(text: string, q: string): React.ReactNode {
+  if (!q) return text
+  const low = text.toLowerCase(), ql = q.toLowerCase()
+  const out: React.ReactNode[] = []
+  let i = 0
+  for (let j = low.indexOf(ql); j >= 0 && out.length < 40; j = low.indexOf(ql, i)) {
+    out.push(text.slice(i, j), <mark key={j}>{text.slice(j, j + q.length)}</mark>)
+    i = j + q.length
+  }
+  out.push(text.slice(i))
+  return out
 }
 
 function timeOf(ts: number) {
@@ -96,6 +111,20 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   const [files, setFiles] = useState<PickedFile[]>([])
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [reactFor, setReactFor] = useState<number | null>(null)
+  // Выбор эмодзи и реакции закрываются щелчком мимо (в ленте, списке бесед — где угодно) и Esc.
+  useEffect(() => {
+    if (!emojiOpen && reactFor === null) return
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Element | null
+      if (t?.closest('.emoji-picker, .talk-emoji, .talk-react-picker, .talk-actions')) return
+      setEmojiOpen(false)
+      setReactFor(null)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setEmojiOpen(false); setReactFor(null) } }
+    document.addEventListener('mousedown', onDown, true)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown, true); document.removeEventListener('keydown', onKey) }
+  }, [emojiOpen, reactFor])
   const [mentions, setMentions] = useState<TalkMention[]>([])
   const [mentionSel, setMentionSel] = useState(0)
   const [cardFrom, setCardFrom] = useState<TalkMessage | null>(null)
@@ -109,6 +138,12 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   const [showPeople, setShowPeople] = useState(() => { try { return localStorage.getItem('atom.talk.people') === '1' } catch { return false } })
   useEffect(() => { try { localStorage.setItem('atom.talk.people', showPeople ? '1' : '0') } catch { /* без хранилища */ } }, [showPeople])
   const [settingsFor, setSettingsFor] = useState<TalkRoom | null>(null)
+  // Поиск по сообщениям беседы (на сервере, после паузы в наборе).
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQ, setSearchQ] = useState('')
+  const [hits, setHits] = useState<TalkSearchHit[] | null>(null)
+  const [searchBusy, setSearchBusy] = useState(false)
+  const [flash, setFlash] = useState<number | null>(null)
   const [forwarding, setForwarding] = useState<TalkMessage | null>(null)
   // Картинки из буфера обмена, ожидающие отправки: превью по id вложения.
   const [previews, setPreviews] = useState<Record<string, string>>({})
@@ -424,6 +459,56 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
     }
   }
 
+  useEffect(() => { setSearchOpen(false); setSearchQ(''); setHits(null) }, [token])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f' && token) { e.preventDefault(); setSearchOpen(true) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [token])
+  useEffect(() => {
+    const q = searchQ.trim()
+    if (!token || !searchOpen || q.length < 2) { setHits(null); setSearchBusy(false); return }
+    let cancelled = false
+    setSearchBusy(true)
+    const t = window.setTimeout(() => {
+      api.talkSearch(token, q)
+        .then((list) => { if (!cancelled) setHits(list) })
+        .catch(() => {
+          // Сервер не умеет искать — ищем в загруженных сообщениях.
+          if (cancelled) return
+          const low = q.toLowerCase()
+          setHits(messages.filter((m) => !m.system && !m.deleted && m.text.toLowerCase().includes(low)).reverse()
+            .map((m) => ({ messageId: m.id, author: m.author, text: m.text, timestamp: m.timestamp })))
+        })
+        .finally(() => { if (!cancelled) setSearchBusy(false) })
+    }, TYPING_PAUSE_MS)
+    return () => { cancelled = true; window.clearTimeout(t) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQ, searchOpen, token])
+
+  /** Перейти к сообщению: догрузить историю до него, прокрутить и подсветить. */
+  async function jumpTo(id: number) {
+    if (!token) return
+    let list = messages
+    for (let i = 0; i < 30 && !list.some((m) => m.id === id) && list.length > 0 && list[0].id > id; i++) {
+      const chunk = await api.talkHistory(token, list[0].id).catch(() => null)
+      if (!chunk || chunk.messages.length === 0) break
+      list = merge(list, chunk.messages)
+      setHasOlder(chunk.more)
+    }
+    stickToBottom.current = false
+    setMessages(list)
+    setFlash(id)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = listRef.current?.querySelector(`.talk-msg[data-id="${id}"]`)
+      if (el) el.scrollIntoView({ block: 'center' })
+      else notify('Сообщение не найдено в истории беседы')
+    }))
+    window.setTimeout(() => setFlash((f) => (f === id ? null : f)), 2500)
+  }
+
   function copyText(text: string, what = 'Текст скопирован') {
     navigator.clipboard.writeText(text).then(() => notify(what)).catch((e) => notify(`Не удалось скопировать: ${errorText(e)}`))
   }
@@ -605,9 +690,30 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                 onClick={() => void toggleFavorite(room)}><Star size={17} fill={room.favorite ? 'currentColor' : 'none'} /></button>
               <div className="reader-toolbar-spacer" />
               <button className="secondary-button" title="Звонок откроется в браузере" onClick={() => void api.ncOpen(`call/${room.token}`)}><Phone size={15} /> Звонок</button>
+              <button className={`icon-button soft talk-search-toggle ${searchOpen ? 'active' : ''}`} aria-pressed={searchOpen} aria-label="Поиск по сообщениям" title="Поиск по сообщениям (Ctrl+F)" onClick={() => setSearchOpen(!searchOpen)}><Search size={17} /></button>
               <button className={`icon-button soft talk-people-toggle ${showPeople ? 'active' : ''}`} aria-pressed={showPeople} aria-label="Участники" title="Участники беседы" onClick={() => setShowPeople(!showPeople)}><Users size={17} /></button>
               <button className="icon-button soft" aria-label="Меню беседы" title="Ещё" onClick={(e) => openContextMenu(e, roomMenu(room))}><MoreHorizontal size={17} /></button>
             </div>
+            {searchOpen && (
+              <div className="talk-search">
+                <label className="search-box"><Search size={15} />
+                  <input autoFocus aria-label="Найти в беседе" placeholder="Найти в сообщениях беседы" value={searchQ} onChange={(e) => setSearchQ(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Escape') { setSearchOpen(false); setSearchQ('') } else if (e.key === 'Enter' && hits?.[0]) void jumpTo(hits[0].messageId) }} />
+                  {searchBusy && <Loader2 size={15} className="spin" />}
+                </label>
+                {hits && (
+                  <div className="talk-search-results" role="listbox" aria-label="Найденные сообщения">
+                    {hits.length === 0 && <div className="muted talk-search-empty">Ничего не найдено</div>}
+                    {hits.map((h) => (
+                      <button key={h.messageId} role="option" className="talk-search-hit" onClick={() => void jumpTo(h.messageId)}>
+                        <span className="talk-search-meta"><b>{h.author}</b>{h.timestamp > 0 && <small>{new Date(h.timestamp * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small>}</span>
+                        <span className="talk-search-text">{highlight(h.text, searchQ.trim())}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {error && <div className="inline-warning" role="alert">Talk: {error}</div>}
             <div className="talk-messages" ref={listRef}
               onScroll={(e) => { const el = e.currentTarget; stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
@@ -616,7 +722,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
               {messages.map((m) => m.system ? (
                 <div key={m.id} className="talk-system">{m.text} · {timeOf(m.timestamp)}</div>
               ) : (
-                <div key={m.id} className={`talk-msg ${m.own ? 'own' : ''} ${m.deleted ? 'deleted' : ''}`} data-id={m.id}
+                <div key={m.id} className={`talk-msg ${m.own ? 'own' : ''} ${m.deleted ? 'deleted' : ''} ${flash === m.id ? 'flash' : ''}`} data-id={m.id}
                   onContextMenu={(e) => { const items = messageMenu(m, room); if (items.length) openContextMenu(e, items) }}>
                   {!m.own && <Avatar id={m.authorId} name={m.author} />}
                   <div className="talk-bubble">

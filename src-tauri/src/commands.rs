@@ -4213,6 +4213,12 @@ pub async fn talk_send(state: State<'_, AppState>, token: String, message: Strin
 }
 
 #[tauri::command]
+pub async fn talk_search(state: State<'_, AppState>, token: String, term: String) -> Result<Vec<crate::nextcloud::TalkSearchHit>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_search(&token, &term).await
+}
+
+#[tauri::command]
 pub async fn talk_participants(state: State<'_, AppState>, token: String) -> Result<Vec<crate::nextcloud::TalkParticipant>> {
     let ctx = state.ctx().await?;
     nc(&ctx).await?.talk_participants(&token).await
@@ -5406,6 +5412,7 @@ macro_rules! app_commands {
             crate::commands::talk_react,
             crate::commands::talk_favorite,
             crate::commands::talk_participants,
+            crate::commands::talk_search,
             crate::commands::talk_manage,
             crate::commands::talk_edit,
             crate::commands::talk_delete,

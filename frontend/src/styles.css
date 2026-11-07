@@ -431,7 +431,6 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .rt-btn.active { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); }
 .rt-sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
 .rt-a { font-weight: 700; font-size: 15px; text-decoration: underline; text-decoration-color: #d0021b; text-decoration-thickness: 3px; }
-.rt-color input[type=color] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; border: 0; padding: 0; }
 .rt-content { resize: none; flex: 1; min-height: 220px; max-height: 50vh; overflow: auto; font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4; padding: 12px 2px; cursor: text; }
 .rt-content:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
 .rt-content blockquote { margin: 6px 0 6px 2px; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
@@ -1244,3 +1243,34 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 /* Кнопки действий над сообщением не уходят за край ленты: место сверху у первого сообщения. */
 .talk-messages { padding-top: 22px; }
 .talk-actions { z-index: 3; }
+
+/* Редактор: палитра цвета текста и выделения (применяется щелчком, без Enter) */
+.rt-palette-wrap { position: relative; display: inline-flex; }
+.rt-color { position: relative; flex-direction: column; gap: 1px; }
+.rt-color-bar { display: block; width: 16px; height: 3px; border-radius: 2px; }
+.rt-palette { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; width: 212px; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px #0002; display: flex; flex-direction: column; gap: 8px; }
+.rt-palette-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.rt-swatch { width: 26px; height: 26px; border-radius: 6px; border: 1px solid #0002; cursor: pointer; padding: 0; }
+.rt-swatch:hover { transform: scale(1.12); }
+.rt-swatch.current { outline: 2px solid var(--blue); outline-offset: 1px; }
+.rt-palette-clear { align-self: flex-start; padding: 2px 0; font-size: 12px; }
+.rt-palette-custom { display: flex; align-items: center; gap: 8px; font-size: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.rt-palette-custom input[type=color] { width: 30px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer; }
+.rt-palette-custom span { flex: 1; color: var(--muted); }
+.primary-button.small { padding: 4px 10px; font-size: 12px; }
+
+/* Чат: поиск по сообщениям */
+.talk-search { position: relative; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.talk-search .search-box { width: 100%; }
+.talk-search-results { position: absolute; z-index: 20; left: 14px; right: 14px; top: calc(100% - 4px); max-height: 360px; overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px #0002; padding: 4px; }
+.talk-search-hit { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; border: 0; background: transparent; color: inherit; padding: 8px 10px; border-radius: 7px; cursor: pointer; font: inherit; }
+.talk-search-hit:hover, .talk-search-hit:focus-visible { background: var(--hover); outline: none; }
+.talk-search-meta { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+.talk-search-meta small { color: var(--muted); }
+.talk-search-text { font-size: 13px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.talk-search-text mark { background: #fff59d; color: inherit; border-radius: 2px; }
+.theme-dark .talk-search-text mark { background: #6b5d00; }
+.talk-search-empty { padding: 10px; }
+.talk-search-toggle.active { color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, transparent); }
+.talk-msg.flash .talk-bubble { animation: talk-flash 2.4s ease; }
+@keyframes talk-flash { 0%, 40% { box-shadow: 0 0 0 3px #f5a623; } 100% { box-shadow: 0 0 0 0 transparent; } }

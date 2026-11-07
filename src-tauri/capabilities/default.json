@@ -96,6 +96,7 @@
     "allow-talk-react",
     "allow-talk-favorite",
     "allow-talk-participants",
+    "allow-talk-search",
     "allow-talk-manage",
     "allow-talk-rooms",
     "allow-talk-send",

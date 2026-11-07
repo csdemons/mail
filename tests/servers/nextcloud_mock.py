@@ -563,6 +563,15 @@ class H(BaseHTTPRequestHandler):
                 return self.send(404, {})
             r['favorite'] = method == 'POST'
             return self.ocs({})
+        if method == 'GET' and p == '/ocs/v2.php/search/providers/talk-message-current/search':
+            # Общий поиск Nextcloud по сообщениям текущей беседы (from=/call/<token>).
+            token = q.get('from', '').rsplit('/', 1)[-1]
+            term = q.get('term', '').lower()
+            hits = [m for m in state['messages'].get(token, []) if m.get('systemMessage', '') == '' and term in m['message'].lower()]
+            return self.ocs({'name': 'Сообщения', 'isPaginated': False, 'cursor': None, 'entries': [
+                {'title': m['actorDisplayName'], 'subline': m['message'], 'resourceUrl': f"/call/{token}#message_{m['id']}",
+                 'attributes': {'conversation': token, 'messageId': str(m['id']), 'actorType': 'users', 'actorId': m['actorId'], 'timestamp': str(m['timestamp'])}}
+                for m in reversed(hits)]})
         RM = '/ocs/v2.php/apps/spreed/api/v4/room/'
         if p.startswith(RM) and p[len(RM):].split('/')[0] in [x['token'] for x in state['rooms']]:
             tok, *rest = p[len(RM):].split('/')

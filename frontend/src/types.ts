@@ -343,6 +343,13 @@ export interface TalkRoom {
   canDelete: boolean
 }
 
+export interface TalkSearchHit {
+  messageId: number
+  author: string
+  text: string
+  timestamp: number
+}
+
 export interface TalkParticipant {
   attendeeId: number
   actorType: string
