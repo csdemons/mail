@@ -1369,4 +1369,6 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 .talk-media-meta small { color: var(--muted); }
 .talk-media-empty { padding: 20px 10px; text-align: center; }
 .talk-media-toggle.active { color: var(--blue); background: color-mix(in srgb, var(--blue) 10%, transparent); }
-.talk-media-tabs button { padding: 6px 7px; font-size: 12px; }
+/* Вкладки панели: в узкой панели переносятся во вторую строку, ничего не обрезается. */
+.talk-media-tabs { flex-wrap: wrap; gap: 2px 4px; }
+.talk-media-tabs button { flex: 1 1 auto; justify-content: center; padding: 6px 6px; font-size: 12px; white-space: nowrap; }

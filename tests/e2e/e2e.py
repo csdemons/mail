@@ -896,7 +896,7 @@ try:
     W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.viewer-image'))
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть просмотр"]').click()
     def media_tab(name):
-        [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-media-tabs button') if name in b.text][0].click()
+        [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-media-tabs button') if name in b.get_attribute('textContent')][0].click()
     media_tab('Файлы')
     W(d, 10).until(lambda d: any('отчёт-e2e.txt' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.talk-media-panel .talk-media-row')))
     media_tab('Голосовые')
