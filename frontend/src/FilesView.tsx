@@ -45,18 +45,23 @@ export default function FilesView({ onNotice, onSendLinks, focus }: {
   const DEFAULT_NAMES = { docx: 'Новый документ', xlsx: 'Новая таблица', pptx: 'Новая презентация' } as const
   const pickKind = (k: 'docx' | 'xlsx' | 'pptx') => { setCreateKind(k); setCreateName(DEFAULT_NAMES[k]) }
 
+  // Ответ на запрос прежней папки (быстрый переход) не должен затирать список новой.
+  const loadSeq = useRef(0)
   const load = useCallback(async (p: string) => {
+    const id = ++loadSeq.current
     setLoading(true)
     setError('')
     try {
       const list = await api.ncFilesList(p)
+      if (id !== loadSeq.current) return
       setFiles(list)
       setSelected((cur) => (cur ? list.find((f) => f.path === cur.path) ?? null : null))
     } catch (e) {
+      if (id !== loadSeq.current) return
       setFiles([])
       setError(errorText(e))
     } finally {
-      setLoading(false)
+      if (id === loadSeq.current) setLoading(false)
     }
   }, [])
 
