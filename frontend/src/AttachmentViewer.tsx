@@ -7,9 +7,11 @@ import { api, errorText, formatSize, isOfficeFile, onSessionReset } from './api'
 import type { AttachmentInfo } from './types'
 import CalendarImportDialog, { isCalendarFile } from './CalendarImport'
 
-export type PreviewKind = 'image' | 'pdf' | 'text' | null
+export type PreviewKind = 'image' | 'pdf' | 'text' | 'video' | 'audio' | null
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|ico)$/i
+const VIDEO_EXT = /\.(mp4|m4v|webm|ogv|mov)$/i
+const AUDIO_EXT = /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|weba)$/i
 const TEXT_EXT = /\.(txt|log|csv|tsv|json|xml|md|ini|conf|cfg|ya?ml|sh|bat|ps1|sql|py|js|ts|html?|css|eml)$/i
 
 export function previewKind(a: Pick<AttachmentInfo, 'name' | 'contentType'>): PreviewKind {
@@ -17,6 +19,8 @@ export function previewKind(a: Pick<AttachmentInfo, 'name' | 'contentType'>): Pr
   if (t.startsWith('image/') && !t.includes('tiff')) return 'image'
   if (IMAGE_EXT.test(a.name)) return 'image'
   if (t === 'application/pdf' || /\.pdf$/i.test(a.name)) return 'pdf'
+  if (t.startsWith('video/') || VIDEO_EXT.test(a.name)) return 'video'
+  if (t.startsWith('audio/') || AUDIO_EXT.test(a.name)) return 'audio'
   if (t.startsWith('text/') || t === 'application/json' || t === 'application/xml' || t === 'message/rfc822' || TEXT_EXT.test(a.name)) return 'text'
   return null
 }
@@ -28,6 +32,28 @@ export function canOpenLocally(name: string): boolean {
   const n = name.trim().replace(/[. ]+$/, '')
   const dot = n.lastIndexOf('.')
   return dot > 0 && OPENABLE_EXT.test(n)
+}
+
+function mediaMime(a: AttachmentInfo, kind: 'video' | 'audio'): string {
+  const t = a.contentType.toLowerCase()
+  if (t.startsWith(`${kind}/`)) return t
+  const ext = a.name.split('.').pop()?.toLowerCase() ?? ''
+  return ({ mp4: 'video/mp4', m4v: 'video/mp4', webm: kind === 'audio' ? 'audio/webm' : 'video/webm', ogv: 'video/ogg', mov: 'video/quicktime',
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', flac: 'audio/flac', weba: 'audio/webm' } as Record<string, string>)[ext] ?? `${kind}/mp4`
+}
+
+/** Видео и звук: воспроизведение из памяти (объект-URL), без временных файлов. */
+function MediaView({ data, kind, mime }: { data: string; kind: 'video' | 'audio'; mime: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    const u = URL.createObjectURL(new Blob([bytesOf(data) as BlobPart], { type: mime }))
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [data, mime])
+  if (!url) return null
+  return kind === 'video'
+    ? <video className="viewer-video" src={url} controls autoPlay />
+    : <audio className="viewer-audio" src={url} controls autoPlay />
 }
 
 function mimeFor(a: AttachmentInfo): string {
@@ -225,6 +251,7 @@ export default function AttachmentViewer({ folder, uid, items, index, onIndex, o
           : kind === 'image' ? <img className="viewer-image" src={`data:${mimeFor(a)};base64,${data}`} alt={a.name} onClick={() => setActual(!actual)} />
           : kind === 'text' ? <pre className="viewer-text">{decodeText(bytesOf(data))}</pre>
           : kind === 'pdf' ? <PdfView data={data} />
+          : kind === 'video' || kind === 'audio' ? <MediaView data={data} kind={kind} mime={mediaMime(a, kind)} />
           : null}
       </div>
       {pos > 0 && <button className="viewer-nav prev" aria-label="Предыдущий файл" onClick={() => onIndex(items[pos - 1].index)}><ChevronLeft size={28} /></button>}

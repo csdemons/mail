@@ -830,6 +830,104 @@ try:
     d.find_element(By.CSS_SELECTOR, '.talk-search input').send_keys(Keys.ESCAPE)
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-search'))
     ok('chat: search in conversation messages, jump to the found message')
+
+    st = lambda: nc_mock('GET', '/test/state')
+    # Опрос: создать, проголосовать, голос коллеги, завершить.
+    d.find_element(By.CSS_SELECTOR, '.talk-poll-new').click()
+    dlg = wait(d, '.talk-poll-modal')
+    dlg.find_element(By.CSS_SELECTOR, 'input').send_keys('Когда созвон?')
+    dlg.find_element(By.CSS_SELECTOR, 'input[aria-label="Вариант 1"]').send_keys('Утром')
+    dlg.find_element(By.CSS_SELECTOR, 'input[aria-label="Вариант 2"]').send_keys('Вечером')
+    [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.text == 'Отправить опрос'][0].click()
+    card = W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.talk-poll') if 'Когда созвон?' in c.get_attribute('textContent') and c.find_elements(By.CSS_SELECTOR, '.talk-poll-choice')])[0]
+    pid = card.get_attribute('data-poll')
+    [l for l in card.find_elements(By.CSS_SELECTOR, '.talk-poll-choice') if 'Вечером' in l.text][0].click()
+    [b for b in card.find_elements(By.TAG_NAME, 'button') if b.text == 'Голосовать'][0].click()
+    W(d, 10).until(lambda d: st()['talk_polls'][pid]['allVotes'].get('test') == [1])
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, f'.talk-poll[data-poll="{pid}"] .talk-poll-result.mine'))
+    nc_mock('POST', f'/test/poll_vote?id={pid}&options=0')
+    card = d.find_element(By.CSS_SELECTOR, f'.talk-poll[data-poll="{pid}"]')
+    [b for b in card.find_elements(By.TAG_NAME, 'button') if b.text == 'Завершить'][0].click(); accept_confirm(d)
+    W(d, 10).until(lambda d: st()['talk_polls'][pid]['status'] == 1)
+    W(d, 10).until(lambda d: 'завершён' in d.find_element(By.CSS_SELECTOR, f'.talk-poll[data-poll="{pid}"]').get_attribute('textContent')
+                   and '50% · 1' in d.find_element(By.CSS_SELECTOR, f'.talk-poll[data-poll="{pid}"]').get_attribute('textContent'))
+    ok('chat polls: create, vote, results with a colleague vote, close')
+
+    # Тихая отправка: без звука уведомления (флаг silent), переключатель сбрасывается после отправки.
+    d.find_element(By.CSS_SELECTOR, '.talk-silent').click()
+    assert 'active' in d.find_element(By.CSS_SELECTOR, '.talk-silent').get_attribute('class')
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'); box.send_keys('Тихое сообщение', Keys.ENTER)
+    W(d, 10).until(lambda d: any(m.get('raw') == 'Тихое сообщение' and m.get('silent') for m in st()['messages']['abc123']))
+    W(d, 5).until(lambda d: 'active' not in d.find_element(By.CSS_SELECTOR, '.talk-silent').get_attribute('class'))
+    ok('chat: silent send (no notification sound for recipients)')
+
+    # Превью ссылки под сообщением (через сервис ссылок Nextcloud).
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'); box.send_keys('Регламент: https://example.org/reglament', Keys.ENTER)
+    link = W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.talk-link-card') if 'Пример: регламент выпуска' in c.get_attribute('textContent')])[0]
+    W(d, 10).until(lambda d: link.find_elements(By.CSS_SELECTOR, 'img[src^="data:image/png"]'))
+    assert 'example.org' in link.get_attribute('textContent')
+    ok('chat: link preview card with title, description and image')
+
+    # Голосовое: запись (микрофон подменён в тесте) — отправка как voice-message; прослушивание голосового коллеги.
+    d.execute_script("""
+      navigator.mediaDevices.getUserMedia = async () => ({ getTracks: () => [{ stop() {} }] });
+      window.MediaRecorder = class {
+        constructor() { this.mimeType = 'audio/ogg' }
+        static isTypeSupported(t) { return t.startsWith('audio/ogg') }
+        start() {}
+        stop() { this.ondataavailable({ data: new Blob([new Uint8Array([79, 103, 103, 83, 0, 2, 0, 0])], { type: 'audio/ogg' }) }); this.onstop() }
+      };
+    """)
+    d.find_element(By.CSS_SELECTOR, '.talk-mic').click()
+    wait(d, '.talk-recording'); time.sleep(1.3)
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Отправить голосовое"]').click()
+    W(d, 20).until(lambda d: any(m.get('messageType') == 'voice-message' and m['actorId'] == 'test' and m['messageParameters']['file']['name'].startswith('Голосовое ') for m in st()['messages']['abc123']))
+    nc_mock('POST', '/test/inject?voice=1&token=abc123')
+    vbtn = W(d, 15).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-voice button') if 'Прослушать' in b.text])
+    vbtn[-1].click()
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-voice audio[src^="blob:"]'))
+    ok('chat voice messages: record and send as voice message, play a received one')
+
+    # Медиа и файлы беседы: фото (просмотр с листанием), файлы, голосовые, ссылки.
+    d.find_element(By.CSS_SELECTOR, '.talk-media-toggle').click()
+    panel = wait(d, '.talk-media-panel')
+    tile = W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-media-panel .talk-media-tile[aria-label="Открыть Фото с объекта.png"]'))[0]
+    tile.click()
+    W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.viewer-image'))
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть просмотр"]').click()
+    def media_tab(name):
+        [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-media-tabs button') if name in b.text][0].click()
+    media_tab('Файлы')
+    W(d, 10).until(lambda d: any('отчёт-e2e.txt' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.talk-media-panel .talk-media-row')))
+    media_tab('Голосовые')
+    W(d, 10).until(lambda d: any('Иванов Иван' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.talk-media-panel .talk-media-row')))
+    media_tab('Ссылки')
+    W(d, 10).until(lambda d: any('example.org/reglament' in r.get_attribute('textContent') for r in d.find_elements(By.CSS_SELECTOR, '.talk-media-panel .talk-media-row')))
+    media_tab('Медиа'); time.sleep(1); d.save_screenshot(f'{OUT}/11c-chat-extras.png')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть медиа и файлы"]').click()
+    ok('chat: media & files panel (photos with viewer, files, voice, links)')
+
+    # Исчезающие сообщения (модератор): включить — новые сообщения с отметкой, выключить.
+    def expiry(label):
+        d.find_element(By.CSS_SELECTOR, 'button[aria-label="Меню беседы"]').click()
+        [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.strip() == 'Настройки беседы…'][0].click()
+        Select(wait(d, '.talk-settings-modal select[aria-label="Исчезающие сообщения"]')).select_by_visible_text(label)
+        W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-settings-modal'))
+    expiry('Через 1 час')
+    W(d, 10).until(lambda d: any(r['token'] == 'abc123' and r['messageExpiration'] == 3600 for r in st()['rooms']))
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-expiry-badge'))
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'); box.send_keys('Временное сообщение', Keys.ENTER)
+    W(d, 10).until(lambda d: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg.own') if 'Временное сообщение' in m.get_attribute('textContent') and m.find_elements(By.CSS_SELECTOR, '.talk-expires')])
+    expiry('Выключены')
+    W(d, 10).until(lambda d: any(r['token'] == 'abc123' and r['messageExpiration'] == 0 for r in st()['rooms']))
+    ok('chat: disappearing messages on/off (moderator), marked in the feed')
+
+    # Звонок — в окне программы (в тесте окно не открывается, проверяется адрес).
+    d.find_element(By.CSS_SELECTOR, '.talk-call').click()
+    call_file = os.path.join(os.environ['E2E_HOME'], 'saved', 'call-window.txt')
+    W(d, 10).until(lambda d: os.path.exists(call_file))
+    assert open(call_file).read().endswith('/index.php/call/abc123'), open(call_file).read()
+    ok('chat: call opens in an app window (Nextcloud call page)')
     d.save_screenshot(f'{OUT}/11-chat.png')
 
     # Карточка Deck из сообщения.

@@ -54,7 +54,7 @@ async fn main() {
         }
         let last = chunk.last_id;
         if std::env::var("NC_WRITE").is_ok() {
-            client.talk_send(&r.token, "Привет из RRCKI Mail", hist.first().map(|m| m.id)).await.expect("send");
+            client.talk_send(&r.token, "Привет из RRCKI Mail", hist.first().map(|m| m.id), false).await.expect("send");
             let poller = nc::Nc::long_poll(creds.clone(), &uid).unwrap();
             let t = std::time::Instant::now();
             let new = poller.talk_poll(&r.token, last).await.expect("poll");

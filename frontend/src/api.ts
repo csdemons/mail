@@ -1,7 +1,7 @@
 import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
-  SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, LoginResult, MessageDetail, MessagePage,
+  SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
   MessageSummary, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
@@ -45,7 +45,7 @@ const READ_ONLY = new Set([
   'nc_search_users', 'nc_files_list', 'nc_shares', 'talk_file_preview', 'talk_file_data', 'totp_status', 'cached_folders',
   'cached_messages', 'search_mail', 'search_server', 'offline_status', 'offline_queue', 'signature_get', 'list_folders', 'list_messages',
   'nc_editors', 'nc_avatar', 'attachment_data', 'mail_filters_get', 'rules_get', 'counterparties', 'counterparty_timeline',
-  'calendar_file_preview', 'diagnostics', 'talk_participants', 'talk_search',
+  'calendar_file_preview', 'diagnostics', 'talk_participants', 'talk_search', 'talk_poll_get', 'talk_shared', 'nc_link_preview',
 ])
 /** Опросы и служебные вызовы: ничего не меняют, разделённые запросы не сбрасывают. */
 const PASSIVE = new Set(['talk_poll', 'job_status', 'update_progress', 'nc_connect_poll', 'send_wait', 'notify', 'notify_poll_secs', 'nc_open', 'open_link'])
@@ -213,13 +213,21 @@ export const api = {
   ncUploadLinks: (dir: string, attachments: string[]) => invoke<UploadedLink[]>('nc_upload_links', { dir, attachments }),
   ncSaveMailAttachment: (folder: string, uid: number, index: number, dir: string) =>
     invoke<string>('nc_save_mail_attachment', { folder, uid, index, dir }),
-  talkSendFile: (token: string, attachment: string, caption: string, replyTo: number | null = null) =>
-    invoke<void>('talk_send_file', { token, attachment, caption, replyTo }),
+  talkSendFile: (token: string, attachment: string, caption: string, replyTo: number | null = null, opts: { voice?: boolean; silent?: boolean } = {}) =>
+    invoke<void>('talk_send_file', { token, attachment, caption, replyTo, voice: opts.voice ?? false, silent: opts.silent ?? false }),
   talkFilePreview: (fileId: string) => invoke<string | null>('talk_file_preview', { fileId }),
   talkFileData: (path: string) => invoke<string>('talk_file_data', { path }),
   forgetAttachment: (attachment: string) => invoke<void>('forget_attachment', { attachment }),
-  talkSend: (token: string, message: string, replyTo: number | null = null) =>
-    invoke<void>('talk_send', { token, message, replyTo }),
+  talkSend: (token: string, message: string, replyTo: number | null = null, silent = false) =>
+    invoke<void>('talk_send', { token, message, replyTo, silent }),
+  talkPollCreate: (token: string, question: string, options: string[], maxVotes: number, hidden: boolean) =>
+    invoke<TalkPoll>('talk_poll_create', { token, question, options, maxVotes, hidden }),
+  talkPollGet: (token: string, id: number) => invoke<TalkPoll>('talk_poll_get', { token, id }),
+  talkPollVote: (token: string, id: number, options: number[]) => invoke<TalkPoll>('talk_poll_vote', { token, id, options }),
+  talkPollClose: (token: string, id: number) => invoke<TalkPoll>('talk_poll_close', { token, id }),
+  talkShared: (token: string, kind: string, before: number | null = null) => invoke<TalkMessage[]>('talk_shared', { token, kind, before }),
+  ncLinkPreview: (url: string) => invoke<LinkPreview | null>('nc_link_preview', { url }),
+  talkCallWindow: (token: string) => invoke<void>('talk_call_window', { token }),
   autoLogin: () => invoke<Account | null>('auto_login'),
   logout: (resetTotp = false) => invoke<void>('logout', { resetTotp }),
   totpStatus: () => invoke<TotpStatus>('totp_status'),

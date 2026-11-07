@@ -341,6 +341,8 @@ export interface TalkRoom {
   notifyLevel: number
   canLeave: boolean
   canDelete: boolean
+  /** Исчезающие сообщения: через сколько секунд; 0 — выключено. */
+  messageExpiration: number
 }
 
 export interface TalkSearchHit {
@@ -377,6 +379,12 @@ export interface TalkMessage {
   deleted: boolean
   editText: string | null
   update: boolean
+  /** Опрос в сообщении. */
+  poll: { id: number; question: string } | null
+  /** Голосовое сообщение. */
+  voice: boolean
+  /** Исчезнет в это время (unix, с); 0 — нет. */
+  expires: number
 }
 
 export interface TalkReaction {
@@ -615,3 +623,25 @@ export interface ConnectionStatus {
 export interface IcsEvent { uid: string; title: string; start: string; end: string; allDay: boolean; location: string | null; recurring: boolean }
 export interface CalendarFile { events: IcsEvent[]; calendars: DavCollection[] }
 export interface CalendarImport { added: number; updated: number; errors: string[] }
+
+export interface TalkPoll {
+  id: number
+  question: string
+  options: string[]
+  votes: number[]
+  voters: number
+  voted: number[]
+  closed: boolean
+  hidden: boolean
+  maxVotes: number
+  author: string
+  own: boolean
+}
+
+export interface LinkPreview {
+  url: string
+  title: string
+  description: string
+  image: string | null
+  site: string
+}

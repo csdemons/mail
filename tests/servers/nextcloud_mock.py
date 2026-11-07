@@ -87,6 +87,7 @@ state = {
         'dm-ivanov': [],
     },
     'read': {'abc123': 0, 'dm-ivanov': 0},
+    'talk_polls': {},
     # До какого сообщения беседу прочитали все участники (X-Chat-Last-Common-Read).
     'peer_read': {},
 }
@@ -130,6 +131,22 @@ def members(r):
     return r['members']
 
 
+def expire(m, token):
+    """Исчезающие сообщения: время удаления по настройке беседы."""
+    r = next((x for x in state['rooms'] if x['token'] == token), None)
+    if r and r.get('expiration'):
+        m['expirationTimestamp'] = m['timestamp'] + r['expiration']
+
+
+def poll_view(pl):
+    voted = pl['votes'].get(UID, [])
+    counts = {f'option-{i}': sum(1 for v in pl['votes'].values() if i in v) for i in range(len(pl['options']))}
+    show = pl['resultMode'] == 0 or pl['status'] == 1
+    return {'id': pl['id'], 'question': pl['question'], 'options': pl['options'], 'votes': counts if show else [],
+            'numVoters': len(pl['votes']), 'votedSelf': voted, 'status': pl['status'], 'resultMode': pl['resultMode'],
+            'maxVotes': pl['maxVotes'], 'actorType': 'users', 'actorId': pl['actorId'], 'actorDisplayName': pl['actorDisplayName']}
+
+
 def room_view(r):
     me = next((m for m in members(r) if m['actorId'] == UID), None)
     msgs = [m for m in state['messages'][r['token']] if m['messageType'] != 'system']
@@ -137,7 +154,7 @@ def room_view(r):
     unread = sum(1 for m in msgs if m['id'] > state['read'][r['token']] and m['actorId'] != UID)
     return dict({k: v for k, v in r.items() if k != 'members'}, unreadMessages=unread, unreadMention=False, isFavorite=bool(r.get('favorite')),
                 participantType=me['participantType'] if me else 3, description=r.get('description', ''),
-                notificationLevel=r.get('notify', 0), canLeaveConversation=True,
+                notificationLevel=r.get('notify', 0), canLeaveConversation=True, messageExpiration=r.get('expiration', 0),
                 canDeleteConversation=bool(me and me['participantType'] in (1, 2) and r['type'] != 1),
                 lastCommonReadMessage=state['peer_read'].get(r['token'], 0),
                 lastActivity=last['timestamp'] if last else 0, lastMessage=last or [])
@@ -283,19 +300,34 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']},
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/inject':
             with lock:
                 if q.get('read') == '1' and state['messages'][q['token']]:
                     state['peer_read'][q['token']] = max(m['id'] for m in state['messages'][q['token']])
-                state['messages'][q['token']].append({
-                    'id': next(ids), 'actorType': 'users', 'actorId': 'ivanov', 'actorDisplayName': 'Иванов Иван',
-                    'timestamp': int(time.time()), 'message': q['text'], 'messageType': 'comment', 'systemMessage': '',
-                    'messageParameters': []})
+                if q.get('voice') == '1':
+                    # Голосовое «от коллеги»: файл в /Talk и сообщение voice-message.
+                    vpath = '/Talk/Голосовое Иванова.ogg'
+                    state['files'][vpath] = {'id': next(ids), 'data': b'OggS\x00\x02' + b'\x00' * 200}
+                    vf = state['files'][vpath]
+                    state['messages'][q['token']].append({
+                        'id': next(ids), 'actorType': 'users', 'actorId': 'ivanov', 'actorDisplayName': 'Иванов Иван',
+                        'timestamp': int(time.time()), 'message': '{file}', 'messageType': 'voice-message', 'systemMessage': '',
+                        'messageParameters': {'file': {'type': 'file', 'id': str(vf['id']), 'name': 'Голосовое Иванова.ogg', 'size': len(vf['data']), 'mimetype': 'audio/ogg', 'path': vpath.lstrip('/')}}})
+                else:
+                    state['messages'][q['token']].append({
+                        'id': next(ids), 'actorType': 'users', 'actorId': 'ivanov', 'actorDisplayName': 'Иванов Иван',
+                        'timestamp': int(time.time()), 'message': q['text'], 'messageType': 'comment', 'systemMessage': '',
+                        'messageParameters': []})
                 lock.notify_all()
             return self.send(200, {})
 
+        if method == 'POST' and p == '/test/poll_vote':
+            # Голос «коллеги» за вариант опроса.
+            pl = state['talk_polls'][int(q['id'])]
+            pl['votes'][q.get('user', 'ivanov')] = [int(x) for x in q['options'].split(',')]
+            return self.send(200, {})
         if not self.authed():
             return
         if p.startswith('/ocs/v2.php/apps/files/api/v1/directEditing'):
@@ -532,8 +564,11 @@ class H(BaseHTTPRequestHandler):
             name = b['path'].rsplit('/', 1)[1]
             with lock:
                 m = {'id': next(ids), 'actorType': 'users', 'actorId': UID, 'actorDisplayName': 'Тестовый Пользователь',
-                     'timestamp': int(time.time()), 'message': meta.get('caption') or '{file}', 'messageType': 'comment', 'systemMessage': '',
-                     'messageParameters': {'file': {'type': 'file', 'id': str(f['id']), 'name': name, 'size': len(f['data']), 'mimetype': 'text/plain', 'path': b['path']}}}
+                     'timestamp': int(time.time()), 'message': meta.get('caption') or '{file}', 'messageType': meta.get('messageType', 'comment'), 'systemMessage': '',
+                     'silent': bool(meta.get('silent')),
+                     'messageParameters': {'file': {'type': 'file', 'id': str(f['id']), 'name': name, 'size': len(f['data']),
+                                                    'mimetype': __import__('mimetypes').guess_type(name)[0] or 'text/plain', 'path': b['path']}}}
+                expire(m, b['shareWith'])
                 state['messages'][b['shareWith']].append(m)
                 lock.notify_all()
             return self.ocs({'id': next(ids)})
@@ -572,6 +607,63 @@ class H(BaseHTTPRequestHandler):
                 {'title': m['actorDisplayName'], 'subline': m['message'], 'resourceUrl': f"/call/{token}#message_{m['id']}",
                  'attributes': {'conversation': token, 'messageId': str(m['id']), 'actorType': 'users', 'actorId': m['actorId'], 'timestamp': str(m['timestamp'])}}
                 for m in reversed(hits)]})
+        PL = '/ocs/v2.php/apps/spreed/api/v1/poll/'
+        if p.startswith(PL):
+            tok, *rest = p[len(PL):].split('/')
+            if tok not in state['messages']:
+                return self.send(404)
+            if method == 'POST' and not rest:
+                b = self.body()
+                pid = next(ids)
+                pl = {'id': pid, 'question': b['question'], 'options': list(b['options']), 'resultMode': int(b.get('resultMode', 0)),
+                      'maxVotes': int(b.get('maxVotes', 0)), 'status': 0, 'votes': {}, 'actorId': UID, 'actorDisplayName': 'Тестовый Пользователь'}
+                state['talk_polls'][pid] = pl
+                with lock:
+                    m = {'id': next(ids), 'actorType': 'users', 'actorId': UID, 'actorDisplayName': 'Тестовый Пользователь',
+                         'timestamp': int(time.time()), 'message': '{object}', 'messageType': 'comment', 'systemMessage': '',
+                         'messageParameters': {'object': {'type': 'talk-poll', 'id': str(pid), 'name': b['question']}}}
+                    state['messages'][tok].append(m)
+                    lock.notify_all()
+                return self.ocs(poll_view(pl), 201)
+            pl = state['talk_polls'].get(int(rest[0])) if rest else None
+            if not pl:
+                return self.send(404)
+            if method == 'GET':
+                return self.ocs(poll_view(pl))
+            if method == 'POST':
+                if pl['status'] == 1:
+                    return self.ocs({}, 400)
+                opts = [int(x) for x in self.body().get('optionIds', [])]
+                if pl['maxVotes'] and len(opts) > pl['maxVotes']:
+                    return self.ocs({}, 400)
+                if opts: pl['votes'][UID] = opts
+                else: pl['votes'].pop(UID, None)
+                return self.ocs(poll_view(pl))
+            if method == 'DELETE':
+                pl['status'] = 1
+                return self.ocs(poll_view(pl))
+        if method == 'GET' and p == '/ocs/v2.php/references/resolve':
+            ref = q.get('reference', '')
+            if 'example.org' not in ref:
+                return self.ocs({'references': {ref: None}})
+            og = {'id': ref, 'name': 'Пример: регламент выпуска', 'description': 'Порядок выпуска новых версий программ института.',
+                  'thumb': f'{base}/index.php/core/references/preview/e2e', 'link': ref}
+            return self.ocs({'references': {ref: {'richObjectType': 'open-graph', 'openGraphObject': og, 'accessible': True}}})
+        if method == 'GET' and p == '/index.php/core/references/preview/e2e':
+            self.send_response(200); self.send_header('Content-Type', 'image/png'); self.send_header('Content-Length', str(len(PHOTO))); self.end_headers()
+            self.wfile.write(PHOTO); return
+        CH = '/ocs/v2.php/apps/spreed/api/v1/chat/'
+        if method == 'GET' and p.startswith(CH) and p.endswith('/share'):
+            tok = p[len(CH):].split('/')[0]
+            kind = q.get('objectType', 'media')
+            def kind_of(m):
+                f = (m.get('messageParameters') or {}).get('file') if isinstance(m.get('messageParameters'), dict) else None
+                if not f: return 'other' if m.get('messageParameters') and isinstance(m['messageParameters'], dict) and 'object' in m['messageParameters'] else None
+                if m.get('messageType') == 'voice-message': return 'voice'
+                mt = f.get('mimetype', '')
+                return 'media' if mt.startswith(('image/', 'video/')) else 'audio' if mt.startswith('audio/') else 'file'
+            items = {str(m['id']): m for m in state['messages'].get(tok, []) if kind_of(m) == kind}
+            return self.ocs(items)
         RM = '/ocs/v2.php/apps/spreed/api/v4/room/'
         if p.startswith(RM) and p[len(RM):].split('/')[0] in [x['token'] for x in state['rooms']]:
             tok, *rest = p[len(RM):].split('/')
@@ -593,6 +685,9 @@ class H(BaseHTTPRequestHandler):
                 r['members'] = [m for m in members(r) if m['actorId'] != UID]
                 state['rooms'].remove(r)
                 return self.ocs({})
+            if method == 'POST' and sub == 'message-expiration':
+                if not mod: return self.ocs({}, 403)
+                r['expiration'] = int(b.get('seconds', 0)); return self.ocs({})
             if method == 'POST' and sub == 'notify':
                 r['notify'] = int(b.get('level', 0)); return self.ocs({})
             if not mod and (sub in ('attendees', 'moderators', 'description', 'read-only', 'public') or (sub == '' and method in ('PUT', 'DELETE'))):
@@ -682,7 +777,8 @@ class H(BaseHTTPRequestHandler):
                             text = text.replace(f'@"{mm}"', '{' + f'mention-user{i}' + '}', 1)
                     m = {'id': next(ids), 'actorType': 'users', 'actorId': UID, 'actorDisplayName': 'Тестовый Пользователь',
                          'timestamp': int(time.time()), 'message': text, 'messageType': 'comment', 'systemMessage': '',
-                         'messageParameters': params or [], 'raw': b['message']}
+                         'messageParameters': params or [], 'raw': b['message'], 'silent': bool(b.get('silent'))}
+                    expire(m, token)
                     if b.get('replyTo'):
                         parent = next(x for x in state['messages'][token] if x['id'] == int(b['replyTo']))
                         m['parent'] = parent

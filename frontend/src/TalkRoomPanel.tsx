@@ -169,6 +169,18 @@ export function RoomSettings({ room, notify, onClose, onChanged, onGone }: {
             <label><input type="checkbox" checked={room.kind === 3} disabled={busy} onChange={(e) => void run([['public', { on: e.target.checked }]], e.target.checked ? 'Открыт доступ по ссылке' : 'Доступ по ссылке закрыт')} /> Доступ по ссылке (гости)</label>
           </div>
         )}
+        {room.moderator && (
+          <div className="settings-section notify-settings">
+            <strong>Исчезающие сообщения</strong>
+            <select aria-label="Исчезающие сообщения" value={room.messageExpiration} disabled={busy}
+              onChange={(e) => { const sec = Number(e.target.value); void run([['expiration', { seconds: sec }]], sec ? 'Новые сообщения будут исчезать' : 'Исчезающие сообщения выключены') }}>
+              {[[0, 'Выключены'], [3600, 'Через 1 час'], [28800, 'Через 8 часов'], [86400, 'Через 1 день'], [604800, 'Через 1 неделю'], [2419200, 'Через 4 недели']]
+                .concat([0, 3600, 28800, 86400, 604800, 2419200].includes(room.messageExpiration) ? [] : [[room.messageExpiration, `Через ${Math.round(room.messageExpiration / 3600)} ч`]])
+                .map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+            <span className="settings-hint">Касается новых сообщений: они удаляются у всех участников через выбранное время.</span>
+          </div>
+        )}
         <div className="settings-section notify-settings">
           <strong>Мои уведомления</strong>
           <select aria-label="Уведомления" value={room.notifyLevel} disabled={busy} onChange={(e) => void run([['notify', { level: Number(e.target.value) }]], 'Уведомления беседы изменены')}>

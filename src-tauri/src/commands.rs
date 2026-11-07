@@ -4207,9 +4207,67 @@ pub async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i6
 }
 
 #[tauri::command]
-pub async fn talk_send(state: State<'_, AppState>, token: String, message: String, reply_to: Option<i64>) -> Result<()> {
+pub async fn talk_send(state: State<'_, AppState>, token: String, message: String, reply_to: Option<i64>, silent: Option<bool>) -> Result<()> {
     let ctx = state.ctx().await?;
-    nc(&ctx).await?.talk_send(&token, &message, reply_to).await
+    nc(&ctx).await?.talk_send(&token, &message, reply_to, silent.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn talk_poll_create(state: State<'_, AppState>, token: String, question: String, options: Vec<String>, max_votes: i64, hidden: bool) -> Result<crate::nextcloud::TalkPoll> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_poll_create(&token, &question, &options, max_votes, hidden).await
+}
+
+#[tauri::command]
+pub async fn talk_poll_get(state: State<'_, AppState>, token: String, id: i64) -> Result<crate::nextcloud::TalkPoll> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_poll_get(&token, id).await
+}
+
+#[tauri::command]
+pub async fn talk_poll_vote(state: State<'_, AppState>, token: String, id: i64, options: Vec<i64>) -> Result<crate::nextcloud::TalkPoll> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_poll_vote(&token, id, &options).await
+}
+
+#[tauri::command]
+pub async fn talk_poll_close(state: State<'_, AppState>, token: String, id: i64) -> Result<crate::nextcloud::TalkPoll> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_poll_close(&token, id).await
+}
+
+/// Медиа, файлы, голосовые и т. п. беседы — для вкладки «Медиа и файлы».
+#[tauri::command]
+pub async fn talk_shared(state: State<'_, AppState>, token: String, kind: String, before: Option<i64>) -> Result<Vec<crate::nextcloud::TalkMessage>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_shared(&token, &kind, before).await
+}
+
+/// Предпросмотр ссылки из сообщения (через Nextcloud).
+#[tauri::command]
+pub async fn nc_link_preview(state: State<'_, AppState>, url: String) -> Result<Option<crate::nextcloud::LinkPreview>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.link_preview(&url).await
+}
+
+/// Звонок Talk в отдельном окне программы (страница звонка Nextcloud). Окно — обычная
+/// веб-страница сервера: доступа к командам программы у неё нет.
+#[tauri::command]
+pub async fn talk_call_window(app: AppHandle, state: State<'_, AppState>, token: String) -> Result<()> {
+    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(AppError::Other("Неверная беседа".into()));
+    }
+    let ctx = state.ctx().await?;
+    let (creds, _) = ctx.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
+    let url = creds.base.join(&format!("index.php/call/{token}")).map_err(|e| AppError::Other(e.to_string()))?;
+    // E2E (отладочная сборка): окно не открываем — проверяется адрес.
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::var_os("RRCKI_E2E_SAVE_DIR") {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(std::path::Path::new(&dir).join("call-window.txt"), url.as_str());
+        return Ok(());
+    }
+    host::open_external_window(&app, &format!("call-{token}"), "Звонок — Atom Workspace", url)
 }
 
 #[tauri::command]
@@ -4447,7 +4505,7 @@ const MAX_TALK_FILE_MB: u64 = 512;
 
 /// Отправляет в беседу файл, выбранный через `pick_attachments`.
 #[tauri::command]
-pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachment: String, caption: String, reply_to: Option<i64>) -> Result<()> {
+pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachment: String, caption: String, reply_to: Option<i64>, voice: Option<bool>, silent: Option<bool>) -> Result<()> {
     let ctx = state.ctx().await?;
     let (creds, uid) = ctx.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
     let path = ctx
@@ -4462,7 +4520,7 @@ pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachmen
         return Err(AppError::Other(format!("Файл больше {MAX_TALK_FILE_MB} МБ — отправьте ссылку из Nextcloud")));
     }
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
-    nextcloud::Nc::upload(creds, &uid)?.talk_send_file(&token, &name, nextcloud::UploadSource::File(path), &caption, reply_to).await?;
+    nextcloud::Nc::upload(creds, &uid)?.talk_send_file(&token, &name, nextcloud::UploadSource::File(path), &caption, nextcloud::TalkFileOpts { reply_to, voice: voice.unwrap_or(false), silent: silent.unwrap_or(false) }).await?;
     ctx.picked.lock().await.remove(&attachment);
     Ok(())
 }
@@ -5408,6 +5466,13 @@ macro_rules! app_commands {
             crate::commands::talk_history,
             crate::commands::talk_poll,
             crate::commands::talk_send,
+            crate::commands::talk_poll_create,
+            crate::commands::talk_poll_get,
+            crate::commands::talk_poll_vote,
+            crate::commands::talk_poll_close,
+            crate::commands::talk_shared,
+            crate::commands::nc_link_preview,
+            crate::commands::talk_call_window,
             crate::commands::talk_send_file,
             crate::commands::talk_react,
             crate::commands::talk_favorite,

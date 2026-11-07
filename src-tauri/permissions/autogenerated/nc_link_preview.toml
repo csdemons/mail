@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-link-preview"
+description = "Enables the nc_link_preview command without any pre-configured scope."
+commands.allow = ["nc_link_preview"]
+
+[[permission]]
+identifier = "deny-nc-link-preview"
+description = "Denies the nc_link_preview command without any pre-configured scope."
+commands.deny = ["nc_link_preview"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-call-window"
+description = "Enables the talk_call_window command without any pre-configured scope."
+commands.allow = ["talk_call_window"]
+
+[[permission]]
+identifier = "deny-talk-call-window"
+description = "Denies the talk_call_window command without any pre-configured scope."
+commands.deny = ["talk_call_window"]

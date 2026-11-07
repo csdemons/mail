@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-shared"
+description = "Enables the talk_shared command without any pre-configured scope."
+commands.allow = ["talk_shared"]
+
+[[permission]]
+identifier = "deny-talk-shared"
+description = "Denies the talk_shared command without any pre-configured scope."
+commands.deny = ["talk_shared"]

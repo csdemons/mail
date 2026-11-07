@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-poll-get"
+description = "Enables the talk_poll_get command without any pre-configured scope."
+commands.allow = ["talk_poll_get"]
+
+[[permission]]
+identifier = "deny-talk-poll-get"
+description = "Denies the talk_poll_get command without any pre-configured scope."
+commands.deny = ["talk_poll_get"]

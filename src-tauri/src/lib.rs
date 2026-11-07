@@ -34,6 +34,17 @@ mod host;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Микрофон и камера: главному окну — микрофон (голосовые в чате), окнам звонков Talk —
+        // микрофон, камера и демонстрация экрана. Остальным — как решит веб-движок (обычно отказ).
+        .on_permission_request(|webview, kind| {
+            use tauri::webview::{PermissionKind as K, PermissionResponse as R};
+            let label = webview.label();
+            match kind {
+                K::Microphone if label == "main" || label.starts_with("call-") => R::Allow,
+                K::Camera | K::DisplayCapture if label.starts_with("call-") => R::Allow,
+                _ => R::Default,
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())

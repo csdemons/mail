@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  Bell, BellOff, Check, Loader2, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
+  BarChart3, Bell, BellOff, Check, Images, Timer, Loader2, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
   MoreHorizontal, Paperclip, Pencil, Phone, RefreshCw, Search, Send, Settings2, Smile, SmilePlus, Star, Trash2, Users, X,
 } from 'lucide-react'
 
@@ -15,6 +15,7 @@ import { SkeletonChat, SkeletonRows } from './Skeleton'
 import Splitter from './Splitter'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import { ForwardDialog, RoomPeople, RoomSettings } from './TalkRoomPanel'
+import { firstUrl, LinkCard, MediaPanel, PollCard, PollDialog, VoicePlayer, VoiceRecorder } from './TalkExtras'
 
 /** Файл чата открывается во встроенном просмотрщике (фото, PDF, текст), если известен его путь. */
 function viewable(f: TalkFile): boolean {
@@ -52,6 +53,13 @@ function TalkThumb({ file }: { file: TalkFile }) {
   }, [file.id])
   if (failed) return <span className="talk-image-placeholder"><FileText size={22} /></span>
   return src ? <img src={src} alt={file.name} draggable={false} /> : <span className="talk-image-placeholder">Загрузка…</span>
+}
+
+function expiryLabel(sec: number): string {
+  if (sec % 604800 === 0) return `${sec / 604800} нед.`
+  if (sec % 86400 === 0) return `${sec / 86400} дн.`
+  if (sec % 3600 === 0) return `${sec / 3600} ч`
+  return `${Math.round(sec / 60)} мин`
 }
 
 /** Найденные слова — полужирным (без HTML: только текст и <mark>). */
@@ -138,6 +146,11 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
   const [showPeople, setShowPeople] = useState(() => { try { return localStorage.getItem('atom.talk.people') === '1' } catch { return false } })
   useEffect(() => { try { localStorage.setItem('atom.talk.people', showPeople ? '1' : '0') } catch { /* без хранилища */ } }, [showPeople])
   const [settingsFor, setSettingsFor] = useState<TalkRoom | null>(null)
+  const [showMedia, setShowMedia] = useState(false)
+  const [pollOpen, setPollOpen] = useState(false)
+  // «Без звука»: следующее сообщение придёт получателям без звука уведомления.
+  const [silent, setSilent] = useState(false)
+  const [mediaView, setMediaView] = useState<{ files: TalkFile[]; index: number } | null>(null)
   // Поиск по сообщениям беседы (на сервере, после паузы в наборе).
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQ, setSearchQ] = useState('')
@@ -372,12 +385,12 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
         // Текст уходит подписью к первому файлу — как в веб-интерфейсе Talk.
         let caption = text
         for (const f of files) {
-          await api.talkSendFile(token, f.id, caption, replyTo?.id ?? null)
+          await api.talkSendFile(token, f.id, caption, replyTo?.id ?? null, { silent })
           caption = ''
           setFiles((list) => list.filter((x) => x.id !== f.id))
         }
       } else {
-        await api.talkSend(token, text, replyTo?.id ?? null)
+        await api.talkSend(token, text, replyTo?.id ?? null, silent)
       }
       const here = draftOwner.current === room
       if (wasEditing) {
@@ -394,7 +407,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
           setDraft((d) => (d === sentDraft ? '' : d))
         }
       }
-      if (here) setReplyTo(null)
+      if (here) { setReplyTo(null); setSilent(false) }
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -507,6 +520,36 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
       else notify('Сообщение не найдено в истории беседы')
     }))
     window.setTimeout(() => setFlash((f) => (f === id ? null : f)), 2500)
+  }
+
+  /** Готовая запись с микрофона — голосовым сообщением (как в Talk). */
+  async function sendVoice(blob: Blob, ext: string) {
+    if (!token) return
+    const room = token
+    setSending(true)
+    try {
+      const buf = new Uint8Array(await blob.arrayBuffer())
+      let bin = ''
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000))
+      const stamp = new Date().toLocaleString('ru-RU').replace(/[^\d]+/g, '-').replace(/-$/, '')
+      const picked = await api.attachData(`Голосовое ${stamp}.${ext}`, btoa(bin))
+      await api.talkSendFile(room, picked.id, '', replyTo?.id ?? null, { voice: true, silent })
+      setReplyTo(null)
+      setSilent(false)
+    } catch (e) {
+      notify(`Голосовое не отправлено: ${errorText(e)}`)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  async function startCall(r: TalkRoom, browser = false) {
+    try {
+      if (browser) await api.ncOpen(`call/${r.token}`)
+      else await api.talkCallWindow(r.token)
+    } catch (e) {
+      notify(`Звонок не открыт: ${errorText(e)}`)
+    }
   }
 
   function copyText(text: string, what = 'Текст скопирован') {
@@ -689,9 +732,12 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                 aria-label={room.favorite ? 'Убрать из избранного' : 'В избранное'} title={room.favorite ? 'Убрать из избранного' : 'В избранное — беседа будет выше остальных'}
                 onClick={() => void toggleFavorite(room)}><Star size={17} fill={room.favorite ? 'currentColor' : 'none'} /></button>
               <div className="reader-toolbar-spacer" />
-              <button className="secondary-button" title="Звонок откроется в браузере" onClick={() => void api.ncOpen(`call/${room.token}`)}><Phone size={15} /> Звонок</button>
+              {room.messageExpiration > 0 && <span className="talk-expiry-badge" title="Сообщения в этой беседе исчезают"><Timer size={13} /> {expiryLabel(room.messageExpiration)}</span>}
+              <button className="secondary-button talk-call" title="Звонок и демонстрация экрана — в окне программы" onClick={() => void startCall(room)}
+                onContextMenu={(e) => openContextMenu(e, [{ label: 'Звонок в окне программы', icon: <Phone size={15} />, onClick: () => void startCall(room) }, { label: 'Звонок в браузере', icon: <ExternalLink size={15} />, onClick: () => void startCall(room, true) }])}><Phone size={15} /> Звонок</button>
+              <button className={`icon-button soft talk-media-toggle ${showMedia ? 'active' : ''}`} aria-pressed={showMedia} aria-label="Медиа и файлы" title="Медиа и файлы беседы" onClick={() => { setShowMedia(!showMedia); setShowPeople(false) }}><Images size={17} /></button>
               <button className={`icon-button soft talk-search-toggle ${searchOpen ? 'active' : ''}`} aria-pressed={searchOpen} aria-label="Поиск по сообщениям" title="Поиск по сообщениям (Ctrl+F)" onClick={() => setSearchOpen(!searchOpen)}><Search size={17} /></button>
-              <button className={`icon-button soft talk-people-toggle ${showPeople ? 'active' : ''}`} aria-pressed={showPeople} aria-label="Участники" title="Участники беседы" onClick={() => setShowPeople(!showPeople)}><Users size={17} /></button>
+              <button className={`icon-button soft talk-people-toggle ${showPeople ? 'active' : ''}`} aria-pressed={showPeople} aria-label="Участники" title="Участники беседы" onClick={() => { setShowPeople(!showPeople); setShowMedia(false) }}><Users size={17} /></button>
               <button className="icon-button soft" aria-label="Меню беседы" title="Ещё" onClick={(e) => openContextMenu(e, roomMenu(room))}><MoreHorizontal size={17} /></button>
             </div>
             {searchOpen && (
@@ -729,7 +775,10 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                     {!m.own && <div className="talk-author">{m.author}</div>}
                     {m.parentText && !m.deleted && <div className="talk-quote"><b>{m.parentAuthor}</b> {m.parentText}</div>}
                     {m.text && (m.deleted ? <div className="talk-text talk-deleted">{m.text}</div> : <TalkText text={m.text} />)}
-                    {m.files.length > 0 && (
+                    {m.poll && !m.deleted && <PollCard token={room.token} id={m.poll.id} question={m.poll.question} notify={notify} />}
+                    {m.voice && !m.deleted && m.files[0] && <VoicePlayer file={m.files[0]} load={(f) => api.talkFileData(f.path as string)} />}
+                    {!m.deleted && m.files.length === 0 && !m.poll && firstUrl(m.text) && <LinkCard url={firstUrl(m.text) as string} />}
+                    {m.files.length > 0 && !m.voice && (
                       <div className="talk-files">
                         {m.files.map((f) => (isImage(f) && f.id && (f.preview || f.path)) ? (
                           <div key={f.id} className="talk-image">
@@ -759,7 +808,7 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                         ))}
                       </div>
                     )}
-                    <div className="talk-time">{m.edited && !m.deleted && <span className="talk-edited">изменено</span>}{timeOf(m.timestamp)}
+                    <div className="talk-time">{m.expires > 0 && <Timer size={11} className="talk-expires" aria-label="Исчезающее сообщение" />}{m.edited && !m.deleted && <span className="talk-edited">изменено</span>}{timeOf(m.timestamp)}
                       {m.own && !m.deleted && (m.id <= readMark
                         ? <CheckCheck size={14} className="talk-tick read" aria-label="Прочитано" />
                         : <Check size={14} className="talk-tick" aria-label="Отправлено" />)}</div>
@@ -829,6 +878,9 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
                     />
                   </div>
                   <button type="button" className={`icon-button soft talk-emoji ${emojiOpen ? 'active' : ''}`} aria-label="Эмодзи" title="Эмодзи" onClick={() => setEmojiOpen((v) => !v)}><Smile size={18} /></button>
+                  {!editing && <button type="button" className="icon-button soft talk-poll-new" aria-label="Опрос" title="Создать опрос" disabled={sending} onClick={() => setPollOpen(true)}><BarChart3 size={18} /></button>}
+                  {!editing && <button type="button" className={`icon-button soft talk-silent ${silent ? 'active' : ''}`} aria-pressed={silent} aria-label="Без звука" title={silent ? 'Отправится без звука уведомления — нажмите, чтобы отменить' : 'Отправить без звука уведомления'} onClick={() => setSilent(!silent)}><BellOff size={18} /></button>}
+                  {!editing && !draft.trim() && files.length === 0 && <VoiceRecorder disabled={sending} notify={notify} onRecorded={(b, ext) => void sendVoice(b, ext)} />}
                   <button className="primary-button" type="submit" disabled={sending || (!draft.trim() && files.length === 0)} aria-label={editing ? 'Сохранить' : 'Отправить'}>{sending && files.length > 0 ? 'Загрузка…' : editing ? 'Сохранить' : <Send size={16} />}</button>
                 </div>
               </form>
@@ -838,6 +890,17 @@ export default function TalkView({ onUnread, onNotice }: { onUnread: (n: number)
           <div className="empty-reader">{error ? <><strong>Talk недоступен</strong><span>{error}</span></> : <><MessageCircle size={42} /><strong>Выберите беседу</strong></>}</div>
         )}
       </main>
+      {room && showMedia && <Splitter id="talk-people" side="next" min={220} max={520} label="Ширина панели медиа и файлов" />}
+      {room && showMedia && <MediaPanel token={room.token} messages={messages} onClose={() => setShowMedia(false)} thumb={(f) => <TalkThumb file={f} />}
+        loadVoice={(f) => api.talkFileData(f.path as string)}
+        onOpen={(f, list) => { const v = list.filter(viewable); const i = v.indexOf(f); if (i >= 0) setMediaView({ files: v, index: i }); else void api.ncOpen(`f/${f.id}`) }} />}
+      {pollOpen && room && <PollDialog token={room.token} notify={notify} onClose={() => setPollOpen(false)} />}
+      {mediaView && mediaView.files[mediaView.index] && (
+        <AttachmentViewer folder="" uid={0} items={mediaView.files.map((f, i) => ({ index: i, name: f.name, contentType: f.mimetype, size: f.size }))} index={mediaView.index}
+          onIndex={(i) => setMediaView((v) => v && { ...v, index: i })} onClose={() => setMediaView(null)}
+          load={(a) => { const f = mediaView.files[a.index]; return f?.path ? cached(contents, f.path, 20, () => api.talkFileData(f.path as string)) : Promise.reject(new Error('Файл недоступен')) }}
+          onSave={(i) => { const f = mediaView.files[i]; if (f) void saveFile(f) }} />
+      )}
       {room && showPeople && <Splitter id="talk-people" side="next" min={220} max={520} label="Ширина списка участников" />}
       {room && showPeople && <RoomPeople room={room} notify={notify} onClose={() => setShowPeople(false)} onRoomChanged={() => void loadRooms()} onSettings={() => setSettingsFor(room)} />}
 

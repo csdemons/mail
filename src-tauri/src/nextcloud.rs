@@ -663,6 +663,7 @@ impl Nc {
 
 const TALK_ROOM: &str = "ocs/v2.php/apps/spreed/api/v4/room";
 const TALK_CHAT: &str = "ocs/v2.php/apps/spreed/api/v1/chat/";
+const TALK_POLL: &str = "ocs/v2.php/apps/spreed/api/v1/poll/";
 /// Порция истории беседы (более ранние — следующим запросом с lastKnownMessageId).
 const TALK_PAGE: usize = 100;
 
@@ -693,6 +694,8 @@ pub struct TalkRoom {
     pub notify_level: i64,
     pub can_leave: bool,
     pub can_delete: bool,
+    /// Исчезающие сообщения: через сколько секунд удаляются; 0 — выключено.
+    pub message_expiration: i64,
 }
 
 /// Найденное сообщение беседы (поиск Nextcloud по сообщениям Talk).
@@ -742,6 +745,52 @@ pub struct TalkMessage {
     pub edit_text: Option<String>,
     /// Это обновление уже показанного сообщения (реакция, правка, удаление).
     pub update: bool,
+    /// Опрос в сообщении (`{object}` типа talk-poll): id и вопрос.
+    pub poll: Option<TalkPollRef>,
+    /// Голосовое сообщение (messageType voice-message).
+    pub voice: bool,
+    /// Сообщение исчезнет в это время (unix, с); 0 — не исчезнет.
+    pub expires: i64,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkPollRef {
+    pub id: i64,
+    pub question: String,
+}
+
+/// Опрос Talk с результатами (что видно этому пользователю).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkPoll {
+    pub id: i64,
+    pub question: String,
+    pub options: Vec<String>,
+    /// Голоса по вариантам (если результаты видны).
+    pub votes: Vec<i64>,
+    pub voters: i64,
+    /// За какие варианты голосовал я.
+    pub voted: Vec<i64>,
+    pub closed: bool,
+    /// Результаты скрыты до закрытия опроса.
+    pub hidden: bool,
+    /// 0 — сколько угодно вариантов, 1 — один.
+    pub max_votes: i64,
+    pub author: String,
+    pub own: bool,
+}
+
+/// Предпросмотр ссылки (общий сервис ссылок Nextcloud).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPreview {
+    pub url: String,
+    pub title: String,
+    pub description: String,
+    /// Картинка страницы (data:URL), если сервер её дал.
+    pub image: Option<String>,
+    pub site: String,
 }
 
 /// Порция сообщений и наибольший id, пришедший с сервера (включая служебные),
@@ -819,6 +868,8 @@ pub fn render_message(v: &Value) -> (String, Vec<TalkFile>) {
                     files.push(TalkFile { id: text(&p["id"]).or_int(&p["id"]), name: name.to_string(), size: int(&p["size"]), mimetype: text(&p["mimetype"]), path, preview });
                     String::new()
                 }
+                // Опрос показывается карточкой; в тексте — пусто.
+                "talk-poll" => String::new(),
                 _ => name.to_string(),
             };
             out = out.replace(&format!("{{{key}}}"), &shown);
@@ -897,6 +948,33 @@ pub fn parse_message(v: &Value, me: &str) -> TalkMessage {
         edited: int(&v["lastEditTime"]) > 0,
         deleted,
         update: false,
+        poll: poll_ref(v),
+        voice: v["messageType"].as_str() == Some("voice-message"),
+        expires: int(&v["expirationTimestamp"]),
+    }
+}
+
+fn poll_ref(v: &Value) -> Option<TalkPollRef> {
+    let o = v["messageParameters"].as_object()?.values().find(|p| p["type"].as_str() == Some("talk-poll"))?;
+    let id = o["id"].as_str().and_then(|x| x.parse().ok()).or_else(|| o["id"].as_i64())?;
+    Some(TalkPollRef { id, question: text(&o["name"]) })
+}
+
+fn parse_poll(d: &Value, me: &str) -> TalkPoll {
+    let options: Vec<String> = d["options"].as_array().map(|a| a.iter().map(text).collect()).unwrap_or_default();
+    let votes = (0..options.len()).map(|i| int(&d["votes"][format!("option-{i}")])).collect();
+    TalkPoll {
+        id: int(&d["id"]),
+        question: text(&d["question"]),
+        votes,
+        voters: int(&d["numVoters"]),
+        voted: d["votedSelf"].as_array().map(|a| a.iter().map(int).collect()).unwrap_or_default(),
+        closed: int(&d["status"]) == 1,
+        hidden: int(&d["resultMode"]) == 1,
+        max_votes: int(&d["maxVotes"]),
+        author: text(&d["actorDisplayName"]),
+        own: d["actorType"].as_str() == Some("users") && text(&d["actorId"]).eq_ignore_ascii_case(me),
+        options,
     }
 }
 
@@ -967,6 +1045,7 @@ impl Nc {
             notify_level: int(&r["notificationLevel"]),
             can_leave: r["canLeaveConversation"].as_bool().unwrap_or(true),
             can_delete: r["canDeleteConversation"].as_bool().unwrap_or(false),
+            message_expiration: int(&r["messageExpiration"]),
         }).filter(|r| r.kind != 4).collect()).unwrap_or_default();
         // Как в Talk: избранные сверху, внутри — по последней активности.
         rooms.sort_by_key(|r| (std::cmp::Reverse(r.favorite), std::cmp::Reverse(r.last_activity)));
@@ -992,11 +1071,13 @@ impl Nc {
         Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d), last_common_read: common_read(&h), more: false })
     }
 
-    pub async fn talk_send(&self, token: &str, message: &str, reply_to: Option<i64>) -> Result<()> {
+    /// `silent` — без звука уведомления у получателей («тихая отправка»).
+    pub async fn talk_send(&self, token: &str, message: &str, reply_to: Option<i64>, silent: bool) -> Result<()> {
         let message = message.trim();
         if message.is_empty() { return Ok(()); }
         let mut body = json!({ "message": message });
         if let Some(r) = reply_to { body["replyTo"] = json!(r); }
+        if silent { body["silent"] = json!(true); }
         self.ocs(Method::POST, &format!("{TALK_CHAT}{}", seg(token)), &[], Some(body), "Отправка сообщения").await?;
         Ok(())
     }
@@ -1031,6 +1112,65 @@ impl Nc {
             })
         }).collect()).unwrap_or_default();
         Ok(hits)
+    }
+
+    // --- Опросы ---
+    pub async fn talk_poll_create(&self, token: &str, question: &str, options: &[String], max_votes: i64, hidden: bool) -> Result<TalkPoll> {
+        let question = question.trim();
+        let options: Vec<&str> = options.iter().map(|o| o.trim()).filter(|o| !o.is_empty()).collect();
+        if question.is_empty() || options.len() < 2 {
+            return Err(AppError::Other("Нужны вопрос и хотя бы два варианта ответа".into()));
+        }
+        let body = json!({ "question": question, "options": options, "resultMode": i64::from(hidden), "maxVotes": max_votes.clamp(0, options.len() as i64) });
+        let (_, _, d) = self.ocs(Method::POST, &format!("{TALK_POLL}{}", seg(token)), &[], Some(body), "Создание опроса").await?;
+        Ok(parse_poll(&d, &self.me))
+    }
+    pub async fn talk_poll_get(&self, token: &str, id: i64) -> Result<TalkPoll> {
+        let (_, _, d) = self.ocs(Method::GET, &format!("{TALK_POLL}{}/{id}", seg(token)), &[], None, "Опрос").await?;
+        Ok(parse_poll(&d, &self.me))
+    }
+    pub async fn talk_poll_vote(&self, token: &str, id: i64, options: &[i64]) -> Result<TalkPoll> {
+        let (_, _, d) = self.ocs(Method::POST, &format!("{TALK_POLL}{}/{id}", seg(token)), &[], Some(json!({ "optionIds": options })), "Голосование").await?;
+        Ok(parse_poll(&d, &self.me))
+    }
+    pub async fn talk_poll_close(&self, token: &str, id: i64) -> Result<TalkPoll> {
+        let (_, _, d) = self.ocs(Method::DELETE, &format!("{TALK_POLL}{}/{id}", seg(token)), &[], None, "Закрытие опроса").await?;
+        Ok(parse_poll(&d, &self.me))
+    }
+
+    /// Медиа и файлы беседы (как вкладка «Общие элементы» в Talk): media, file, audio, voice, other…
+    pub async fn talk_shared(&self, token: &str, kind: &str, before: Option<i64>) -> Result<Vec<TalkMessage>> {
+        let kind = match kind { "media" | "file" | "audio" | "voice" | "other" | "location" | "deckcard" | "poll" | "recording" => kind, _ => "media" };
+        let mut q = vec![("objectType", kind.to_string()), ("limit", "100".to_string())];
+        if let Some(b) = before { q.push(("lastKnownMessageId", b.to_string())); }
+        let (_, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}/share", seg(token)), &q, None, "Медиа беседы").await?;
+        let items: Vec<&Value> = match &d { Value::Object(m) => m.values().collect(), Value::Array(a) => a.iter().collect(), _ => Vec::new() };
+        let mut out: Vec<TalkMessage> = items.into_iter().map(|m| parse_message(m, &self.me)).filter(|m| !m.deleted).collect();
+        out.sort_by_key(|m| std::cmp::Reverse(m.id));
+        Ok(out)
+    }
+
+    /// Предпросмотр ссылки через сервис ссылок Nextcloud (сервер сам загружает страницу;
+    /// картинку берём только с самого Nextcloud — посторонние сайты программа не трогает).
+    pub async fn link_preview(&self, url: &str) -> Result<Option<LinkPreview>> {
+        let u = url::Url::parse(url).map_err(|_| AppError::Other("Неверная ссылка".into()))?;
+        if !matches!(u.scheme(), "http" | "https") { return Ok(None); }
+        let (_, _, d) = self.ocs(Method::GET, "ocs/v2.php/references/resolve", &[("reference", url.to_string())], None, "Предпросмотр ссылки").await?;
+        let r = &d["references"][url];
+        let o = if r["openGraphObject"].is_object() { &r["openGraphObject"] } else { &r["richObject"] };
+        let title = text(&o["name"]);
+        if title.is_empty() { return Ok(None); }
+        let thumb = text(&o["thumb"]);
+        let base = self.creds.base.as_str();
+        let rel = if let Some(r) = thumb.strip_prefix(base) { Some(r.to_string()) } else if thumb.starts_with('/') && !thumb.starts_with("//") { Some(thumb.trim_start_matches('/').to_string()) } else { None };
+        let image = match rel { Some(r) if !r.is_empty() => self.image(&r).await.ok().flatten(), _ => None };
+        Ok(Some(LinkPreview {
+            url: url.to_string(),
+            title,
+            description: text(&o["description"]).chars().take(300).collect(),
+            image,
+            site: u.host_str().unwrap_or_default().trim_start_matches("www.").to_string(),
+        }))
     }
 
     /// Участники беседы с ролями и статусом (как боковая панель Talk).
@@ -1091,6 +1231,10 @@ impl Nc {
                 (Method::POST, format!("{TALK_CHAT}{}/read", seg(token)), Some(body), "Прочитано")
             }
             "unread" => (Method::DELETE, format!("{TALK_CHAT}{}/read", seg(token)), None, "Непрочитано"),
+            "expiration" => {
+                let secs = value["seconds"].as_i64().filter(|v| (0..=31_536_000).contains(v)).unwrap_or(0);
+                (Method::POST, format!("{room}/message-expiration"), Some(json!({ "seconds": secs })), "Исчезающие сообщения")
+            }
             "leave" => (Method::DELETE, format!("{room}/participants/self"), None, "Выход из беседы"),
             "delete" => (Method::DELETE, room.clone(), None, "Удаление беседы"),
             other => return Err(AppError::Other(format!("Неизвестное действие с беседой: {other}"))),
@@ -1206,14 +1350,29 @@ impl Nc {
         let folder = folder.trim_matches('/');
         if folder.is_empty() || folder.split('/').any(|p| p == ".." || p == ".") { "Talk".into() } else { folder.to_string() }
     }
+}
 
+/// Как опубликовать файл в беседе.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TalkFileOpts {
+    pub reply_to: Option<i64>,
+    /// Голосовое сообщение (проигрыватель вместо файла).
+    pub voice: bool,
+    /// Без звука уведомления.
+    pub silent: bool,
+}
+
+impl Nc {
     /// Отправляет файл в беседу так же, как веб-интерфейс Talk: загружает его
     /// в папку вложений пользователя и публикует в беседе (shareType 10).
     /// Имя не перезаписывает существующие файлы: «файл (1).pdf», «файл (2).pdf»…
-    pub async fn talk_send_file(&self, token: &str, name: &str, src: UploadSource, caption: &str, reply_to: Option<i64>) -> Result<String> {
+    /// `voice` — голосовое сообщение (Talk показывает проигрыватель), `silent` — без звука уведомления.
+    pub async fn talk_send_file(&self, token: &str, name: &str, src: UploadSource, caption: &str, opts: TalkFileOpts) -> Result<String> {
+        let TalkFileOpts { reply_to, voice, silent } = opts;
         let folder = self.talk_attachment_folder().await;
         let path = self.upload_unique_src(&folder, name, src).await?;
-        let mut meta = json!({ "messageType": "comment" });
+        let mut meta = json!({ "messageType": if voice { "voice-message" } else { "comment" } });
+        if silent { meta["silent"] = json!(true); }
         if !caption.trim().is_empty() { meta["caption"] = json!(caption.trim()); }
         if let Some(r) = reply_to { meta["replyTo"] = json!(r); }
         let body = json!({ "shareType": 10, "shareWith": token, "path": path, "talkMetaData": meta.to_string() });
