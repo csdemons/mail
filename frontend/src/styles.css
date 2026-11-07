@@ -1305,7 +1305,10 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 .deck-link-open:hover:not(:disabled) { color: var(--blue); }
 .deck-link-x { border: 0; background: transparent; color: var(--muted); padding: 3px 6px 3px 2px; cursor: pointer; display: grid; place-items: center; }
 .deck-link-x:hover { color: #c62828; }
-.deck-link-select { padding: 4px 8px; border: 1px dashed var(--line); border-radius: 14px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; max-width: 240px; cursor: pointer; }
+.deck-link-select { appearance: none; -webkit-appearance: none; padding: 4px 24px 4px 10px; border: 1px dashed #c3ccd9; border-radius: 14px; color: var(--muted); font: inherit; font-size: 12px; max-width: 240px; cursor: pointer;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23778397' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 9px center; }
+.deck-link-select:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
+.deck-link-select option, .deck-link-select optgroup { color: initial; background: initial; }
 .deck-link-add form { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 220px; color: var(--muted); }
 .deck-link-add input { flex: 1; border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; background: var(--surface); color: inherit; font: inherit; font-size: 12px; }
 .deck-wait-note { display: flex; align-items: center; gap: 6px; }

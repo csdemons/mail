@@ -554,19 +554,21 @@ try:
     assert 'коммутаторы' not in d.find_element(By.CSS_SELECTOR, '.deck-full .deck-markdown').get_attribute('textContent'), 'checklist shown separately'
     assert [l.get_attribute('aria-label') for l in d.find_elements(By.CSS_SELECTOR, '.deck-full .deck-checklist input[type=checkbox]')] == ['коммутаторы']
     W(d, 10).until(lambda d: 'создал(а) карточку' in d.find_element(By.CSS_SELECTOR, '.deck-full .deck-activity').get_attribute('textContent'))
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-full .deck-upload')][0].click()
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click()", d.find_element(By.CSS_SELECTOR, '.deck-full .deck-upload'))
     full_id = int(full_card.get_attribute('data-card'))
     W(d, 15).until(lambda d: any('отчёт-e2e.txt' in a['data'] for a in nc_mock('GET', '/test/state')['attachments'].get(str(full_id), [])))
     W(d, 10).until(lambda d: 'отчёт-e2e.txt' in d.find_element(By.CSS_SELECTOR, '.deck-full .deck-files').get_attribute('textContent'))
     d.save_screenshot(f'{OUT}/10b-deck-full-card.png')
-    d.find_element(By.CSS_SELECTOR, '.deck-full button[aria-label="Убрать вложение отчёт-e2e.txt"]').click(); accept_confirm(d)
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click()", d.find_element(By.CSS_SELECTOR, '.deck-full button[aria-label="Убрать вложение отчёт-e2e.txt"]')); accept_confirm(d)
     W(d, 10).until(lambda d: not nc_mock('GET', '/test/state')['attachments'].get(str(full_id)))
     # Esc — к доске (карточка остаётся открытой панелью), снова целиком — кнопкой.
     d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.deck-full') and d.find_elements(By.CSS_SELECTOR, '.deck-panel'))
     d.find_element(By.CSS_SELECTOR, '.deck-panel button[aria-label="Открыть карточку целиком"]').click()
     wait(d, '.deck-full', 5)
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-full .reader-actions button') if 'В архив' in b.text][0].click()
+    # Кнопки внизу карточки — после раздела «Связи»; прокручиваем внутреннюю область к ним.
+    arch = [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-full .reader-actions button') if 'В архив' in b.get_attribute('textContent')][0]
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click()", arch)
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.deck-full') and not [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'E2E полная карточка' in c.get_attribute('textContent')])
     assert next(c for c in nc_mock('GET', '/test/state')['cards'] if c['id'] == full_id)['archived'] is True
     ok('deck: double click opens the whole card (Markdown, subtasks, files add/remove, comments, history), archive')
