@@ -1047,8 +1047,10 @@ pub async fn list_messages(
         },
         Err(e) => return Err(e),
     };
+    let mut page = page;
     if let Some(st) = local(&ctx).await {
         st.merge_page(&folder, before_uid, &page);
+        st.fill_snippets(&folder, &mut page.items);
     }
     Ok(page)
 }

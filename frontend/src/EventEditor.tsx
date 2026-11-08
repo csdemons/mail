@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { DateField, TimeField } from './DateField'
 import { X } from 'lucide-react'
 
 import { api, errorText } from './api'
@@ -102,10 +103,10 @@ export default function EventEditor({ target, calendars, onClose, onSaved }: Pro
         )}
         <label className="login-remember"><input type="checkbox" checked={allDay} disabled={timeLocked} onChange={(e) => setAllDay(e.target.checked)} /><span>Весь день</span></label>
         <div className="editor-row">
-          <label className="login-field"><span>Начало</span><input type="date" value={startDate} disabled={timeLocked} onChange={(e) => { setStartDate(e.target.value); if (endDate < e.target.value) setEndDate(e.target.value) }} /></label>
-          {!allDay && <label className="login-field"><span>&nbsp;</span><input type="time" value={startTime} disabled={timeLocked} onChange={(e) => setStartTime(e.target.value)} /></label>}
-          <label className="login-field"><span>Окончание</span><input type="date" value={endDate} disabled={timeLocked} onChange={(e) => setEndDate(e.target.value)} /></label>
-          {!allDay && <label className="login-field"><span>&nbsp;</span><input type="time" value={endTime} disabled={timeLocked} onChange={(e) => setEndTime(e.target.value)} /></label>}
+          <div className="login-field"><span>Начало</span><DateField label="Дата начала" value={startDate} disabled={timeLocked} clearable={false} onChange={(v) => { setStartDate(v); if (endDate < v) setEndDate(v) }} /></div>
+          {!allDay && <div className="login-field"><span>&nbsp;</span><TimeField label="Время начала" value={startTime} disabled={timeLocked} onChange={setStartTime} /></div>}
+          <div className="login-field"><span>Окончание</span><DateField label="Дата окончания" value={endDate} min={startDate} disabled={timeLocked} clearable={false} onChange={setEndDate} /></div>
+          {!allDay && <div className="login-field"><span>&nbsp;</span><TimeField label="Время окончания" value={endTime} disabled={timeLocked} onChange={setEndTime} /></div>}
         </div>
         {timeLocked && <div className="inline-warning editor-note">Повторяющееся событие: здесь меняются название, место и описание всей серии. Время серии меняйте в веб-интерфейсе RuPost.</div>}
         <label className="login-field"><span>Место</span><input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Переговорная, ссылка на ВКС" /></label>

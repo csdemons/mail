@@ -95,6 +95,8 @@ export interface MessageSummary {
   thread?: string[]
   hasAttachments: boolean
   size: number
+  /** Начало текста письма (если письмо хранится на компьютере). */
+  snippet?: string
 }
 
 export interface MessagePage {

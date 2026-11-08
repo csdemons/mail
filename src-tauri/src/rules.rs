@@ -312,6 +312,7 @@ mod tests {
             has_attachments: true,
             attachments: vec!["отчёт за октябрь.xlsx".into()],
             size: 300 * 1024,
+            snippet: None,
         }
     }
 

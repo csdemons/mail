@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { DateField } from './DateField'
 import { Archive, ArchiveRestore, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CornerDownRight, ExternalLink, FileText, Filter, FolderInput, FolderMinus, FolderOpen, GitBranch, Handshake, History, Link2, ListChecks, ListTree, Lock, Mail, Maximize2, MessageSquare, Minimize2, Minus, MoveHorizontal, Paperclip, Pencil, Plus, RefreshCw, Search, SkipForward, Trash2, Upload, X } from 'lucide-react'
 
 import { api, errorText, formatSize } from './api'
@@ -974,7 +975,7 @@ function CardPanel({ board, card, stacks, full, onFull, onClose, onChanged, onRe
             {stacks.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
           </select>
         </label>
-        <label className="login-field"><span>Срок</span><input type="date" value={due} disabled={ro} onChange={(e) => setDue(e.target.value)} /></label>
+        <div className="login-field"><span>Срок</span><DateField label="Срок карточки" value={due} disabled={ro} onChange={setDue} /></div>
         <label className="login-remember deck-done"><input type="checkbox" checked={done} disabled={ro} onChange={(e) => setDone(e.target.checked)} /><span>Выполнено</span></label>
       </div>
       <div className="deck-people-row">

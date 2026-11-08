@@ -1491,3 +1491,85 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 .primary-button.danger:hover { background: #a93226; }
 .macro-ask { width: min(520px, 100%); }
 .macro-ask p { margin: 4px 0 14px; line-height: 1.5; }
+
+/* Свой выбор даты и времени (ДД.ММ.ГГГГ, 24 часа) */
+.date-field { position: relative; display: inline-flex; align-items: center; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.date-field:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent); }
+.date-field.invalid { border-color: #d9534f; }
+.date-field .date-field-input { flex: 1; min-width: 0; width: 7.6em; border: 0 !important; outline: 0; background: transparent; color: inherit; font: inherit; font-variant-numeric: tabular-nums; padding: 7px 4px 7px 9px; box-shadow: none !important; }
+.time-field .date-field-input { width: 4.2em; padding-right: 9px; }
+.date-field-button, .date-field-clear { flex: none; display: grid; place-items: center; width: 28px; height: 28px; margin-right: 3px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.date-field-clear { width: 22px; margin-right: 0; }
+.date-field-button:hover, .date-field-clear:hover { background: var(--hover); color: inherit; }
+.date-field-input:disabled, .date-field-button:disabled { opacity: .55; }
+.datetime-field { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.date-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 400; width: 268px; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 14px 40px #0003; }
+.date-quick { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.date-quick .filter-chip { font-size: 12px; padding: 3px 9px; }
+.date-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.date-head b { font-weight: 600; font-size: 13px; }
+.date-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.date-dow { text-align: center; font-size: 11px; color: var(--muted); padding: 3px 0; }
+.date-dow.weekend, .date-day.weekend { color: #c0392b; }
+.date-day { height: 32px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 13px; font-variant-numeric: tabular-nums; }
+.date-day:hover:not(:disabled) { background: var(--hover); }
+.date-day.other { opacity: .4; }
+.date-day.today { box-shadow: inset 0 0 0 1px var(--blue); }
+.date-day.selected { background: var(--blue); color: #fff; }
+.date-day:disabled { opacity: .25; }
+.agreement-date { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.agreement-date > span { min-width: 3.4em; color: var(--muted); }
+.task-form > .task-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.task-form > .task-field > span { display: inline-flex; align-items: center; gap: 5px; }
+.task-form .date-field { color: var(--text, inherit); font-size: 14px; }
+.login-field > .date-field { width: 100%; }
+.schedule-custom { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* Обновление: значок в шапке и окошко под ним */
+.update-slot:empty { display: none; }
+.update-slot { display: inline-flex; }
+.update-pill { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid color-mix(in srgb, #1f9d55 45%, transparent); border-radius: 16px; background: color-mix(in srgb, #1f9d55 12%, var(--surface)); color: #17824a; font-size: 13px; font-weight: 500; }
+.theme-dark .update-pill { color: #5fd394; }
+.update-pill:hover { background: color-mix(in srgb, #1f9d55 20%, var(--surface)); }
+.update-pill.busy { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 40%, transparent); background: color-mix(in srgb, var(--blue) 10%, var(--surface)); }
+.update-card.update-pop { left: auto; bottom: auto; top: 62px; right: 16px; z-index: 300; }
+@media (max-width: 1100px) { .update-pill span { display: none; } .update-pill { width: 32px; padding: 0; justify-content: center; } }
+
+/* Список писем: одно обозначение непрочитанного (точка и жирный шрифт), значки в строке
+   отправителя, начало текста, группы по датам, плотность «Компактно». */
+.message-row.unread, .theme-dark .message-row.unread { box-shadow: none; background: transparent; }
+.message-row.unread:hover { background: var(--hover); }
+.message-row.unread.selected { background: #eaf3ff; box-shadow: inset 3px 0 #2474ed; }
+.message-topline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.message-topline .sender-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-topline time { flex: none; }
+.message-topline .unread-dot { flex: none; width: 8px; height: 8px; margin: 0; border: 0; border-radius: 50%; background: var(--blue); }
+.message-icons { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.message-icons:empty { display: none; }
+.message-icons .flag-mark { color: #e6a008; }
+.message-snippet { margin-top: 2px; font-size: 12.5px; line-height: 1.35; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+.message-row { padding: 9px 11px 9px; }
+.message-group { position: sticky; top: 0; z-index: 2; padding: 6px 12px 4px; font-size: 11.5px; font-weight: 600; letter-spacing: .02em; color: var(--muted); background: var(--panel); border-bottom: 1px solid var(--line); }
+html[data-density="compact"] .message-snippet { display: none; }
+html[data-density="compact"] .message-row { padding: 5px 10px; gap: 8px; align-items: center; }
+html[data-density="compact"] .message-row .sender-avatar { width: 26px; height: 26px; font-size: 11px; }
+html[data-density="compact"] .message-subject { font-size: 13px; }
+html[data-density="compact"] .message-group { padding: 4px 10px 3px; }
+.theme-dark .message-row.unread.selected { background: #263a55; }
+
+/* Панель разделов: подписи крупнее и контрастнее, «Контрагенты» помещается целиком. */
+.module-rail { flex-basis: 74px; padding: 8px 4px; }
+.module { font-size: 10.5px; line-height: 1.15; color: #6f7a8c; padding: 8px 1px 7px; gap: 4px; letter-spacing: -.01em; }
+.module span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-dark .module { color: #9aa6b8; }
+@media (max-width: 900px) { .module-rail { flex-basis: 48px; padding: 7px 3px; } .module span { display: none; } .module { padding: 10px 0; } }
+
+/* Окно «Задача из письма»: флажок, значок и подпись — на одной линии с отступами. */
+.task-check { display: flex; align-items: center; gap: 8px; }
+.task-check > input[type="checkbox"] { flex: none; width: 16px; height: 16px; margin: 0; }
+.task-check > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.task-check > span > svg { flex: none; color: var(--blue); }
+.task-files { gap: 8px; }
+.task-files .task-dir { padding-left: 24px; }
+.task-file-list { padding-left: 24px; gap: 6px; }
+.task-file-list .task-check > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

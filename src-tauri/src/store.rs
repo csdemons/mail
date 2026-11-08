@@ -56,6 +56,13 @@ impl Entry {
         self.hay = format!("{} {} {} {} {} {}", s.from_name, s.from_address, s.subject, s.to.join(" "), s.attachments.join(" "), self.text.as_deref().unwrap_or("")).to_lowercase();
     }
 
+    /// Сводка для интерфейса: со строкой начала текста, если письмо хранится.
+    fn out(&self) -> MessageSummary {
+        let mut s = self.s.clone();
+        s.snippet = self.text.as_deref().and_then(snippet_of);
+        s
+    }
+
     fn timestamp(&self) -> i64 {
         self.s.date.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map_or(0, |d| d.timestamp())
     }
@@ -401,7 +408,7 @@ impl Store {
         }
         let upper = before_uid.unwrap_or(u32::MAX);
         let mut iter = idx.items.range(..upper).rev();
-        let items: Vec<MessageSummary> = iter.by_ref().take(limit).map(|(_, e)| e.s.clone()).collect();
+        let items: Vec<MessageSummary> = iter.by_ref().take(limit).map(|(_, e)| e.out()).collect();
         let has_more = iter.next().is_some();
         Some(MessagePage { items, total: idx.total.max(idx.items.len() as u32), has_more })
     }
@@ -423,11 +430,14 @@ impl Store {
                 Some(e) => {
                     let has_att = e.s.has_attachments;
                     e.s = m.clone();
+                    e.s.snippet = None;
                     e.s.has_attachments = e.s.has_attachments || has_att;
                     e.rebuild();
                 }
                 None => {
-                    idx.items.insert(m.uid, Entry::new(m.clone()));
+                    let mut s = m.clone();
+                    s.snippet = None;
+                    idx.items.insert(m.uid, Entry::new(s));
                 }
             }
         }
@@ -461,6 +471,17 @@ impl Store {
     pub fn uid_validity(&self, folder: &str) -> Option<u32> {
         let mut inner = self.lock();
         Some(self.ensure_loaded(&mut inner, folder).uid_validity).filter(|v| *v != 0)
+    }
+
+    /// Строки начала текста для писем страницы с сервера (из хранимых исходников).
+    pub fn fill_snippets(&self, folder: &str, items: &mut [MessageSummary]) {
+        let mut inner = self.lock();
+        let idx = self.ensure_loaded(&mut inner, folder);
+        for m in items.iter_mut() {
+            if m.snippet.is_none() {
+                m.snippet = idx.items.get(&m.uid).and_then(|e| e.text.as_deref()).and_then(snippet_of);
+            }
+        }
     }
 
     pub fn summary(&self, folder: &str, uid: u32) -> Option<MessageSummary> {
@@ -554,7 +575,7 @@ impl Store {
             .map(|e| (e.timestamp(), e))
             .collect();
         hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-        hits.into_iter().take(limit).map(|(_, e)| e.s.clone()).collect()
+        hits.into_iter().take(limit).map(|(_, e)| e.out()).collect()
     }
 
     /// Письма всех папок, кроме `skip`, подходящие под `keep`; новые сверху.
@@ -570,7 +591,7 @@ impl Store {
             .map(|e| (e.timestamp(), e))
             .collect();
         hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-        hits.into_iter().take(limit).map(|(_, e)| e.s.clone()).collect()
+        hits.into_iter().take(limit).map(|(_, e)| e.out()).collect()
     }
 
     pub fn status(&self) -> StoreStatus {
@@ -718,6 +739,32 @@ async fn sync_folder(store: &Store, conn: &mut imap::Connection, folder: &str) -
 const BATCH_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Порции UID: не больше 10 писем и не больше `BATCH_BYTES` (большое письмо — отдельно).
+/// Начало текста письма для строки списка: до разделителя (дальше — копия и имена
+/// вложений), без цитат («>») и подписи, пробелы схлопнуты, до 160 символов.
+pub fn snippet_of(text: &str) -> Option<String> {
+    let body = text.split('\u{1}').next().unwrap_or("");
+    let mut out = String::new();
+    for line in body.lines() {
+        let l = line.trim();
+        if l.is_empty() || l.starts_with('>') {
+            continue;
+        }
+        // Дальше — подпись или пересланное/цитируемое письмо.
+        if l == "--" || l.starts_with("-----") || l.starts_with("_____") || (l.ends_with(':') && (l.contains(" пишет") || l.contains(" wrote") || l.contains("писал"))) {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.extend(l.split_whitespace().flat_map(|w| std::iter::once(' ').chain(w.chars())).skip(1));
+        if out.chars().count() > 160 {
+            break;
+        }
+    }
+    let t: String = out.chars().take(160).collect();
+    (!t.is_empty()).then(|| if out.chars().count() > 160 { format!("{}…", t.trim_end()) } else { t })
+}
+
 pub fn body_batches(want: &[(u32, u32)]) -> Vec<Vec<u32>> {
     let mut out: Vec<Vec<u32>> = Vec::new();
     let mut cur: Vec<u32> = Vec::new();
@@ -735,6 +782,22 @@ pub fn body_batches(want: &[(u32, u32)]) -> Vec<Vec<u32>> {
         out.push(cur);
     }
     out
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    use super::snippet_of;
+
+    #[test]
+    fn body_start_without_quotes_and_signature() {
+        assert_eq!(snippet_of("Добрый день!\n\nПрошу подготовить   справку.\n\n--\nИванов\u{1} cc@x.ru файл.pdf").as_deref(), Some("Добрый день! Прошу подготовить справку."));
+        assert_eq!(snippet_of("Согласен.\n\nПетров пишет:\n> старое").as_deref(), Some("Согласен."));
+        assert_eq!(snippet_of("> только цитата\u{1}a.pdf"), None);
+        assert_eq!(snippet_of(""), None);
+        let long = "слово ".repeat(60);
+        let s = snippet_of(&long).unwrap();
+        assert!(s.ends_with('…') && s.chars().count() <= 161, "{s}");
+    }
 }
 
 #[cfg(test)]
@@ -771,6 +834,7 @@ mod tests {
             has_attachments: false,
             attachments: vec![],
             size: 100,
+            snippet: None,
         }
     }
 

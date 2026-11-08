@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Circle, Cloud, ContactRound, Download,
   FilePenLine, FileText, Folder as FolderIcon, FolderOpen, Forward, Inbox, Layers, LogOut, Mail, Bookmark, BookmarkPlus, Zap,
-  MessageCircle, Moon, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
+  MessageCircle, Moon, MoreHorizontal, Paperclip, PanelLeftClose, PanelRightClose, PanelRightOpen, RefreshCw,
   Reply, Search, Send, Settings, ShieldCheck, CalendarClock, Tag, MessagesSquare, AlarmClock, ShieldAlert, Printer, SquarePen, SquareKanban, Stethoscope, Sun, Trash2, Users, X, Copy, FolderInput, ListFilter, ReplyAll, Flag, CircleAlert, ExternalLink, MailOpen, Handshake, CloudOff,
 } from 'lucide-react'
 
@@ -888,11 +888,6 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     }
   }
 
-  function openPop(e: React.MouseEvent, items: MenuItem[]) {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    setPopMenu({ x: r.left, y: r.bottom + 4, items })
-  }
-
   async function runDiagnostics() {
     setDiagBusy(true)
     setDiagText('Сбор данных…')
@@ -963,6 +958,25 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       return `${m.fromName} ${m.fromAddress} ${m.subject} ${m.to.join(' ')}`.toLowerCase().includes(q)
     })
   }, [pool, searching, filter, query, catFilter])
+
+  /** Группа списка по дате письма. */
+  function dateGroup(value: string | null): string {
+    if (!value) return 'Без даты'
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return 'Без даты'
+    const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+    const today = day(new Date())
+    const diff = Math.round((today - day(d)) / 86400000)
+    const weekStart = today - ((new Date().getDay() + 6) % 7) * 86400000
+    if (diff <= 0) return 'Сегодня'
+    if (diff === 1) return 'Вчера'
+    if (day(d) >= weekStart) return 'На этой неделе'
+    if (day(d) >= weekStart - 7 * 86400000) return 'На прошлой неделе'
+    const now = new Date()
+    if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) return 'В этом месяце'
+    const m = d.toLocaleDateString('ru-RU', { month: 'long', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) }).replace(' г.', '')
+    return m.charAt(0).toUpperCase() + m.slice(1)
+  }
 
   /** Строки списка: цепочки свёрнуты в одну строку (новое письмо сверху), раскрываются стрелкой. */
   const listRows = useMemo(() => {
@@ -1461,6 +1475,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           <Search size={16} /><span>Искать везде…</span><kbd>Ctrl+K</kbd>
         </button>
         <div className="topbar-actions">
+          <span id="update-slot" className="update-slot" />
           <button className="icon-button" aria-label="Тема" onClick={() => setDark(!dark)}>{dark ? <Sun /> : <Moon />}</button>
           <button className="icon-button" aria-label="Настройки" onClick={() => setShowSettings(true)}><Settings /></button>
         </div>
@@ -1484,12 +1499,12 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       >
         {fileOver && <div className="drop-hint" aria-hidden="true"><Paperclip size={22} /> Отпустите — файлы будут вложены в новое письмо</div>}
         <nav className="module-rail" aria-label="Модули">
-          <button className={`module ${module === 'mail' ? 'active' : ''}`} onClick={() => setModule('mail')}><Mail /><span>Почта</span></button>
-          <button className={`module ${module === 'calendar' ? 'active' : ''}`} onClick={() => setModule('calendar')}><CalendarDays /><span>Календарь</span></button>
-          <button className={`module ${module === 'contacts' ? 'active' : ''}`} onClick={() => setModule('contacts')}><ContactRound /><span>Контакты</span></button>
+          <button className={`module ${module === 'mail' ? 'active' : ''}`} onClick={() => setModule('mail')} title="Почта"><Mail /><span>Почта</span></button>
+          <button className={`module ${module === 'calendar' ? 'active' : ''}`} onClick={() => setModule('calendar')} title="Календарь"><CalendarDays /><span>Календарь</span></button>
+          <button className={`module ${module === 'contacts' ? 'active' : ''}`} onClick={() => setModule('contacts')} title="Контакты"><ContactRound /><span>Контакты</span></button>
           <button className={`module ${module === 'counterparty' ? 'active' : ''}`} onClick={() => setModule('counterparty')} title="История взаимодействия с организациями"><Handshake /><span>Контрагенты</span></button>
-          <button className={`module ${module === 'deck' ? 'active' : ''}`} onClick={() => setModule('deck')}><FileText /><span>Задачи</span></button>
-          <button className={`module ${module === 'chat' ? 'active' : ''}`} onClick={() => setModule('chat')}><MessageCircle /><span>Чат</span>{chatUnread > 0 && <b className="rail-badge">{chatUnread}</b>}</button>
+          <button className={`module ${module === 'deck' ? 'active' : ''}`} onClick={() => setModule('deck')} title="Задачи (Deck)"><FileText /><span>Задачи</span></button>
+          <button className={`module ${module === 'chat' ? 'active' : ''}`} onClick={() => setModule('chat')} title="Чат"><MessageCircle /><span>Чат</span>{chatUnread > 0 && <b className="rail-badge">{chatUnread}</b>}</button>
           <button className={`module ${module === 'files' ? 'active' : ''}`} onClick={() => setModule('files')}><Cloud /><span>Файлы</span></button>
           <div className="rail-spacer" />
         </nav>
@@ -1687,16 +1702,21 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
                 <button className="text-button" onClick={() => void loadFirstPage(folderId, true)}>Повторить</button>
               </div>
             )}
-            {listRows.map(({ m, count, child, thread }) => {
+            {listRows.map(({ m, count, child, thread }, rowIndex) => {
               const key = messageKey(m)
+              // Заголовок группы по дате: «Сегодня», «Вчера», «На этой неделе»… (у вложенных писем цепочки — нет).
+              const group = child ? null : dateGroup(m.date)
+              const prevTop = listRows.slice(0, rowIndex).reverse().find((r) => !r.child)
+              const showGroup = group !== null && (!prevTop || dateGroup(prevTop.m.date) !== group)
               const outgoing = ['sent', 'drafts'].includes(folders.find((f) => f.id === m.folder)?.role ?? '')
               const sender = outgoing ? recipientsLabel(m) : senderLabel(m)
               const due = dueOf(m)
               const cats = categoriesOf(m, categories)
               const open = openThreads.has(thread)
               return (
+                <Fragment key={key}>
+                {showGroup && <div className="message-group" role="presentation">{group}</div>}
                 <button
-                  key={key}
                   className={`message-row ${child ? 'thread-child' : ''} ${selectedKey === key ? 'selected' : ''} ${checked.has(key) ? 'checked' : ''} ${m.unread ? 'unread' : ''} ${rowMenu?.items.some((x) => messageKey(x) === key) ? 'menu-target' : ''}`}
                   onClick={(e) => onRowClick(e, m)}
                   onDoubleClick={() => { if (!otherOf(m)) openInWindow(m) }}
@@ -1707,7 +1727,17 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
                 >
                   <div className={`sender-avatar avatar-${m.uid % 5}`}>{initials(outgoing ? sender.slice(6) : sender)}</div>
                   <div className="message-summary">
-                    <div className="message-topline"><span className="sender-name">{sender}</span><time>{formatListDate(m.date)}</time></div>
+                    <div className="message-topline">
+                      {m.unread && <span className="unread-dot" aria-label="Не прочитано" />}
+                      <span className="sender-name">{sender}</span>
+                      <span className="message-icons">
+                        {m.hasAttachments && <Paperclip size={13} aria-label="Есть вложения" />}
+                        {m.important && <CircleAlert size={13} className="important-mark" aria-label="Важное" />}
+                        {m.flagged && <Flag size={13} className="flag-mark" fill="currentColor" aria-label="С флажком" />}
+                        {m.answered && <Reply size={13} aria-label="Есть ответ" />}
+                      </span>
+                      <time>{formatListDate(m.date)}</time>
+                    </div>
                     <div className="message-subject">
                       {count > 1 && <span
                         className={`thread-count ${open ? 'open' : ''}`}
@@ -1719,21 +1749,16 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
                       ><ChevronRight size={12} />{count}</span>}
                       {m.subject || '(без темы)'}
                     </div>
+                    {m.snippet && <div className="message-snippet">{m.snippet}</div>}
                     {searching && <div className="message-folder">{otherOf(m) ? <><span className="search-account">{otherOf(m)!.label}</span> · {m.folder}</> : folderName(m.folder)}</div>}
                     {(cats.length > 0 || due || snoozedUntil(m.keywords)) && <div className="message-tags">
                       {snoozedUntil(m.keywords) && <span className="snooze-tag" title="Отложено"><AlarmClock size={11} /> до {dueLabel(snoozedUntil(m.keywords)!)}</span>}
                       {due && <span className={`due-tag ${due.getTime() < Date.now() ? 'overdue' : ''}`} title="Срок флажка"><Flag size={11} /> {dueLabel(due)}</span>}
                       {cats.map((c) => <span key={c.keyword} className="cat-tag" style={{ borderColor: c.color, color: c.color }}><span className="cat-dot" style={{ background: c.color }} />{c.name}</span>)}
                     </div>}
-                    <div className="message-meta">
-                      {m.hasAttachments && <Paperclip size={13} />}
-                      {m.important && <CircleAlert size={13} className="important-mark" />}
-                      {m.flagged && <Flag size={13} className="flag-mark" fill="currentColor" />}
-                      {m.answered && <Reply size={13} />}
-                      {m.unread && <span className="unread-dot" />}
-                    </div>
                   </div>
                 </button>
+                </Fragment>
               )
             })}
             {!loading && !listError && visibleMessages.length === 0 && (
@@ -1776,35 +1801,40 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               <button className="icon-button" aria-label="Переслать" title="Переслать" disabled={!detail} onClick={() => openComposer('forward')}><Forward size={18} /></button>
               {ncStatus?.connected && <button className="icon-button" aria-label="Создать задачу" title="Создать задачу Deck из письма: срок, организация, документы в Nextcloud" onClick={() => setTaskFor(selected)}><SquareKanban size={18} /></button>}
               <span className="toolbar-sep" />
-              <button className={`icon-button ${selected.important ? 'important-on' : ''}`} aria-label="Важное" aria-pressed={selected.important} title={selected.important ? 'Снять «Важное»' : 'Пометить как важное'} onClick={() => void toggleFlag(selected, 'important')}>
-                <CircleAlert size={18} />
-              </button>
               <button className={`icon-button ${selected.flagged ? 'flag-on' : ''}`} aria-label="Флажок" aria-pressed={selected.flagged} title={selected.flagged ? 'Снять флажок' : 'Поставить флажок (к исполнению)'} onClick={() => void toggleFlag(selected, 'flagged')}>
                 <Flag size={18} fill={selected.flagged ? 'currentColor' : 'none'} />
-              </button>
-              <button className="icon-button" aria-label="Срок" title="Флажок со сроком (напоминание)" onClick={(e) => openPop(e, dueMenuItems([selected]))}><CalendarClock size={18} /></button>
-              <button className="icon-button" aria-label="Категории" title="Категории" onClick={(e) => openPop(e, categoryMenuItems([selected]))}><Tag size={18} /></button>
-              <button className="icon-button" aria-label="Отложить" title="Отложить (вернётся во «Входящие» в срок)" onClick={(e) => openPop(e, snoozeMenuItems([selected]))}><AlarmClock size={18} /></button>
-              <button className="icon-button" aria-label="Непрочитанное" title={selected.unread ? 'Отметить прочитанным' : 'Отметить непрочитанным'} onClick={() => void toggleFlag(selected, 'seen')}>
-                <Mail size={18} />
               </button>
               <span className="toolbar-sep" />
               <button className="icon-button" aria-label="Архивировать" title="В архив" onClick={() => void archive([selected])}><Archive size={18} /></button>
               <button className="icon-button" aria-label="Переместить в папку" title="Переместить в папку…" onClick={() => setMovePicker([selected])}>
                 <FolderInput size={18} />
               </button>
-              <button className="icon-button" aria-label="Создать правило" title="Создать правило по этому письму" onClick={() => { setFilterSeed(selected); setShowFilters(true) }}>
-                <ListFilter size={18} />
-              </button>
               <button className="icon-button danger-icon" aria-label="Удалить письмо" title="Удалить (Del)" onClick={() => requestDelete([selected])}>
                 <Trash2 size={18} />
               </button>
               <span className="toolbar-sep" />
-              {currentFolder?.role === 'junk'
-                ? <button className="icon-button" aria-label="Не спам" title="Не спам — вернуть во «Входящие»" onClick={() => void markSpam([selected], false)}><ShieldCheck size={18} /></button>
-                : <button className="icon-button" aria-label="Это спам" title="Это спам" onClick={() => void markSpam([selected], true)}><ShieldAlert size={18} /></button>}
-              <button className="icon-button" aria-label="Печать" title="Печать или сохранение в PDF" disabled={!detail} onClick={() => detail && printMessage(detail)}><Printer size={18} /></button>
-              <button className="icon-button" aria-label="Открыть в новом окне" title="Открыть в отдельном окне" onClick={() => openInWindow(selected)}><ExternalLink size={18} /></button>
+              {/* Редкие действия — в меню «Ещё»: на панели остаются частые (как в Outlook). */}
+              <button className="icon-button" aria-label="Ещё действия" title="Ещё: важное, срок, категории, отложить, правило, спам, печать…" onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect()
+                const at = { x: Math.max(8, r.right - 260), y: r.bottom + 4 }
+                // Пункт с подменю: открыть его на месте этого меню, когда оно закроется.
+                const sub = (items: MenuItem[]) => () => window.setTimeout(() => setPopMenu({ ...at, items }), 0)
+                setPopMenu({ ...at, items: [
+                  { label: selected.important ? 'Снять «Важное»' : 'Пометить как важное', icon: <CircleAlert size={15} />, onSelect: () => void toggleFlag(selected, 'important') },
+                  { label: 'Срок флажка…', icon: <CalendarClock size={15} />, onSelect: sub(dueMenuItems([selected])) },
+                  { label: 'Категории…', icon: <Tag size={15} />, onSelect: sub(categoryMenuItems([selected])) },
+                  { label: 'Отложить…', icon: <AlarmClock size={15} />, onSelect: sub(snoozeMenuItems([selected])) },
+                  { label: selected.unread ? 'Отметить прочитанным' : 'Отметить непрочитанным', icon: <Mail size={15} />, onSelect: () => void toggleFlag(selected, 'seen') },
+                  { separator: true },
+                  { label: 'Создать правило…', icon: <ListFilter size={15} />, onSelect: () => { setFilterSeed(selected); setShowFilters(true) } },
+                  currentFolder?.role === 'junk'
+                    ? { label: 'Не спам', icon: <ShieldCheck size={15} />, onSelect: () => void markSpam([selected], false) }
+                    : { label: 'Это спам', icon: <ShieldAlert size={15} />, onSelect: () => void markSpam([selected], true) },
+                  { separator: true },
+                  { label: 'Печать или PDF', icon: <Printer size={15} />, disabled: !detail, onSelect: () => { if (detail) printMessage(detail) } },
+                  { label: 'Открыть в отдельном окне', icon: <ExternalLink size={15} />, onSelect: () => openInWindow(selected) },
+                ] })
+              }}><MoreHorizontal size={18} /></button>
             </>}
             <button className="icon-button soft" aria-label="Скрыть чтение" onClick={() => setReaderOpen(false)}><PanelRightClose size={18} /></button>
           </div>

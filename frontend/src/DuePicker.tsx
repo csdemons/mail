@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { DateTimeField } from './DateField'
 import { CalendarClock, X } from 'lucide-react'
 
 import { localInputValue } from './sending'
@@ -20,7 +21,7 @@ export default function DuePicker({ onPick, onClose, title = 'Флажок со 
           <div><strong><CalendarClock size={16} /> {title}</strong><small>{hint}</small></div>
           <button className="icon-button" onClick={onClose} aria-label="Закрыть"><X size={18} /></button>
         </div>
-        <input className="due-input" type="datetime-local" aria-label="Срок" value={value} onChange={(e) => setValue(e.target.value)} />
+        <DateTimeField label="Срок" value={value} onChange={setValue} />
         <div className="settings-actions">
           <button className="secondary-button" onClick={onClose}>Отмена</button>
           <button className="primary-button" disabled={!value} onClick={() => onPick(new Date(value))}>{action}</button>

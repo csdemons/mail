@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { DateField } from './DateField'
 import { Building2, CalendarDays, Check, Cloud, CloudDownload, FileText, Handshake, Inbox, Loader2, Mail, MessageCircle, Paperclip, Pencil, Plus, RefreshCw, Search, Send, SquareKanban, SquarePen, Trash2, Users, X } from 'lucide-react'
 
 import { api, errorText } from './api'
@@ -393,8 +394,8 @@ export default function CounterpartyView({ domain, onDomain, onCompose, onNotice
               <div className="panel-head"><Handshake size={15} /><b>Договорённости</b><button className="icon-button" title="Добавить договорённость" aria-label="Добавить договорённость" disabled={!data} onClick={() => setForm(agreementFrom())}><Plus size={15} /></button></div>
               {form && <form className="agreement-form" onSubmit={(e) => { e.preventDefault(); submitAgreement() }}>
                 <textarea autoFocus value={form.text} maxLength={4000} onChange={(e) => setForm({ ...form, text: e.target.value })} placeholder="О чём договорились" aria-label="Текст договорённости" rows={3} />
-                <label>Дата <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value || today() })} aria-label="Дата договорённости" /></label>
-                <label>Срок <input type="date" value={form.due ?? ''} onChange={(e) => setForm({ ...form, due: e.target.value || undefined })} aria-label="Срок выполнения" /></label>
+                <div className="agreement-date"><span>Дата</span><DateField label="Дата договорённости" value={form.date} clearable={false} onChange={(v) => setForm({ ...form, date: v || today() })} /></div>
+                <div className="agreement-date"><span>Срок</span><DateField label="Срок выполнения" value={form.due ?? ''} onChange={(v) => setForm({ ...form, due: v || undefined })} /></div>
                 {form.subject && <small className="muted">Из письма «{form.subject}»</small>}
                 <div className="agreement-form-buttons">
                   <button className="primary-button" type="submit">Сохранить</button>

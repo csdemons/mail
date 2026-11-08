@@ -640,6 +640,7 @@ impl EwsSession {
             has_attachments: text_of(n, "HasAttachments").is_some_and(|v| v == "true") || !attachments.is_empty(),
             attachments,
             size: text_of(n, "Size").and_then(|v| v.parse().ok()).unwrap_or(0),
+            snippet: None,
         };
         s.set_flags(flags_of(n));
         s

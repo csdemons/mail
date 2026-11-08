@@ -10,20 +10,23 @@ export interface Appearance {
   zoom: number
   /** Размер текста в чате и письмах, px. */
   text: number
+  /** Список писем: «обычно» — с началом текста, «компактно» — плотнее, без него. */
+  density: 'normal' | 'compact'
 }
 
 export const ZOOM_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75]
 export const TEXT_MIN = 12
 export const TEXT_MAX = 22
 const KEY = 'atom.appearance'
-const DEFAULTS: Appearance = { zoom: 1, text: 14 }
+const DEFAULTS: Appearance = { zoom: 1, text: 14, density: 'normal' }
 
 function read(): Appearance {
   try {
     const v = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Appearance>
     const zoom = ZOOM_STEPS.includes(Number(v.zoom)) ? Number(v.zoom) : DEFAULTS.zoom
     const text = Number.isFinite(v.text) ? Math.min(TEXT_MAX, Math.max(TEXT_MIN, Number(v.text))) : DEFAULTS.text
-    return { zoom, text }
+    const density = v.density === 'compact' ? 'compact' : 'normal'
+    return { zoom, text, density }
   } catch {
     return { ...DEFAULTS }
   }
@@ -36,6 +39,7 @@ const listeners = new Set<(a: Appearance) => void>()
 export function applyAppearance(a: Appearance = current) {
   const root = document.documentElement
   root.style.setProperty('--content-font', `${a.text}px`)
+  root.dataset.density = a.density
   // Масштаб через CSS (движок не умеет, например Astra 1.7) увеличивает и 100vh — высоту окна
   // делим обратно (--css-zoom), иначе низ окна со списками уходит за край без прокрутки.
   const css = (on: boolean) => {

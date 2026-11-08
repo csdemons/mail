@@ -37,6 +37,18 @@ def set_value(d, el, value):
       el.dispatchEvent(new Event('input', { bubbles: true }));
     """, el, value)
 
+def set_dt(d, root, value):
+    # Свои поля даты и времени (DateField/TimeField): «ГГГГ-ММ-ДДTЧЧ:ММ» — в оба поля.
+    date, tm = value.split('T')
+    set_value(d, root.find_element(By.CSS_SELECTOR, 'input[data-kind=date]'), date)
+    set_value(d, root.find_element(By.CSS_SELECTOR, 'input[data-kind=time]'), tm)
+
+def reader_more(d, label):
+    # Редкие действия письма — в меню «Ещё» панели письма.
+    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Ещё действия"]').click()
+    menu = W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.context-menu'))
+    [b for b in menu.find_elements(By.TAG_NAME, 'button') if label in b.get_attribute('textContent')][0].click()
+
 def field(d, label):
     for f in d.find_elements(By.CSS_SELECTOR, '.editor-modal .login-field'):
         if f.find_element(By.TAG_NAME, 'span').get_attribute('textContent').strip() == label:
@@ -154,7 +166,19 @@ try:
     assert len(rows) == 50, len(rows); ok('first page: 50 rows')
 
     # Обновление: уведомление о новой версии, «Что нового», загрузка с проверкой SHA-256.
-    card = W(d, 40).until(lambda d: d.find_element(By.CSS_SELECTOR, '.update-card'))
+    # Значок в шапке, а не карточка поверх папок; окошко открывается по щелчку.
+    pill = W(d, 40).until(lambda d: d.find_element(By.CSS_SELECTOR, '.topbar .update-pill'))
+    assert not d.find_elements(By.CSS_SELECTOR, '.update-card'), 'no card over the folders until the badge is clicked'
+    assert '9.9.9' in pill.get_attribute('title')
+    pill.click()
+    card = W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.update-card.update-pop'))
+    side = d.find_element(By.CSS_SELECTOR, '.folder-sidebar').rect
+    assert card.rect['x'] > side['x'] + side['width'], (card.rect, side)
+    # «Позже» закрывает окошко, значок остаётся
+    [b for b in card.find_elements(By.TAG_NAME, 'button') if b.text == 'Позже'][0].click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.update-card') and d.find_elements(By.CSS_SELECTOR, '.update-pill'))
+    d.find_element(By.CSS_SELECTOR, '.update-pill').click()
+    card = W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.update-card'))
     W(d, 10).until(lambda d: 'Доступна версия 9.9.9' in d.find_element(By.CSS_SELECTOR, '.update-card').get_attribute('textContent'))
     [b for b in card.find_elements(By.TAG_NAME, 'button') if 'Что нового' in b.text][0].click()
     assert 'Проверка обновлений' in wait(d, '.update-notes').get_attribute('textContent'); ok('update available: 9.9.9 with release notes')
@@ -165,7 +189,8 @@ try:
     assert open(path, 'rb').read() == b'fake package for update test\n' * 4000, path
     ok('update downloaded, SHA-256 verified, manual install hint shown')
     d.find_element(By.CSS_SELECTOR, '.update-card button[aria-label="Закрыть"]').click()
-    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.update-card'))
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.update-card') and not d.find_elements(By.CSS_SELECTOR, '.update-pill'))
+    ok('update badge in the header: pop-over on click, «Позже» keeps the badge, closing removes it')
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     about = W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, '.about-block'))
     W(d, 10).until(lambda d: f'Atom Workspace {ver}' in d.find_element(By.CSS_SELECTOR, '.about-block').get_attribute('textContent'))
@@ -223,8 +248,10 @@ try:
     W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.message-row.unread'))
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Тема"]').click()
     W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.app-shell.theme-dark'))
-    bg = d.execute_script("return getComputedStyle(document.querySelector('.message-row.unread')).backgroundColor")
-    assert bg in ('rgb(34, 50, 75)', 'rgba(34, 50, 75, 1)'), bg
+    # Непрочитанное — одна синяя точка и жирный шрифт (без заливки строки).
+    st = d.execute_script("""const r = document.querySelector('.message-row.unread');
+      return { dot: getComputedStyle(r.querySelector('.unread-dot')).backgroundColor, bold: getComputedStyle(r.querySelector('.sender-name')).fontWeight }""")
+    assert st['dot'] not in ('rgba(0, 0, 0, 0)', 'transparent') and int(st['bold']) >= 600, st
     time.sleep(0.5); d.save_screenshot(f'{OUT}/14-dark-inbox.png')
     d.find_element(By.CSS_SELECTOR, '.compose-top').click()
     to = wait(d, '.compose-modal .recipient-field input'); to.send_keys('Иванов Иван <ivanov@inst.test>')
@@ -389,7 +416,7 @@ try:
     wait(d, '.editor-modal')
     set_value(d, field(d, 'Название'), 'Тестовое совещание')
     set_value(d, field(d, 'Начало'), wed); set_value(d, field(d, 'Окончание'), wed)
-    times = d.find_elements(By.CSS_SELECTOR, '.editor-modal input[type=time]')
+    times = d.find_elements(By.CSS_SELECTOR, '.editor-modal input[data-kind=time]')
     set_value(d, times[0], '11:00'); set_value(d, times[1], '12:30')
     set_value(d, field(d, 'Место'), 'Каб. 101')
     d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
@@ -402,7 +429,7 @@ try:
     [b for b in wait(d, '.event-details').find_elements(By.TAG_NAME, 'button') if 'Изменить' in b.text][0].click()
     wait(d, '.editor-modal')
     set_value(d, field(d, 'Название'), 'Совещание перенесено')
-    times = d.find_elements(By.CSS_SELECTOR, '.editor-modal input[type=time]')
+    times = d.find_elements(By.CSS_SELECTOR, '.editor-modal input[data-kind=time]')
     set_value(d, times[0], '15:00'); set_value(d, times[1], '16:00')
     d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
     W(d, 20).until(lambda d: any('Совещание перенесено' in b.get_attribute('textContent') and '15:00' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')))
@@ -418,7 +445,7 @@ try:
     [b for b in d.find_elements(By.CSS_SELECTOR, '.event-block') if 'Планёрка' in b.get_attribute('textContent')][0].click()
     [b for b in wait(d, '.event-details').find_elements(By.TAG_NAME, 'button') if 'Изменить' in b.text][0].click()
     wait(d, '.editor-modal')
-    assert all(not i.is_enabled() for i in d.find_elements(By.CSS_SELECTOR, '.editor-modal input[type=time], .editor-modal input[type=date]'))
+    assert all(not i.is_enabled() for i in d.find_elements(By.CSS_SELECTOR, '.editor-modal input[data-kind=time], .editor-modal input[data-kind=date]'))
     set_value(d, field(d, 'Место'), 'Переговорная 305')
     d.find_element(By.CSS_SELECTOR, '.editor-modal button[type=submit]').click()
     W(d, 20).until(lambda d: sum('Переговорная 305' in (b.get_attribute('title') or '') + b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.event-block')) >= 0 and not d.find_elements(By.CSS_SELECTOR, '.editor-modal'))
@@ -546,7 +573,7 @@ try:
     [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if 'Проверить резервные копии' in c.get_attribute('textContent')][0].click()
     panel = wait(d, '.deck-panel')
     set_value(d, panel.find_element(By.CSS_SELECTOR, 'textarea'), 'Veeam + NAS')
-    set_value(d, panel.find_element(By.CSS_SELECTOR, 'input[type=date]'), '2026-11-05')
+    set_value(d, panel.find_element(By.CSS_SELECTOR, 'input[data-kind=date]'), '2026-11-05')
     panel.find_element(By.CSS_SELECTOR, '.deck-done input').click()
     [b for b in panel.find_elements(By.TAG_NAME, 'button') if 'Сохранить' in b.text][0].click()
     W(d, 20).until(lambda d: [c for c in nc_mock('GET', '/test/state')['cards'] if c['id'] == new['id']][0]['description'] == 'Veeam + NAS')
@@ -1384,7 +1411,7 @@ try:
     assert 'Re: E2E reply-all' == d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value')
     ok('reply all: sender + recipients, own address excluded, Cc kept')
     d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
-    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Важное"]').click()
+    reader_more(d, 'Пометить как важное')
     W(d, 10).until(lambda d: '$label1' in (flags_of('INBOX', 'E2E reply-all') or ''))
     W(d, 5).until(lambda d: row('E2E reply-all')[0].find_elements(By.CSS_SELECTOR, '.important-mark'))
     ok('important: $label1 keyword set on server, mark in list')
@@ -1398,7 +1425,7 @@ try:
     main = d.current_window_handle
     row('E2E window')[0].click()
     W(d, 10).until(lambda d: 'E2E window' in d.find_element(By.CSS_SELECTOR, '.reader-title-row').get_attribute('textContent'))
-    d.find_element(By.CSS_SELECTOR, '.reader-toolbar button[aria-label="Открыть в новом окне"]').click()
+    reader_more(d, 'Открыть в отдельном окне')
     W(d, 15).until(lambda d: len(d.window_handles) == 2)
     d.switch_to.window([h for h in d.window_handles if h != main][0])
     W(d, 20).until(lambda d: 'E2E window' in d.find_element(By.CSS_SELECTOR, '.message-window .reader-title-row').get_attribute('textContent'))
@@ -2032,7 +2059,17 @@ try:
                    and dlg.find_element(By.CSS_SELECTOR, 'select[aria-label="Колонка"]').get_attribute('value')
                    and 'Текст про договор' in dlg.find_element(By.CSS_SELECTOR, 'textarea[aria-label="Описание задачи"]').get_attribute('value'))
     due = (_dt.date.today() + _dt.timedelta(days=7)).isoformat()
-    set_value(d, dlg.find_element(By.CSS_SELECTOR, 'input[aria-label="Срок"]'), due)
+    # Свой выбор даты: календарик и быстрые кнопки, показ ДД.ММ.ГГГГ (а не 11/15/2026 WebKit).
+    dlg.find_element(By.CSS_SELECTOR, 'button[aria-label="Срок: календарь"]').click()
+    pop = wait(d, '.date-pop')
+    assert len(pop.find_elements(By.CSS_SELECTOR, '.date-day')) == 42 and 'Пн' in pop.find_element(By.CSS_SELECTOR, '.date-grid').get_attribute('textContent')
+    [b for b in pop.find_elements(By.CSS_SELECTOR, '.date-quick button') if b.text == 'Через неделю'][0].click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.date-pop'))
+    shown = dlg.find_element(By.CSS_SELECTOR, 'input[aria-label="Срок"]').get_attribute('value')
+    assert shown == _dt.date.fromisoformat(due).strftime('%d.%m.%Y'), shown
+    # ввод цифрами: точки ставятся сами
+    set_value(d, dlg.find_element(By.CSS_SELECTOR, 'input[aria-label="Срок"]'), _dt.date.fromisoformat(due).strftime('%d%m%Y'))
+    assert dlg.find_element(By.CSS_SELECTOR, 'input[aria-label="Срок"]').get_attribute('value') == _dt.date.fromisoformat(due).strftime('%d.%m.%Y')
     W(d, 10).until(lambda d: dlg.find_elements(By.CSS_SELECTOR, 'input[aria-label="Срок в календарь"]:checked'))
     assert '/Контрагенты/jinr.ru/ОИЯИ проект договора' in dlg.get_attribute('textContent'), dlg.get_attribute('textContent')
     d.save_screenshot(f'{OUT}/80-task-from-mail.png')
@@ -2271,7 +2308,7 @@ try:
     d.find_element(By.CSS_SELECTOR, '.send-more').click()
     pop = wait(d, '.schedule-pop')
     at = time.localtime(time.time() + 100)
-    set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', at))
+    set_dt(d, pop, time.strftime('%Y-%m-%dT%H:%M', at))
     [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Запланировать' in b.text][0].click()
     W(d, 15).until(lambda d: any('будет отправлено' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
     W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.scheduled-link'))
@@ -2283,7 +2320,7 @@ try:
     compose('colleague@inst.test', 'E2E отложенное отменить', 'Не уйдёт')
     d.find_element(By.CSS_SELECTOR, '.send-more').click()
     pop = wait(d, '.schedule-pop')
-    set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 3600)))
+    set_dt(d, pop, time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 3600)))
     [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Запланировать' in b.text][0].click()
     W(d, 15).until(lambda d: '2' in d.find_element(By.CSS_SELECTOR, '.scheduled-link').get_attribute('textContent'))
     d.find_element(By.CSS_SELECTOR, '.scheduled-link').click()
@@ -2305,7 +2342,7 @@ try:
     compose('colleague@inst.test', 'E2E отложенное обрыв [drop]', 'Связь оборвётся после передачи')
     d.find_element(By.CSS_SELECTOR, '.send-more').click()
     pop = wait(d, '.schedule-pop')
-    set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 100)))
+    set_dt(d, pop, time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 100)))
     [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Запланировать' in b.text][0].click()
     W(d, 180).until(lambda d: sent_with('E2E отложенное обрыв [drop]'))
     W(d, 30).until(lambda d: [x for x in inv('scheduled_list')['ok'] if 'обрыв' in x['subject'] and x['status'] == 'unknown'])
@@ -2615,7 +2652,8 @@ try:
     d.execute_script("arguments[0].scrollIntoView({block: 'center'})", row('Отчёт с вложением')[0])
     row('Отчёт с вложением')[0].click()
     wait(d, '.reader-content')
-    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Категории"]').click()
+    reader_more(d, 'Категории…')
+    time.sleep(0.3)
     menu_click('Работа')
     W(d, 10).until(lambda d: 'Работа' in row('Отчёт с вложением')[0].get_attribute('textContent'))
     W(d, 10).until(lambda d: '$label2' in flags_u('INBOX', 'Отчёт с вложением'))
@@ -2634,15 +2672,44 @@ try:
     W(d, 10).until(lambda d: row('Отчёт с вложением'))
     d.execute_script("arguments[0].scrollIntoView({block: 'center'})", row('Отчёт с вложением')[0])
     row('Отчёт с вложением')[0].click()
-    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Срок"]').click()
+    reader_more(d, 'Срок флажка…')
+    time.sleep(0.3)
     menu_click('Выбрать срок')
-    pick = wait(d, 'input[aria-label="Срок"]')
-    set_value(d, pick, time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() - 120)))
+    pick = wait(d, '.settings-modal .datetime-field')
+    set_dt(d, pick, time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() - 120)))
     [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if 'Поставить флажок' in b.text][0].click()
     W(d, 10).until(lambda d: 'atomdue-' in (flags_u('INBOX', 'Отчёт с вложением') or ''))
     W(d, 10).until(lambda d: row('Отчёт с вложением')[0].find_elements(By.CSS_SELECTOR, '.due-tag.overdue'))
     W(d, 40).until(lambda d: any('Напоминание по флажку' in t.get_attribute('textContent') and 'Отчёт с вложением' in t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
     ok('flag with due date: stored on server, overdue mark, reminder shown')
+    # Строка списка: начало текста хранимого письма, одна точка «не прочитано», группы по датам.
+    def snippet_of_report():
+        r = row('Отчёт с вложением')
+        return r and (r[0].find_elements(By.CSS_SELECTOR, '.message-snippet') or [None])[0]
+    for _ in range(12):
+        if snippet_of_report(): break
+        d.find_element(By.CSS_SELECTOR, 'button[aria-label="Обновить"]').click(); time.sleep(5)
+    sn = snippet_of_report()
+    assert sn and 'Во вложении отчёт' in sn.get_attribute('textContent'), sn and sn.get_attribute('textContent')
+    groups = [g.get_attribute('textContent') for g in d.find_elements(By.CSS_SELECTOR, '.message-list .message-group')]
+    assert groups and groups[0] == 'Сегодня' and len(groups) == len(set(groups)), groups
+    unread = d.find_elements(By.CSS_SELECTOR, '.message-row.unread')
+    assert unread and all(len(u.find_elements(By.CSS_SELECTOR, '.unread-dot')) == 1 for u in unread[:5])
+    assert d.execute_script("return getComputedStyle(arguments[0]).boxShadow", [u for u in unread if 'selected' not in u.get_attribute('class')][0]) in ('none', '')
+    d.save_screenshot(f'{OUT}/02a-list-snippets.png')
+    # «Компактно» — без начала текста, строки ниже
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    wait(d, '.appearance-settings')
+    d.execute_script("arguments[0].click()", [b for b in d.find_elements(By.CSS_SELECTOR, '.appearance-settings [role=radio]') if b.get_attribute('textContent') == 'Компактно'][0])
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+    W(d, 5).until(lambda d: not snippet_of_report().is_displayed())
+    d.save_screenshot(f'{OUT}/02b-list-compact.png')
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    wait(d, '.appearance-settings')
+    d.execute_script("arguments[0].click()", [b for b in d.find_elements(By.CSS_SELECTOR, '.appearance-settings [role=radio]') if b.get_attribute('textContent') == 'Обычно'][0])
+    d.find_element(By.CSS_SELECTOR, '.settings-modal button[aria-label="Закрыть"]').click()
+    W(d, 5).until(lambda d: snippet_of_report().is_displayed())
+    ok('message list: text preview of stored mail, single unread dot, date groups, compact density')
 
     # Шаблоны: сохранить текущее письмо, вставить в новое, удалить.
     d.find_element(By.CSS_SELECTOR, '.compose-top').click()
@@ -2716,7 +2783,7 @@ try:
     # Печать: документ с заголовками и текстом письма.
     open_row('Отчёт с вложением')
     d.execute_script('window.__E2E_PRINT = []')
-    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Печать"]').click()
+    reader_more(d, 'Печать или PDF')
     printed = W(d, 5).until(lambda d: d.execute_script('return window.__E2E_PRINT'))[0]
     assert 'Отчёт с вложением' in printed and 'yushkov_do@inst.test' in printed and 'Во вложении отчёт' in printed and 'Отчёт за октябрь.txt' in printed, printed[:500]
     ok('print: headers, body and attachment names in the print document')
@@ -2724,14 +2791,14 @@ try:
     # «Это спам» и обратно.
     add_mail('E2E spam')
     refresh(); open_row('E2E spam')
-    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Это спам"]').click()
+    reader_more(d, 'Это спам')
     W(d, 15).until(lambda d: not row('E2E spam'))
     junk = [f['id'] for f in inv('list_folders')['ok'] if f['role'] == 'junk'][0]
     W(d, 10).until(lambda d: 'E2E spam' in subjects(junk))
     assert '$Junk' in flags_u(junk, 'E2E spam')
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Спам' in f.get_attribute('textContent')][0].click()
     open_row('E2E spam')
-    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Не спам"]').click()
+    reader_more(d, 'Не спам')
     W(d, 15).until(lambda d: 'E2E spam' in subjects('INBOX'))
     assert '$NotJunk' in flags_u('INBOX', 'E2E spam')
     [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Входящие' in f.get_attribute('textContent')][0].click()
@@ -2751,9 +2818,10 @@ try:
     # «Отложить»: письмо уходит в «Отложенные» и возвращается во «Входящие» непрочитанным.
     add_mail('E2E отложить')
     refresh(); open_row('E2E отложить')
-    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Отложить"]').click()
+    reader_more(d, 'Отложить…')
+    time.sleep(0.3)
     menu_click('Выбрать дату')
-    set_value(d, wait(d, '.settings-modal input[type=datetime-local]'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 60)))
+    set_dt(d, wait(d, '.settings-modal .datetime-field'), time.strftime('%Y-%m-%dT%H:%M', time.localtime(time.time() + 60)))
     [b for b in d.find_elements(By.CSS_SELECTOR, '.settings-modal button') if b.text == 'Отложить'][0].click()
     W(d, 15).until(lambda d: not row('E2E отложить'))
     snoozed = W(d, 10).until(lambda d: [f['id'] for f in inv('list_folders')['ok'] if 'Отложенные' in f['name']])[0]

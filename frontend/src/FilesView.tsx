@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { DateField } from './DateField'
 import {
   ChevronRight, Cloud, Copy, Download, ExternalLink, File, FilePen, FilePlus, FileSpreadsheet, FileText, Folder, FolderPlus, Home, Image, Link2, Lock, Mail,
   Pencil, Presentation, RefreshCw, Search, Share2, Trash2, Upload, UserPlus, X,
@@ -323,7 +324,7 @@ function FilePanel({ file, onClose, onChanged, onOpenDir, onSendLinks, onNotice,
           {linkOpts ? (
             <div className="share-form">
               <label className="login-field"><span><Lock size={12} /> Пароль (необязательно)</span><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-              <label className="login-field"><span>Действует до (необязательно)</span><input type="date" value={expire} onChange={(e) => setExpire(e.target.value)} /></label>
+              <div className="login-field"><span>Действует до (необязательно)</span><DateField label="Действует до" value={expire} min={new Date().toISOString().slice(0, 10)} onChange={setExpire} /></div>
               <div className="settings-actions">
                 <button className="text-button" onClick={() => setLinkOpts(false)}>Отмена</button>
                 <button className="primary-button" disabled={busy} onClick={() => void run(async () => {

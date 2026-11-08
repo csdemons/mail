@@ -502,6 +502,10 @@ pub struct MessageSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
     pub size: u32,
+    /// Начало текста письма для строки списка — если письмо хранится на компьютере
+    /// (подставляется из локального хранилища, на сервер не ходит).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -805,6 +809,7 @@ fn summary_from(folder: &str, fetch: &Fetch, msg: Option<&mail_parser::Message<'
         has_attachments,
         attachments,
         size: fetch.size.unwrap_or(0),
+        snippet: None,
     };
     summary.set_flags(flag_state(fetch));
     summary
@@ -1036,6 +1041,8 @@ pub fn detail_from_raw(summary: MessageSummary, raw: &[u8]) -> MessageDetail {
 pub fn search_text(raw: &[u8], max: usize) -> String {
     let Some(msg) = MessageParser::default().parse(raw) else { return String::new() };
     let mut text: String = msg.body_text(0).map(|b| b.into_owned()).unwrap_or_default();
+    // Разделитель: до него — текст письма (строка списка берёт начало отсюда).
+    text.push('\u{1}');
     let cc = addresses(msg.cc()).join(" ");
     if !cc.is_empty() {
         text.push(' ');

@@ -29,6 +29,14 @@ export default function AppearanceSettings() {
       </label>
       <p className="appearance-sample" style={{ fontSize: a.text }}>Так будет выглядеть текст сообщения: «Коллеги, встреча в 15:00».</p>
       <label>
+        <span>Список писем</span>
+        <span className="segmented" role="radiogroup" aria-label="Список писем">
+          <button type="button" role="radio" aria-checked={a.density === 'normal'} className={a.density === 'normal' ? 'active' : ''} onClick={() => setAppearance({ density: 'normal' })}>Обычно</button>
+          <button type="button" role="radio" aria-checked={a.density === 'compact'} className={a.density === 'compact' ? 'active' : ''} onClick={() => setAppearance({ density: 'compact' })}>Компактно</button>
+        </span>
+        <small className="settings-hint">«Обычно» — с началом текста письма (если письмо хранится на компьютере)</small>
+      </label>
+      <label>
         <span>Обои чата</span>
         <button type="button" className="secondary-button" onClick={() => setWall(true)}><Wallpaper size={15} /> Выбрать обои…</button>
       </label>

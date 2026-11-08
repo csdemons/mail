@@ -271,6 +271,7 @@ mod tests {
             has_attachments: true,
             attachments: vec!["План работ.xlsx".into()],
             size: 100,
+            snippet: None,
         }
     }
 

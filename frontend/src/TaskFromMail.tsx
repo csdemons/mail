@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { DateField } from './DateField'
 import { CalendarDays, FolderUp, Handshake, Loader2, X } from 'lucide-react'
 
 import { api, errorText } from './api'
@@ -197,7 +198,7 @@ export default function TaskFromMail({ message, ownAddress, onClose, onNotice, o
             <input list="task-org-list" value={org} onChange={(e) => setOrg(e.target.value)} placeholder="домен, например niiar.ru" aria-label="Организация" className={orgOk ? '' : 'invalid'} />
             <datalist id="task-org-list">{domains.map((d) => <option key={d} value={d} />)}</datalist>
           </label>
-          <label><span><CalendarDays size={14} /> Срок</span><input type="date" value={due} onChange={(e) => setDue(e.target.value)} aria-label="Срок" /></label>
+          <div className="task-field"><span><CalendarDays size={14} /> Срок</span><DateField label="Срок" value={due} min={ymd(new Date())} onChange={setDue} /></div>
           {due && (
             <label className="task-check task-wide">
               <input type="checkbox" checked={toCalendar && calendars.length > 0} disabled={calendars.length === 0} onChange={(e) => setToCalendar(e.target.checked)} aria-label="Срок в календарь" />

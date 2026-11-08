@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { DateTimeField } from './DateField'
 import { CalendarClock, ChevronDown, Cloud, FileText, MailCheck, Paperclip, Send, Trash2, X } from 'lucide-react'
 
 import { api, errorText, formatSize, TYPING_PAUSE_MS } from './api'
@@ -294,10 +295,10 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
                   <span>{p.label}</span><small>{formatWhen(p.at.toISOString())}</small>
                 </button>
               ))}
-              <label className="schedule-custom">
-                <input type="datetime-local" aria-label="Дата и время отправки" value={schedAt} min={localInputValue(new Date())} onChange={(e) => setSchedAt(e.target.value)} />
+              <div className="schedule-custom">
+                <DateTimeField label="Дата и время отправки" value={schedAt} min={localInputValue(new Date())} onChange={setSchedAt} />
                 <button type="button" className="secondary-button" disabled={!schedAt} onClick={() => { setSchedOpen(false); void submit(null, new Date(schedAt)) }}>Запланировать</button>
-              </label>
+              </div>
               <small className="settings-hint">Письмо ждёт в «Черновиках» и уходит в срок, пока Atom Workspace запущен (можно свернуть в трей); если программа была закрыта — при следующем запуске.</small>
             </div>}
           </div>

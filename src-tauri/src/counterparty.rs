@@ -365,6 +365,7 @@ mod tests {
             has_attachments: false,
             attachments: vec![],
             size: 1,
+            snippet: None,
         }
     }
 
