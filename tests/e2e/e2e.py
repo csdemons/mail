@@ -49,6 +49,14 @@ def reader_more(d, label):
     menu = W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.context-menu'))
     [b for b in menu.find_elements(By.TAG_NAME, 'button') if label in b.get_attribute('textContent')][0].click()
 
+def close_composer(d):
+    # Закрыть окно письма; если в нём что-то набрано — оно спросит про черновик: удалить.
+    close_composer(d)
+    time.sleep(0.4)
+    for ask in d.find_elements(By.CSS_SELECTOR, '[role=alertdialog][aria-label="Сохранить черновик?"]'):
+        [b for b in ask.find_elements(By.TAG_NAME, 'button') if 'Удалить черновик' in b.text][0].click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.compose-modal'))
+
 def field(d, label):
     for f in d.find_elements(By.CSS_SELECTOR, '.editor-modal .login-field'):
         if f.find_element(By.TAG_NAME, 'span').get_attribute('textContent').strip() == label:
@@ -261,13 +269,13 @@ try:
     sel = d.find_element(By.CSS_SELECTOR, '.compose-modal .rt-font')
     assert d.execute_script("return getComputedStyle(arguments[0]).backgroundColor", sel) == 'rgb(28, 35, 48)'
     d.save_screenshot(f'{OUT}/15-dark-compose.png')
-    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    close_composer(d)
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Тема"]').click()
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.app-shell.theme-dark'))
     d.find_element(By.CSS_SELECTOR, '.compose-top').click()
     to = wait(d, '.compose-modal .recipient-field input')
     assert d.execute_script("return getComputedStyle(arguments[0]).color", to) == 'rgb(15, 23, 42)'
-    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    close_composer(d)
     ok('dark theme: unread rows highlighted, compose window and recipients readable; light: recipients near-black')
     d.save_screenshot(f'{OUT}/04-folder.png')
 
@@ -1279,7 +1287,7 @@ try:
     [b for b in d.find_elements(By.CSS_SELECTOR, '.nc-picker button') if 'Вставить' in b.get_attribute('textContent')][0].click()
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.nc-picker') and d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-body').get_attribute('innerHTML').count('/s/tok') >= 2)
     ok('composer: link to a Nextcloud file inserted')
-    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    close_composer(d)
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.compose-modal'))
     # Доступ сотруднику.
     file_row('Регламент.txt')[0].click()
@@ -1412,7 +1420,7 @@ try:
     assert 'sidorov@inst.test' in cc_v and 'test@corp.test' not in cc_v, cc_v
     assert 'Re: E2E reply-all' == d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value')
     ok('reply all: sender + recipients, own address excluded, Cc kept')
-    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    close_composer(d)
     reader_more(d, 'Пометить как важное')
     W(d, 10).until(lambda d: '$label1' in (flags_of('INBOX', 'E2E reply-all') or ''))
     W(d, 5).until(lambda d: row('E2E reply-all')[0].find_elements(By.CSS_SELECTOR, '.important-mark'))
@@ -1444,7 +1452,7 @@ try:
     [b for b in d.find_elements(By.CSS_SELECTOR, '.message-window-toolbar button') if 'Всем' in b.text][0].click()
     to_v = wait(d, '.compose-modal .recipient-field input').get_attribute('value')
     assert 'boss@inst.test' in to_v and 'petrov@inst.test' in to_v, to_v
-    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    close_composer(d)
     ok('message window: opens separately, font size, flag, reply all')
     d.find_element(By.CSS_SELECTOR, '.message-window button[aria-label="Архивировать"]').click()
     W(d, 15).until(lambda d: len(d.window_handles) == 1)
@@ -1476,7 +1484,7 @@ try:
     menu_pick(row('E2E ctx one')[0], 'Ответить')
     W(d, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'Re: E2E ctx one')
     assert 'colleague@inst.test' in d.find_element(By.CSS_SELECTOR, '.compose-modal .recipient-field input').get_attribute('value')
-    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    close_composer(d)
     menu_pick(row('E2E ctx one')[0], 'Пометить как важное')
     W(d, 10).until(lambda d: '$label1' in (flags_of('INBOX', 'E2E ctx one') or ''))
     ok('context menu: items like Outlook; reply to an unopened message; mark important')
@@ -2743,7 +2751,7 @@ try:
     [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Сохранить текущее' in b.text][0].click()
     W(d, 15).until(lambda d: any('E2E шаблон' in i.get_attribute('textContent') for i in d.find_elements(By.CSS_SELECTOR, '.tpl-item')))
     assert 'E2E шаблон' in subjects('Templates')
-    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    close_composer(d)
     d.find_element(By.CSS_SELECTOR, '.compose-top').click()
     wait(d, '.compose-modal')
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Шаблоны"]').click()
@@ -2756,7 +2764,7 @@ try:
     item = [i for i in wait(d, '.tpl-pop').find_elements(By.CSS_SELECTOR, '.tpl-item') if 'E2E шаблон' in i.get_attribute('textContent')][0]
     item.find_element(By.CSS_SELECTOR, 'button[aria-label^="Удалить шаблон"]').click()
     W(d, 10).until(lambda d: 'E2E шаблон' not in subjects('Templates'))
-    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
+    close_composer(d)
     ok('templates: saved to the Templates folder on the server, inserted into a new mail, deleted')
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
