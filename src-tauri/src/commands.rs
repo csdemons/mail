@@ -721,6 +721,12 @@ pub async fn signature_save(app: AppHandle, state: State<'_, AppState>, text: St
     let profile = {
         let mut p = ctx.profile.lock().await;
         p.signature = Some(text.clone());
+        // Список подписей: меняется подпись для новых писем.
+        if let Some(id) = p.signature_new.clone() {
+            if let Some(sig) = p.signatures.iter_mut().find(|x| x.id == id) {
+                sig.text = text.clone();
+            }
+        }
         p.clone()
     };
     settings::save(&app, &profile)?;
@@ -732,6 +738,75 @@ pub async fn signature_save(app: AppHandle, state: State<'_, AppState>, text: St
     }
     .await;
     Ok(synced.err().map(|e| format!("Подпись сохранена в программе, но не в веб-почте: {e}")))
+}
+
+/// Подписи учётной записи и выбранные по умолчанию.
+#[derive(Debug, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureSet {
+    pub items: Vec<settings::Signature>,
+    pub new_id: Option<String>,
+    pub reply_id: Option<String>,
+}
+
+/// Подписи: свои списком; если списка ещё нет — прежняя единственная подпись «Основная».
+#[tauri::command]
+pub async fn signatures_get(state: State<'_, AppState>) -> Result<SignatureSet> {
+    let ctx = state.ctx().await?;
+    let profile = ctx.profile().await;
+    if !profile.signatures.is_empty() {
+        return Ok(SignatureSet { items: profile.signatures, new_id: profile.signature_new, reply_id: profile.signature_reply });
+    }
+    let text = signature_get(state).await.unwrap_or_default();
+    if text.trim().is_empty() {
+        return Ok(SignatureSet { items: Vec::new(), new_id: None, reply_id: None });
+    }
+    let main = settings::Signature { id: "main".into(), name: "Основная".into(), text };
+    Ok(SignatureSet { items: vec![main], new_id: Some("main".into()), reply_id: Some("main".into()) })
+}
+
+/// Сохранить подписи. Подпись для новых писем записывается и как прежняя единственная
+/// (её же получает веб-почта SOGo). Возвращает предупреждение, если веб-почта не обновилась.
+#[tauri::command]
+pub async fn signatures_save(app: AppHandle, state: State<'_, AppState>, set: SignatureSet) -> Result<Option<String>> {
+    if set.items.len() > 20 {
+        return Err(AppError::Other("Не больше 20 подписей".into()));
+    }
+    let mut items = Vec::new();
+    for s in set.items {
+        let id: String = s.id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(32).collect();
+        let name = s.name.trim().chars().take(60).collect::<String>();
+        if id.is_empty() || name.is_empty() || items.iter().any(|x: &settings::Signature| x.id == id) {
+            return Err(AppError::Other("У каждой подписи должно быть название".into()));
+        }
+        items.push(settings::Signature { id, name, text: s.text.replace("\r\n", "\n").chars().take(4000).collect() });
+    }
+    let known = |id: &Option<String>| id.clone().filter(|i| items.iter().any(|x| &x.id == i));
+    let new_id = known(&set.new_id);
+    let reply_id = known(&set.reply_id);
+    let main_text = new_id.as_ref().and_then(|i| items.iter().find(|x| &x.id == i)).map(|x| x.text.clone()).unwrap_or_default();
+    let ctx = state.ctx().await?;
+    let changed_main = {
+        let mut p = ctx.profile.lock().await;
+        let changed = p.signature.as_deref() != Some(main_text.as_str());
+        p.signatures = items;
+        p.signature_new = new_id;
+        p.signature_reply = reply_id;
+        p.signature = Some(main_text.clone());
+        settings::save(&app, &p)?;
+        changed
+    };
+    if !changed_main {
+        return Ok(None);
+    }
+    let synced = async {
+        let (_, base) = dav_client(&ctx).await?;
+        let (session, mut defaults) = sogo_defaults(&ctx, &base).await?;
+        defaults["SOGoMailSignature"] = serde_json::Value::String(text_to_html(&main_text));
+        session.save_defaults(&defaults).await
+    }
+    .await;
+    Ok(synced.err().map(|e| format!("Подписи сохранены в программе, но подпись в веб-почте не обновилась: {e}")))
 }
 
 fn html_to_text(html: &str) -> String {
@@ -854,6 +929,9 @@ pub async fn login(
         nextcloud_login: mine.map(|p| p.nextcloud_login.clone()).unwrap_or_default(),
         nextcloud_uid: mine.map(|p| p.nextcloud_uid.clone()).unwrap_or_default(),
         signature: mine.and_then(|p| p.signature.clone()),
+        signatures: mine.map(|p| p.signatures.clone()).unwrap_or_default(),
+        signature_new: mine.and_then(|p| p.signature_new.clone()),
+        signature_reply: mine.and_then(|p| p.signature_reply.clone()),
         offline_days: mine.and_then(|p| p.offline_days),
         categories: mine.and_then(|p| p.categories.clone()),
         ews_url: exchange.clone().unwrap_or_default(),
@@ -1402,6 +1480,100 @@ async fn append_sent_as(ctx: &AccountCtx, raw: &[u8]) -> Result<String> {
     result
 }
 
+/// Вложения письма: файлы, выбранные в диалоге (по их id), — не больше предела сервера.
+async fn read_picked(ctx: &AccountCtx, attachments: &[String]) -> Result<Vec<smtp::OutgoingAttachment>> {
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    let picked = ctx.picked.lock().await;
+    for id in attachments {
+        let path = picked
+            .get(id)
+            .ok_or_else(|| AppError::Other("Вложение не найдено, выберите файл заново".into()))?;
+        // Размер — по метаданным, до чтения: огромный файл не попадает в память.
+        total += tokio::fs::metadata(path).await?.len();
+        if total > MAX_OUTGOING_MB * 1024 * 1024 {
+            return Err(AppError::Other(format!("Вложения больше {MAX_OUTGOING_MB} МБ — почтовый сервер их не примет")));
+        }
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+        let content_type = mime_guess::from_path(path).first_or_octet_stream().to_string();
+        let data = tokio::fs::read(path).await?;
+        files.push(smtp::OutgoingAttachment { name, content_type, data });
+    }
+    Ok(files)
+}
+
+/// Черновик из окна письма (автосохранение): новая версия в «Черновиках», прежние — удаляются.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn draft_save(
+    state: State<'_, AppState>,
+    key: String,
+    to: String,
+    cc: String,
+    subject: String,
+    body: String,
+    html: Option<String>,
+    in_reply_to: Option<String>,
+    references: Option<String>,
+    attachments: Vec<String>,
+    read_receipt: Option<bool>,
+    replace_folder: Option<String>,
+    replace_uid: Option<u32>,
+) -> Result<String> {
+    let ctx = state.ctx().await?;
+    if !imap::valid_draft_key(&key) {
+        return Err(AppError::Other("Некорректный ключ черновика".into()));
+    }
+    let profile = ctx.profile().await;
+    let files = read_picked(&ctx, &attachments).await?;
+    let message = smtp::build(smtp::Outgoing {
+        from_name: Some(profile.display_name.clone()),
+        from_address: profile.email(),
+        to: smtp::split_addresses(&to),
+        cc: smtp::split_addresses(&cc),
+        subject,
+        body,
+        html,
+        in_reply_to,
+        references,
+        attachments: files,
+        read_receipt: read_receipt.unwrap_or(false),
+        extra_headers: vec![(imap::DRAFT_KEY_HEADER.to_string(), key.clone())],
+    })?;
+    let raw = message.formatted();
+    let replace = replace_folder.as_deref().zip(replace_uid);
+    with_ctx!(once ctx, c => imap::save_draft(c, &raw, &key, replace))
+}
+
+/// Удалить черновик (письмо отправлено или человек отказался от него).
+#[tauri::command]
+pub async fn draft_discard(state: State<'_, AppState>, key: String, replace_folder: Option<String>, replace_uid: Option<u32>) -> Result<()> {
+    let ctx = state.ctx().await?;
+    let replace = replace_folder.as_deref().zip(replace_uid);
+    with_ctx!(once ctx, c => imap::discard_draft(c, &key, replace))
+}
+
+/// Несохранённое письмо на случай сбоя: копия в зашифрованном хранилище на компьютере
+/// (без хранилища — не сохраняется). `None` — забыть.
+#[tauri::command]
+pub async fn draft_recovery_set(state: State<'_, AppState>, data: Option<String>) -> Result<()> {
+    let ctx = state.ctx().await?;
+    let Some(st) = local(&ctx).await else { return Ok(()) };
+    let bytes = data.unwrap_or_default();
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(AppError::Other("Письмо слишком большое для копии на компьютере".into()));
+    }
+    tokio::task::spawn_blocking(move || st.save_blob("draft-recovery", bytes.as_bytes())).await.map_err(|e| AppError::Other(e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn draft_recovery_get(state: State<'_, AppState>) -> Result<Option<String>> {
+    let ctx = state.ctx().await?;
+    let Some(st) = local(&ctx).await else { return Ok(None) };
+    let data = tokio::task::spawn_blocking(move || st.load_blob("draft-recovery")).await.map_err(|e| AppError::Other(e.to_string()))?;
+    Ok(data.and_then(|d| String::from_utf8(d).ok()).filter(|s| !s.trim().is_empty()))
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn send_message(
@@ -1433,30 +1605,7 @@ pub async fn send_message(
         None => None,
     };
 
-    let mut files = Vec::new();
-    let mut total = 0u64;
-    {
-        let picked = ctx.picked.lock().await;
-        for id in &attachments {
-            let path = picked
-                .get(id)
-                .ok_or_else(|| AppError::Other("Вложение не найдено, выберите файл заново".into()))?;
-            // Размер — по метаданным, до чтения: огромный файл не попадает в память.
-            total += tokio::fs::metadata(path).await?.len();
-            if total > MAX_OUTGOING_MB * 1024 * 1024 {
-                return Err(AppError::Other(format!(
-                    "Вложения больше {MAX_OUTGOING_MB} МБ — почтовый сервер их не примет"
-                )));
-            }
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "file".into());
-            let content_type = mime_guess::from_path(path).first_or_octet_stream().to_string();
-            let data = tokio::fs::read(path).await?;
-            files.push(smtp::OutgoingAttachment { name, content_type, data });
-        }
-    }
+    let files = read_picked(&ctx, &attachments).await?;
 
     let message = smtp::build(smtp::Outgoing {
         from_name: Some(profile.display_name.clone()),
@@ -5352,6 +5501,9 @@ pub async fn account_add(
         nextcloud_login: String::new(),
         nextcloud_uid: String::new(),
         signature: None,
+        signatures: Vec::new(),
+        signature_new: None,
+        signature_reply: None,
         offline_days: None,
         categories: None,
         ews_url: exchange.clone().unwrap_or_default(),
@@ -5624,6 +5776,12 @@ macro_rules! app_commands {
             crate::commands::update_profile,
             crate::commands::pick_attachments,
             crate::commands::send_message,
+            crate::commands::signatures_save,
+            crate::commands::signatures_get,
+            crate::commands::draft_recovery_get,
+            crate::commands::draft_recovery_set,
+            crate::commands::draft_discard,
+            crate::commands::draft_save,
             crate::commands::list_contacts,
             crate::commands::search_contacts,
             crate::commands::contact_details,

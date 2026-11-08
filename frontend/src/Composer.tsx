@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { DateTimeField } from './DateField'
-import { CalendarClock, ChevronDown, Cloud, FileText, MailCheck, Paperclip, Send, Trash2, X } from 'lucide-react'
+import { AlertTriangle, CalendarClock, Check, ChevronDown, Cloud, CloudOff, FileText, Loader2, MailCheck, Paperclip, PenLine, Send, Trash2, X } from 'lucide-react'
 
 import { api, errorText, formatSize, TYPING_PAUSE_MS } from './api'
 import RichEditor, { type RichEditorHandle } from './RichEditor'
 import NcFilePicker from './NcFilePicker'
-import type { Contact, Draft, MailTemplate, PickedFile } from './types'
+import type { Contact, Draft, MailTemplate, PickedFile, SignatureSet } from './types'
+import { checkRecipients, fillTemplate, newDraftKey, signatureById, signatureHtml, TEMPLATE_VARS, templateValues, type ExternalCheck } from './drafting'
 import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './sending'
 import { fileToBase64 } from './mailTools'
 
@@ -19,6 +20,26 @@ interface Props {
   onSent: (notice: string) => void
   /** Письмо ушло в «окно отмены»: родитель показывает отсчёт и может вернуть его в редактор. */
   onQueued?: (id: number, snapshot: Draft, delaySecs: number) => void
+  /** Подписи учётной записи (выбор подписи в окне письма). */
+  signatures?: SignatureSet | null
+  /** Копия несохранённого письма на компьютере на случай сбоя (только главное окно). */
+  recovery?: boolean
+  /** Проверка адресатов перед отправкой (политика администратора). */
+  recipientPolicy?: { internalDomains: string[]; mode: 'smart' | 'always' | 'off' }
+}
+
+/** Автосохранение в «Черновики» — не чаще раза в полминуты, пока письмо меняется. */
+const AUTOSAVE_MS = 30_000
+/** Копия на компьютере — через пару секунд после изменения. */
+const RECOVERY_MS = 2_000
+
+/** Домены, с которыми уже переписывались (для проверки адресатов), — один раз за сеанс. */
+let knownDomainsCache: Promise<Set<string>> | null = null
+function knownDomains(): Promise<Set<string>> {
+  knownDomainsCache ??= api.counterparties()
+    .then((list) => new Set(list.map((c) => c.domain.toLowerCase())))
+    .catch(() => { knownDomainsCache = null; return new Set<string>() })
+  return knownDomainsCache
 }
 
 const TITLES: Record<Draft['mode'], string> = {
@@ -111,8 +132,18 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
   )
 }
 
-export default function Composer({ from, draft, contacts, ncConnected, onClose, onSent, onQueued }: Props) {
+export default function Composer({ from, draft, contacts, ncConnected, onClose, onSent, onQueued, signatures, recovery = false, recipientPolicy }: Props) {
   const [ncPicker, setNcPicker] = useState(false)
+  // --- черновик: ключ версий, состояние сохранения, «изменено после открытия/сохранения»
+  const key = useRef(draft.key ?? newDraftKey())
+  const replace = useRef(draft.replace ?? null)
+  const changed = useRef(false)
+  const everSaved = useRef(Boolean(draft.replace))
+  const [save, setSave] = useState<{ state: 'idle' | 'saving' | 'saved' | 'local' | 'error'; at?: Date; text?: string }>({ state: 'idle' })
+  const [askClose, setAskClose] = useState(false)
+  const [sigId, setSigId] = useState<string | null>(draft.signatureId ?? null)
+  const [extWarn, setExtWarn] = useState<{ check: ExternalCheck; sendAt: Date | null } | null>(null)
+  const [tplQuery, setTplQuery] = useState('')
   const [to, setTo] = useState(draft.to)
   const [cc, setCc] = useState(draft.cc)
   const [showCc, setShowCc] = useState(Boolean(draft.cc))
@@ -141,6 +172,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
 
   function openTemplates() {
     setTplOpen((o) => !o)
+    setTplQuery('')
     setSchedOpen(false)
     api.templatesList().then(setTemplates).catch((e) => { setTemplates([]); setError(errorText(e)) })
   }
@@ -148,8 +180,10 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   function applyTemplate(t: MailTemplate) {
     setTplOpen(false)
     if (!subject.trim()) setSubject(t.name)
-    const html = t.html ?? t.text.split('\n').map((l) => `<div>${l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '<br>'}</div>`).join('')
-    editor.current?.insertHtml(html)
+    const raw = t.html ?? t.text.split('\n').map((l) => `<div>${l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '<br>'}</div>`).join('')
+    // Переменные: {имя}, {получатель}, {организация}, {тема}, {дата}, {моё имя}.
+    editor.current?.insertHtml(fillTemplate(raw, templateValues({ to, subject: subject.trim() || t.name, from, contacts })))
+    markChanged()
   }
 
   async function saveTemplate() {
@@ -176,6 +210,93 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   const [schedAt, setSchedAt] = useState(() => localInputValue(schedulePresets()[0].at))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [tick, setTick] = useState(0)
+  const markChanged = () => { changed.current = true; setTick((n) => n + 1) }
+  const first = useRef(true)
+  useEffect(() => {
+    if (first.current) { first.current = false; return }
+    markChanged()
+  }, [to, cc, subject, files, receipt])
+
+  const snapshot = (): Draft => ({
+    ...draft, to, cc, subject, body: editor.current?.text() ?? draft.body, html: editor.current?.html() ?? draft.html,
+    files, readReceipt: receipt, key: key.current, replace: replace.current, signatureId: sigId,
+  })
+  const meaningful = () => Boolean(to.trim() || subject.trim() || (editor.current?.text() ?? '').replace(/-- [\s\S]*$/, '').trim() || files.length)
+
+  async function saveDraft(): Promise<boolean> {
+    if (!meaningful()) return true
+    setSave({ state: 'saving' })
+    changed.current = false
+    try {
+      await api.draftSave({
+        key: key.current, to, cc, subject, body: editor.current?.text() ?? '', html: editor.current?.html() ?? null,
+        inReplyTo: draft.inReplyTo, references: draft.references, attachments: files.map((f) => f.id), readReceipt: receipt,
+        replaceFolder: replace.current?.folder ?? null, replaceUid: replace.current?.uid ?? null,
+      })
+      // Исходный черновик заменён новой версией — дальше заменяются версии по ключу.
+      replace.current = null
+      everSaved.current = true
+      setSave({ state: 'saved', at: new Date() })
+      return true
+    } catch (e) {
+      changed.current = true
+      setSave(recovery ? { state: 'local', text: errorText(e) } : { state: 'error', text: errorText(e) })
+      return false
+    }
+  }
+
+  // Автосохранение в «Черновики» раз в полминуты, пока письмо меняется.
+  useEffect(() => {
+    const t = window.setInterval(() => { if (changed.current && !busy) void saveDraft() }, AUTOSAVE_MS)
+    return () => window.clearInterval(t)
+  })
+  // Копия на компьютере (зашифрованное хранилище) — на случай сбоя или закрытия программы.
+  useEffect(() => {
+    if (!recovery || tick === 0) return
+    const t = window.setTimeout(() => {
+      const d = snapshot()
+      void api.draftRecoverySet(JSON.stringify({ ...d, files: d.files?.map((f) => ({ name: f.name, size: f.size })), savedAt: new Date().toISOString() })).catch(() => undefined)
+    }, RECOVERY_MS)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick])
+
+  function forgetLocal() {
+    if (recovery) void api.draftRecoverySet(null).catch(() => undefined)
+  }
+  /** Закрыть окно: без изменений — сразу; иначе спросить, сохранить ли черновик. */
+  function requestClose() {
+    if (busy) return
+    // Ничего не меняли с открытия или с последнего сохранения — закрыть (сохранённый черновик остаётся).
+    if (!changed.current || !meaningful()) { forgetLocal(); onClose(); return }
+    setAskClose(true)
+  }
+  async function closeSaving() {
+    if (await saveDraft()) { forgetLocal(); setAskClose(false); onClose() }
+  }
+  function closeDiscarding() {
+    if (everSaved.current || replace.current) void api.draftDiscard(key.current, replace.current).catch(() => undefined)
+    forgetLocal()
+    setAskClose(false)
+    onClose()
+  }
+  // Esc — то же, что «Закрыть».
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented && !askClose && !extWarn && !tplOpen && !schedOpen && !ncPicker) { e.preventDefault(); requestClose() }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); openTemplates() }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); void saveDraft() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  function chooseSignature(id: string | null) {
+    setSigId(id)
+    const sig = signatureById(signatures?.items ?? [], id)
+    editor.current?.setSignature(sig ? signatureHtml(sig.text) : '')
+  }
 
   async function attach() {
     try {
@@ -186,13 +307,19 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
     }
   }
 
-  async function submit(event: React.FormEvent<HTMLFormElement> | null, sendAt: Date | null = null) {
+  async function submit(event: React.FormEvent<HTMLFormElement> | null, sendAt: Date | null = null, checked = false) {
     event?.preventDefault()
     if (!to.trim()) {
       setError('Укажите получателя')
       return
     }
     if (!subject.trim() && !window.confirm('Отправить письмо без темы?')) return
+    // Внешние получатели: предупредить (вложения, смешанный список, незнакомый домен).
+    if (!checked && recipientPolicy) {
+      const ownAddress = (/<([^>]+)>/.exec(from)?.[1] ?? from).trim()
+      const check = checkRecipients({ to, cc, ownAddress, internalDomains: recipientPolicy.internalDomains, mode: recipientPolicy.mode, hasAttachments: files.length > 0, knownDomains: await knownDomains() })
+      if (check) { setExtWarn({ check, sendAt }); return }
+    }
     setBusy(true)
     setError('')
     try {
@@ -208,8 +335,11 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
         delaySecs,
         sendAt: sendAt ? sendAt.toISOString() : null,
       })
+      // Письмо ушло (или ждёт отправки) — черновики этого письма больше не нужны.
+      if (everSaved.current || replace.current) void api.draftDiscard(key.current, replace.current).catch(() => undefined)
+      forgetLocal()
       if (ticket.id !== null && onQueued) {
-        onQueued(ticket.id, { ...draft, to, cc, subject, body, html: html ?? undefined, files, readReceipt: receipt }, delaySecs)
+        onQueued(ticket.id, { ...draft, to, cc, subject, body, html: html ?? undefined, files, readReceipt: receipt, key: newDraftKey(), replace: null, signatureId: sigId }, delaySecs)
       } else if (ticket.scheduledAt) {
         onSent(`Письмо будет отправлено ${formatWhen(ticket.scheduledAt)}. Оно ждёт в «Черновиках».`)
       } else {
@@ -225,7 +355,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0)
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}>
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose() }}>
       <form
         className={`compose-modal ${dropping ? 'dropping' : ''}`}
         onSubmit={submit}
@@ -236,14 +366,20 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
         {dropping && <div className="drop-overlay"><Paperclip size={22} /> Отпустите, чтобы вложить файлы</div>}
         <div className="compose-header">
           <div><strong>{TITLES[draft.mode]}</strong><small>От: {from}</small></div>
-          <button type="button" className="icon-button" disabled={busy} onClick={onClose} aria-label="Закрыть"><X size={18} /></button>
+          <span className={`draft-status ${save.state}`} aria-live="polite" title={save.text ?? ''}>
+            {save.state === 'saving' && <><Loader2 size={13} className="spin" /> Сохраняю черновик…</>}
+            {save.state === 'saved' && save.at && <><Check size={13} /> Черновик сохранён в {save.at.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</>}
+            {save.state === 'local' && <><CloudOff size={13} /> Сохранено только на этом компьютере</>}
+            {save.state === 'error' && <><AlertTriangle size={13} /> Черновик не сохранён</>}
+          </span>
+          <button type="button" className="icon-button" disabled={busy} onClick={requestClose} aria-label="Закрыть"><X size={18} /></button>
         </div>
         <RecipientField label="Кому" value={to} onChange={setTo} contacts={contacts} autoFocus={draft.mode !== 'reply' && draft.mode !== 'replyAll'} />
         {showCc
           ? <RecipientField label="Копия" value={cc} onChange={setCc} contacts={contacts} />
           : <button type="button" className="text-button add-cc" onClick={() => setShowCc(true)}>+ Копия</button>}
         <label className="compose-field"><span>Тема</span><input value={subject} spellCheck lang="ru" onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
-        <RichEditor ref={editor} initialText={draft.body} initialHtml={draft.html} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} />
+        <RichEditor ref={editor} initialText={draft.body} initialHtml={draft.html} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} onChange={markChanged} />
         {files.length > 0 && (
           <div className="compose-files">
             {files.map((f) => (
@@ -263,10 +399,16 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
           <div className="tpl-wrap">
             <button type="button" className="text-button" disabled={busy} aria-label="Шаблоны" onClick={openTemplates}><FileText size={15} /> Шаблоны</button>
             {tplOpen && <div className="schedule-pop tpl-pop popover" role="dialog" aria-label="Шаблоны писем">
-              <strong><FileText size={15} /> Шаблоны</strong>
+              <strong><FileText size={15} /> Шаблоны <small className="muted">Ctrl+Shift+T</small></strong>
+              {templates && templates.length > 3 && <input autoFocus className="tpl-search" aria-label="Найти шаблон" placeholder="Найти шаблон…" value={tplQuery}
+                onChange={(e) => setTplQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); const t = templates.find((x) => x.name.toLowerCase().includes(tplQuery.trim().toLowerCase())); if (t) applyTemplate(t) }
+                  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setTplOpen(false) }
+                }} />}
               {templates === null && <small className="settings-hint">Загрузка…</small>}
               {templates?.length === 0 && <small className="settings-hint">Шаблонов пока нет — сохраните текущее письмо как шаблон.</small>}
-              {templates?.map((t) => (
+              {templates?.filter((t) => t.name.toLowerCase().includes(tplQuery.trim().toLowerCase())).map((t) => (
                 <div key={`${t.folder}/${t.uid}`} className="tpl-item">
                   <button type="button" className="schedule-preset" onClick={() => applyTemplate(t)}><span>{t.name}</span></button>
                   <button type="button" className="icon-button" aria-label={`Удалить шаблон ${t.name}`} onClick={() => void deleteTemplate(t)}><Trash2 size={14} /></button>
@@ -276,9 +418,19 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
                 <input aria-label="Название шаблона" placeholder={subject || 'Название шаблона'} value={tplName} onChange={(e) => setTplName(e.target.value)} />
                 <button type="button" className="secondary-button" onClick={() => void saveTemplate()}>Сохранить текущее</button>
               </label>
+              <small className="settings-hint">В тексте шаблона можно писать переменные — они заполнятся сами: {TEMPLATE_VARS.map((v) => <span key={v.key} className="tpl-var" title={v.hint}>{`{${v.key}}`}</span>)}</small>
               <small className="settings-hint">Шаблоны хранятся в папке «Templates» на сервере, как в Thunderbird.</small>
             </div>}
           </div>
+          {signatures && signatures.items.length > 0 && (
+            <label className="text-button signature-pick" title="Подпись этого письма">
+              <PenLine size={15} />
+              <select aria-label="Подпись" value={sigId ?? ''} onChange={(e) => chooseSignature(e.target.value || null)}>
+                <option value="">Без подписи</option>
+                {signatures.items.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+              </select>
+            </label>
+          )}
           <label className="text-button receipt-toggle" title="Попросить получателя подтвердить, что письмо прочитано">
             <input type="checkbox" checked={receipt} onChange={(e) => setReceipt(e.target.checked)} /> <MailCheck size={15} /> Уведомить о прочтении
           </label>
@@ -304,7 +456,38 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
           </div>
         </div>
       </form>
-      {ncPicker && <NcFilePicker onClose={() => setNcPicker(false)} onPick={(links) => { setNcPicker(false); editor.current?.insertLinks(links) }} />}
+      {ncPicker && <NcFilePicker onClose={() => setNcPicker(false)} onPick={(links) => { setNcPicker(false); editor.current?.insertLinks(links); markChanged() }} />}
+      {askClose && (
+        <div className="modal-backdrop nested" onMouseDown={(e) => { if (e.target === e.currentTarget) setAskClose(false) }}>
+          <div className="settings-modal confirm-modal" role="alertdialog" aria-label="Сохранить черновик?">
+            <div className="compose-header"><div><strong>Сохранить черновик?</strong><small>{subject.trim() || 'Письмо без темы'}</small></div></div>
+            <p className="confirm-text">Письмо не отправлено. Его можно сохранить в «Черновики» и дописать позже — в программе или в веб-почте.</p>
+            {save.state === 'error' && <div className="login-error" role="alert">Не удалось сохранить: {save.text}</div>}
+            <div className="settings-actions">
+              <button className="text-button danger-text" onClick={closeDiscarding}><Trash2 size={14} /> Удалить черновик</button>
+              <div className="reader-toolbar-spacer" />
+              <button className="secondary-button" onClick={() => setAskClose(false)}>Вернуться к письму</button>
+              <button className="primary-button" autoFocus disabled={save.state === 'saving'} onClick={() => void closeSaving()}>Сохранить в черновики</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {extWarn && (
+        <div className="modal-backdrop nested" onMouseDown={(e) => { if (e.target === e.currentTarget) setExtWarn(null) }}>
+          <div className="settings-modal confirm-modal external-warning" role="alertdialog" aria-label="Внешние получатели">
+            <div className="compose-header"><div><strong><AlertTriangle size={16} /> Письмо уходит за пределы организации</strong><small>Проверьте получателей перед отправкой</small></div></div>
+            <ul className="external-list">
+              {extWarn.check.external.map((e) => <li key={e.address}><b>{e.address}</b>{e.isNew && <span className="new-domain">новый домен</span>}</li>)}
+            </ul>
+            {extWarn.check.reasons.map((r) => <p key={r} className="confirm-text">{r}</p>)}
+            <div className="settings-actions">
+              <div className="reader-toolbar-spacer" />
+              <button className="secondary-button" autoFocus onClick={() => setExtWarn(null)}>Вернуться к письму</button>
+              <button className="primary-button" onClick={() => { const w = extWarn; setExtWarn(null); void submit(null, w.sendAt, true) }}>Отправить</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

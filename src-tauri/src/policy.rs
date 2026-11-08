@@ -10,12 +10,15 @@
 //!   "allowRememberPassword": true,       // false — запоминать пароль нельзя
 //!   "shareLinkDays": 30,                 // срок публичных ссылок «Отправить ссылкой»; 0 — без срока
 //!   "notificationContent": "full",       // "full" | "sender" | "none" — что видно в уведомлениях ОС
-//!   "exchangeHosts": ["corp.ru"]        // серверы Exchange вне домена почты, которые Autodiscover может предложить
+//!   "exchangeHosts": ["corp.ru"],       // серверы Exchange вне домена почты, которые Autodiscover может предложить
+//!   "internalDomains": ["nrcki.ru"],    // свои домены почты (вместе с поддоменами); пусто — домен своего адреса
+//!   "externalWarning": "smart"          // "smart" | "always" | "off" — предупреждать о внешних получателях
 //! }
 //! ```
 //! Реестр (HKLM\SOFTWARE\Policies\RRCKI Mail): RemoteImages (REG_SZ), InternalNetworks
 //! (REG_SZ, через запятую), RememberPassword, AllowRememberPassword, ShareLinkDays,
-//! UpdateDisabled (REG_DWORD), UpdateUrl (REG_SZ), NotificationContent (REG_SZ).
+//! UpdateDisabled (REG_DWORD), UpdateUrl (REG_SZ), NotificationContent (REG_SZ),
+//! InternalDomains (REG_SZ, через запятую), ExternalWarning (REG_SZ).
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -48,6 +51,19 @@ pub enum NotificationContent {
     None,
 }
 
+/// Когда предупреждать перед отправкой за пределы организации.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExternalWarning {
+    /// С вложениями, при смешанных (свои + внешние) получателях и для доменов,
+    /// с которыми ещё не переписывались (опечатка в адресе).
+    #[default]
+    Smart,
+    /// Всякий раз, когда среди получателей есть внешний адрес.
+    Always,
+    Off,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Policy {
@@ -64,6 +80,9 @@ pub struct Policy {
     /// Серверы Exchange (имя или домен), которым можно доверить пароль, если Autodiscover
     /// предложил сервер вне домена почты.
     pub exchange_hosts: Vec<String>,
+    /// Свои домены почты (с поддоменами); пусто — домен адреса учётной записи.
+    pub internal_domains: Vec<String>,
+    pub external_warning: ExternalWarning,
     /// Файл политики есть, но прочитать его нельзя или он доступен на запись не только
     /// администратору: применены строгие ограничения (текст — для показа).
     #[serde(skip)]
@@ -81,6 +100,8 @@ pub struct UiPolicy {
     pub local_store: bool,
     pub max_offline_days: u32,
     pub notification_content: NotificationContent,
+    pub internal_domains: Vec<String>,
+    pub external_warning: ExternalWarning,
     /// Политика администратора повреждена — применены строгие ограничения.
     pub policy_error: Option<String>,
 }
@@ -96,6 +117,8 @@ impl Policy {
             local_store: self.local_store(),
             max_offline_days: self.max_offline_days(),
             notification_content: self.notification_content,
+            internal_domains: self.internal_domains.iter().map(|d| d.trim().trim_start_matches('@').to_ascii_lowercase()).filter(|d| !d.is_empty()).collect(),
+            external_warning: self.external_warning,
             policy_error: self.broken.clone(),
         }
     }
@@ -146,6 +169,7 @@ pub fn strict(why: String) -> Policy {
         allow_remember_password: Some(false),
         share_link_days: Some(7),
         notification_content: NotificationContent::None,
+        external_warning: ExternalWarning::Always,
         broken: Some(why),
         ..Policy::default()
     }
@@ -206,6 +230,17 @@ pub fn load() -> Policy {
         }
         if let Some(v) = registry::string("ExchangeHosts") {
             p.exchange_hosts = v.split([',', ';', ' ']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+        }
+        if let Some(v) = registry::string("InternalDomains") {
+            p.internal_domains = v.split([',', ';', ' ']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+        }
+        if let Some(v) = registry::string("ExternalWarning") {
+            match v.trim().to_ascii_lowercase().as_str() {
+                "smart" => p.external_warning = ExternalWarning::Smart,
+                "always" => p.external_warning = ExternalWarning::Always,
+                "off" => p.external_warning = ExternalWarning::Off,
+                _ => {}
+            }
         }
         if let Some(v) = registry::string("NotificationContent") {
             match v.trim().to_ascii_lowercase().as_str() {

@@ -2,7 +2,7 @@ import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, NcSearch, PickedFile, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
+  MessageSummary, NcSearch, PickedFile, SignatureSet, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
 export interface LoginParams {
@@ -46,7 +46,7 @@ const READ_ONLY = new Set([
   'cached_messages', 'search_mail', 'search_server', 'offline_status', 'offline_queue', 'signature_get', 'list_folders', 'list_messages',
   'nc_editors', 'nc_avatar', 'attachment_data', 'mail_filters_get', 'rules_get', 'counterparties', 'counterparty_timeline',
   'calendar_file_preview', 'diagnostics', 'talk_participants', 'talk_search', 'talk_poll_get', 'talk_shared', 'nc_link_preview',
-  'nc_search', 'mail_by_msgid',
+  'nc_search', 'mail_by_msgid', 'draft_recovery_get', 'signatures_get',
 ])
 /** Опросы и служебные вызовы: ничего не меняют, разделённые запросы не сбрасывают. */
 const PASSIVE = new Set(['talk_poll', 'job_status', 'update_progress', 'nc_connect_poll', 'send_wait', 'notify', 'notify_poll_secs', 'nc_open', 'open_link'])
@@ -266,6 +266,14 @@ export const api = {
   ncCreateDocument: (dir: string, name: string, kind: 'docx' | 'xlsx' | 'pptx') => invoke<EditResult>('nc_create_document', { dir, name, kind }),
   ncEditAttachment: (folder: string, uid: number, index: number, dir: string) => invoke<EditResult>('nc_edit_attachment', { folder, uid, index, dir }),
   getPolicy: () => invoke<UiPolicy>('get_policy'),
+  draftSave: (d: { key: string; to: string; cc: string; subject: string; body: string; html: string | null; inReplyTo: string | null; references: string | null; attachments: string[]; readReceipt: boolean; replaceFolder: string | null; replaceUid: number | null }) =>
+    invoke<string>('draft_save', d),
+  draftDiscard: (key: string, replace: { folder: string; uid: number } | null = null) =>
+    invoke<void>('draft_discard', { key, replaceFolder: replace?.folder ?? null, replaceUid: replace?.uid ?? null }),
+  draftRecoverySet: (data: string | null) => invoke<void>('draft_recovery_set', { data }),
+  draftRecoveryGet: () => invoke<string | null>('draft_recovery_get'),
+  signaturesGet: () => invoke<SignatureSet>('signatures_get'),
+  signaturesSave: (set: SignatureSet) => invoke<string | null>('signatures_save', { set }),
   ncAvatar: (kind: 'user' | 'room', id: string) => invoke<string | null>('nc_avatar', { kind, id }),
   messageHtmlRemote: (folder: string, uid: number) => invoke<string>('message_html_remote', { folder, uid }),
   attachmentData: (folder: string, uid: number, index: number) => invoke<{ name: string; data: string }>('attachment_data', { folder, uid, index }),
@@ -369,6 +377,10 @@ export interface UiPolicy {
   shareLinkDays: number
   /** Что администратор разрешает показывать во всплывающих уведомлениях. */
   notificationContent?: 'full' | 'sender' | 'none'
+  /** Свои домены почты (с поддоменами); пусто — домен своего адреса. */
+  internalDomains?: string[]
+  /** Когда предупреждать о внешних получателях. */
+  externalWarning?: 'smart' | 'always' | 'off'
   /** Файл политики администратора повреждён или доступен на запись не только администратору. */
   policyError?: string | null
 }

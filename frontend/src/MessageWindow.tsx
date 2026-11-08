@@ -12,7 +12,8 @@ import MdnBar from './MdnBar'
 import { useOutbox } from './sending'
 import { trashFor } from './FolderPicker'
 import { buildDraft, ensureArchive, forwardDraft, initials, senderLabel, withSignature } from './mailActions'
-import type { Contact, Draft, Folder, MessageDetail, Settings } from './types'
+import type { Contact, Draft, Folder, MessageDetail, Settings, SignatureSet } from './types'
+import { signatureById } from './drafting'
 import { SkeletonReader } from './Skeleton'
 
 declare global {
@@ -68,21 +69,28 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
   }, [font])
 
   const me = profile?.username ?? ''
-  const [signature, setSignature] = useState('')
+  const [sigs, setSigs] = useState<SignatureSet | null>(null)
+  const [recipientPolicy, setRecipientPolicy] = useState<{ internalDomains: string[]; mode: 'smart' | 'always' | 'off' }>({ internalDomains: [], mode: 'smart' })
+  const signature = signatureById(sigs?.items ?? [], sigs?.newId)?.text ?? ''
+  const replySignature = signatureById(sigs?.items ?? [], sigs?.replyId)?.text ?? ''
   const outbox = useOutbox((d) => setDraft(d), (t) => setNotice(t))
-  useEffect(() => { api.signatureGet().then(setSignature).catch(() => undefined) }, [])
+  useEffect(() => {
+    api.signaturesGet().then(setSigs).catch(() => undefined)
+    api.getPolicy().then((p) => setRecipientPolicy({ internalDomains: p.internalDomains ?? [], mode: p.externalWarning ?? 'smart' })).catch(() => undefined)
+  }, [])
   const startDraft = useCallback((mode: 'reply' | 'replyAll' | 'forward') => {
     if (!detail) return
+    const signatureId = sigs?.replyId ?? null
     if (mode === 'forward') {
-      void forwardDraft(detail, me, signature).then(({ draft, error }) => { setDraft(draft); if (error) setNotice(error) })
+      void forwardDraft(detail, me, replySignature).then(({ draft, error }) => { setDraft({ ...draft, signatureId }); if (error) setNotice(error) })
     } else {
-      setDraft(buildDraft(mode, detail, me, signature))
+      setDraft({ ...buildDraft(mode, detail, me, replySignature), signatureId })
     }
     if (contacts.length === 0) api.listContacts().then((r) => setContacts(r.contacts)).catch(() => undefined)
-  }, [detail, me, contacts.length, signature])
+  }, [detail, me, contacts.length, replySignature, sigs])
   const composeTo = useCallback((to: string) => {
-    setDraft({ mode: 'new', to: `${to}, `, cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null })
-  }, [signature])
+    setDraft({ mode: 'new', to: `${to}, `, cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null, signatureId: sigs?.newId ?? null })
+  }, [signature, sigs])
 
   async function toggle(flag: 'flagged' | 'important' | 'seen') {
     if (!detail) return
@@ -212,6 +220,8 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
           draft={draft}
           contacts={contacts}
           ncConnected={ncConnected}
+          signatures={sigs}
+          recipientPolicy={recipientPolicy}
           onClose={() => setDraft(null)}
           onSent={(text) => {
             setDraft(null)

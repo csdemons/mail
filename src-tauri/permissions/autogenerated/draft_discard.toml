@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-draft-discard"
+description = "Enables the draft_discard command without any pre-configured scope."
+commands.allow = ["draft_discard"]
+
+[[permission]]
+identifier = "deny-draft-discard"
+description = "Denies the draft_discard command without any pre-configured scope."
+commands.deny = ["draft_discard"]

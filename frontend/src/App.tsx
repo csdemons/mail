@@ -9,7 +9,7 @@ import {
 import {
   api, editNotice, errorText, formatFullDate, formatListDate, messageKey, NC_MAIL_DIR, PAGE_SIZE, TYPING_PAUSE_MS } from './api'
 import type {
-  Account, Contact, Draft, PickedFile, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile, UnifiedFilters, UnifiedRole, UnifiedItem, SavedView,
+  Account, Contact, Draft, PickedFile, SignatureSet, Folder, FolderRole, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, Settings as Profile, UnifiedFilters, UnifiedRole, UnifiedItem, SavedView,
 } from './types'
 import About from './About'
 import kurchatovLogo from './assets/kurchatov-logo.png'
@@ -38,7 +38,8 @@ import { fileToBase64, printMessage, snoozePresets, snoozedUntil } from './mailT
 import { categoriesOf, dueLabel, dueOf, duePresets, threadKeys, userCategories, withDue } from './mailExtras'
 import ScheduledMail from './ScheduledMail'
 import { useOutbox } from './sending'
-import { CategoriesSettings, DesktopSettings, OfflineSettings, SendingSettings, SignatureSettings } from './MailSettings'
+import { CategoriesSettings, DesktopSettings, OfflineSettings, SendingSettings, SignaturesSettings } from './MailSettings'
+import { signatureById } from './drafting'
 import { TransferSettings } from './Transfer'
 import { AccountMenu, NO_FILTERS, UNIFIED_ROLES, UnifiedColumn, useAccounts } from './Accounts'
 import { saveView, savedView, type ModuleName, type ViewContext } from './viewContext'
@@ -297,7 +298,13 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const [eventFocus, setEventFocus] = useState<{ e: CalEvent; n: number } | null>(null)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [signature, setSignature] = useState('')
+  // Подписи: для новых писем и для ответов/пересылки — свои (Настройки → Подписи).
+  const [sigs, setSigs] = useState<SignatureSet | null>(null)
+  const signature = signatureById(sigs?.items ?? [], sigs?.newId)?.text ?? ''
+  const replySignature = signatureById(sigs?.items ?? [], sigs?.replyId)?.text ?? ''
+  const [recipientPolicy, setRecipientPolicy] = useState<{ internalDomains: string[]; mode: 'smart' | 'always' | 'off' }>({ internalDomains: [], mode: 'smart' })
+  /** Письмо, не сохранённое при сбое или закрытии программы, — предложить продолжить. */
+  const [recovered, setRecovered] = useState<(Draft & { savedAt?: string; lostFiles?: string[] }) | null>(null)
   // Категории (общие с веб-почтой), фильтр по категории, цепочки писем.
   const [categories, setCategories] = useState<Category[]>([])
   useEffect(() => { api.categoriesGet().then(setCategories).catch(() => undefined) }, [])
@@ -349,7 +356,18 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     const t = window.setInterval(loadScheduled, 60_000)
     return () => window.clearInterval(t)
   }, [loadScheduled])
-  useEffect(() => { api.signatureGet().then(setSignature).catch(() => undefined) }, [])
+  useEffect(() => { api.signaturesGet().then(setSigs).catch(() => undefined) }, [])
+  useEffect(() => {
+    api.draftRecoveryGet().then((raw) => {
+      if (!raw) return
+      try {
+        const d = JSON.parse(raw) as Draft & { savedAt?: string; files?: { name: string }[] }
+        if (!d || typeof d !== 'object' || typeof d.to !== 'string') return
+        // Выбранные файлы после перезапуска недоступны — их нужно приложить заново.
+        setRecovered({ ...d, files: [], lostFiles: (d.files ?? []).map((f) => f.name) })
+      } catch { /* испорченная копия — забыть */ void api.draftRecoverySet(null) }
+    }).catch(() => undefined)
+  }, [])
   composingRef.current = draft !== null
   const [contacts, setContacts] = useState<Contact[]>([])
   const contactsRequested = useRef(false)
@@ -393,6 +411,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   useEffect(() => {
     api.getPolicy().then((p) => {
       setNotifyPolicy(p.notificationContent ?? 'full')
+      setRecipientPolicy({ internalDomains: p.internalDomains ?? [], mode: p.externalWarning ?? 'smart' })
       if (p.policyError) setNotice(`Политика администратора не принята (${p.policyError}) — включены строгие ограничения: внешние картинки и текст уведомлений скрыты, пароль не запоминается. Сообщите администратору.`)
     }).catch(() => undefined)
   }, [])
@@ -735,6 +754,20 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     const m = await api.mailByMsgid(msgId).catch(() => null)
     if (m) openFound({ kind: 'mail', m })
     else setNotice('Письмо не найдено среди хранящихся на компьютере — найдите его поиском по теме.')
+  }
+
+  /** Письмо из «Черновиков» — дописать: тот же текст, получатели и вложения; при сохранении заменяется. */
+  async function continueDraft(d: MessageDetail) {
+    const ids = (d.references ?? '').split(/\s+/).filter(Boolean)
+    let files: PickedFile[] = []
+    if (d.attachments.length) {
+      try { files = await api.forwardAttachments(d.folder, d.uid) } catch (e) { setNotice(`Вложения черновика не приложены: ${errorText(e)}`) }
+    }
+    startDraft({
+      mode: 'new', to: d.to.join(', '), cc: d.cc.join(', '), subject: d.subject, body: d.bodyText, html: d.bodyHtml ?? undefined,
+      inReplyTo: ids[ids.length - 1] ?? null, references: d.references, files, readReceipt: false,
+      replace: { folder: d.folder, uid: d.uid }, signatureId: null,
+    })
   }
 
   async function openMessage(message: MessageSummary) {
@@ -1298,7 +1331,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   }
 
   function startDraft(next: Draft) {
-    setDraft(next)
+    // Какая подпись вставлена — чтобы в окне письма можно было выбрать другую.
+    setDraft(next.signatureId !== undefined ? next : { ...next, signatureId: (next.mode === 'new' ? sigs?.newId : sigs?.replyId) ?? null })
     // Контакты для подсказок адресов — один раз за сессию, ошибки не мешают письму.
     if (!contactsRequested.current) {
       contactsRequested.current = true
@@ -1312,10 +1346,10 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       return
     }
     if (mode === 'forward') {
-      void forwardDraft(detail, myAddress, signature).then(({ draft, error }) => { startDraft(draft); if (error) setNotice(error) })
+      void forwardDraft(detail, myAddress, replySignature).then(({ draft, error }) => { startDraft(draft); if (error) setNotice(error) })
       return
     }
-    startDraft(buildDraft(mode, detail, myAddress, signature))
+    startDraft(buildDraft(mode, detail, myAddress, replySignature))
   }
 
   function composeTo(to: string) {
@@ -1327,12 +1361,12 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     try {
       const full = detail && messageKey(detail) === messageKey(m) ? detail : await api.getMessage(m.folder, m.uid)
       if (mode === 'forward') {
-        const { draft, error } = await forwardDraft(full, myAddress, signature)
+        const { draft, error } = await forwardDraft(full, myAddress, replySignature)
         startDraft(draft)
         if (error) setNotice(error)
         return
       }
-      startDraft(buildDraft(mode, full, myAddress, signature))
+      startDraft(buildDraft(mode, full, myAddress, replySignature))
     } catch (error) {
       setNotice(`Не удалось открыть письмо: ${errorText(error)}`)
     }
@@ -1796,6 +1830,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <button className="icon-button soft mobile-back" onClick={() => setReaderOpen(false)} aria-label="Назад"><ChevronLeft /></button>
             <div className="reader-toolbar-spacer" />
             {selected && <>
+              {currentFolder?.role === 'drafts' && detail && <button className="primary-button small continue-draft" onClick={() => void continueDraft(detail)} title="Дописать и отправить этот черновик"><SquarePen size={15} /> Продолжить</button>}
               <button className="icon-button" aria-label="Ответить" title="Ответить" disabled={!detail} onClick={() => openComposer('reply')}><Reply size={18} /></button>
               <button className="icon-button" aria-label="Ответить всем" title="Ответить всем" disabled={!detail} onClick={() => openComposer('replyAll')}><ReplyAll size={18} /></button>
               <button className="icon-button" aria-label="Переслать" title="Переслать" disabled={!detail} onClick={() => openComposer('forward')}><Forward size={18} /></button>
@@ -1886,7 +1921,10 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           draft={draft}
           contacts={contacts}
           ncConnected={Boolean(ncStatus?.connected)}
-          onClose={() => setDraft(null)}
+          signatures={sigs}
+          recovery
+          recipientPolicy={recipientPolicy}
+          onClose={() => { setDraft(null); if (folders.find((f) => f.id === folderId)?.role === 'drafts') void loadFirstPage(folderId, true) }}
           onSent={(text) => {
             setDraft(null)
             setNotice(text)
@@ -1902,6 +1940,21 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       )}
 
       {outbox.element}
+      {recovered && !draft && (
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setRecovered(null) }}>
+          <div className="settings-modal confirm-modal" role="alertdialog" aria-label="Несохранённое письмо">
+            <div className="compose-header"><div><strong>Несохранённое письмо</strong><small>{recovered.subject || '(без темы)'}{recovered.to ? ` — ${recovered.to.replace(/,\s*$/, '')}` : ''}</small></div></div>
+            <p className="confirm-text">Письмо осталось незаконченным{recovered.savedAt ? ` (${new Date(recovered.savedAt).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })})` : ''} — программа была закрыта или прервана. Продолжить его?</p>
+            {recovered.lostFiles && recovered.lostFiles.length > 0 && <p className="confirm-text muted">Вложения нужно будет приложить заново: {recovered.lostFiles.join(', ')}.</p>}
+            <div className="settings-actions">
+              <button className="text-button danger-text" onClick={() => { if (recovered.key) void api.draftDiscard(recovered.key, null).catch(() => undefined); void api.draftRecoverySet(null); setRecovered(null) }}><Trash2 size={14} /> Удалить</button>
+              <div className="reader-toolbar-spacer" />
+              <button className="secondary-button" onClick={() => setRecovered(null)}>Позже</button>
+              <button className="primary-button" autoFocus onClick={() => { const { savedAt: _s, lostFiles: _l, ...d } = recovered; setRecovered(null); startDraft(d) }}>Продолжить письмо</button>
+            </div>
+          </div>
+        </div>
+      )}
       {globalOpen && <GlobalSearch ncConnected={Boolean(ncStatus?.connected)} onOpen={openFound} onClose={() => setGlobalOpen(false)} />}
       {taskFor && <TaskFromMail message={taskFor} ownAddress={myAddress} onClose={() => setTaskFor(null)} onNotice={setNotice}
         onOpenCard={(boardId, cardId) => { const n = nextFocus(); setDeckFocus({ boardId, cardId, n }); setModule('deck') }} />}
@@ -1962,7 +2015,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             <button className="text-button" onClick={() => notify('Atom Workspace', 'Так выглядят уведомления о новой почте и сообщениях')}>Показать пример уведомления</button>
           </div>
           <AppearanceSettings />
-          <SignatureSettings signature={signature} onSaved={(text, msg) => { setSignature(text); setNotice(msg) }} />
+          <SignaturesSettings set={sigs} onSaved={(set, msg) => { setSigs(set); setNotice(msg) }} />
           <SendingSettings />
           <CategoriesSettings categories={categories} onSaved={(list, msg) => { setCategories(list); setNotice(msg) }} />
           <DesktopSettings onNotice={setNotice} />

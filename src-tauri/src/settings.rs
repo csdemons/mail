@@ -47,8 +47,17 @@ pub struct Settings {
     #[serde(default)]
     pub nextcloud_uid: String,
     /// Личная подпись (текст). None — ещё не задавалась: берётся из настроек SOGo.
+    /// С 0.40 — копия подписи для новых писем (её же видит веб-почта).
     #[serde(default)]
     pub signature: Option<String>,
+    /// Несколько подписей (отделы, языки): пусто — только `signature`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signatures: Vec<Signature>,
+    /// Подпись по умолчанию: для новых писем и для ответов/пересылки (id; None — без подписи).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_new: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_reply: Option<String>,
     /// Сколько дней писем хранить на компьютере (по умолчанию 7, 0 — не хранить).
     #[serde(default)]
     pub offline_days: Option<u32>,
@@ -252,4 +261,12 @@ pub fn nc_forget_password(base: &str, login: &str) {
     if let Ok(e) = nc_entry(base, login) {
         let _ = e.delete_credential();
     }
+}
+
+/// Одна из подписей учётной записи.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Signature {
+    pub id: String,
+    pub name: String,
+    pub text: String,
 }

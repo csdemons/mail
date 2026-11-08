@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-draft-recovery-set"
+description = "Enables the draft_recovery_set command without any pre-configured scope."
+commands.allow = ["draft_recovery_set"]
+
+[[permission]]
+identifier = "deny-draft-recovery-set"
+description = "Denies the draft_recovery_set command without any pre-configured scope."
+commands.deny = ["draft_recovery_set"]

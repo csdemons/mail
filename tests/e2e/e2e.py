@@ -130,7 +130,7 @@ try:
     # 2. вход
     clear(d.find_element(By.CSS_SELECTOR, 'input[type=password]'))
     login(d, 'Secret-123')
-    wait(d, '.message-row')
+    wait(d, '.message-row', 45)  # первый вход после сборки: сервер ещё индексирует
     # Отмена отправки проверяется отдельно (14d); в остальных проверках письма уходят сразу.
     d.execute_script("localStorage.setItem('rrcki-mail.send-prefs', JSON.stringify({undoSecs: 0}))")
     time.sleep(1)
@@ -1899,10 +1899,17 @@ try:
 
     # подпись: из веб-почты SOGo, изменение сохраняется в SOGo и попадает в письмо
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
-    sig = wait(d, 'textarea[aria-label="Подпись"]')
+    # Прежняя единственная подпись из SOGo — «Основная» в списке подписей.
+    sig = wait(d, 'textarea[aria-label="Текст подписи Основная"]')
     W(d, 10).until(lambda d: sig.get_attribute('value') == 'С уважением')
     set_value(d, sig, 'С уважением,\nТестов Тест\nОтдел испытаний')
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.signature-settings button') if 'Сохранить подпись' in b.text][0].click()
+    # Вторая подпись — для английских писем; по умолчанию для ответов.
+    d.execute_script("arguments[0].click()", [b for b in d.find_elements(By.CSS_SELECTOR, '.signature-settings button') if 'Добавить подпись' in b.get_attribute('textContent')][0])
+    names = d.find_elements(By.CSS_SELECTOR, '.signature-settings input[aria-label="Название подписи"]')
+    set_value(d, names[-1], 'English')
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'textarea[aria-label="Текст подписи English"]'), 'Best regards,\nTest Testov')
+    Select(d.find_element(By.CSS_SELECTOR, 'select[aria-label="Подпись для ответов"]')).select_by_visible_text('English')
+    d.execute_script("arguments[0].click()", [b for b in d.find_elements(By.CSS_SELECTOR, '.signature-settings button') if 'Сохранить подписи' in b.get_attribute('textContent')][0])
     import json as _j, urllib.request as _u
     ctx = ssl.create_default_context(cafile=os.environ.get('IMAP_TEST_CA', '/srv/imaptest/ca.crt'))
     W(d, 10).until(lambda d: 'Отдел испытаний' in _j.loads(_u.urlopen('https://localhost:8444/__defaults', context=ctx).read())['SOGoMailSignature'])
@@ -1920,7 +1927,19 @@ try:
     time.sleep(1)
     d.save_screenshot(f'{OUT}/44-signature-spellcheck.png')
     ok('signature: taken from SOGo, saved back to SOGo, inserted into new mail; editor has spellcheck')
+    # Другая подпись — выбором в окне письма: блок подписи заменяется, текст письма остаётся.
+    Select(d.find_element(By.CSS_SELECTOR, '.compose-modal select[aria-label="Подпись"]')).select_by_visible_text('English')
+    W(d, 5).until(lambda d: 'Best regards' in body.get_attribute('textContent') and 'Отдел испытаний' not in body.get_attribute('textContent') and 'Превет' in body.get_attribute('textContent'))
+    Select(d.find_element(By.CSS_SELECTOR, '.compose-modal select[aria-label="Подпись"]')).select_by_visible_text('Без подписи')
+    W(d, 5).until(lambda d: 'Best regards' not in body.get_attribute('textContent') and 'Превет' in body.get_attribute('textContent'))
+    st = inv('signatures_get')['ok']
+    assert [x['name'] for x in st['items']] == ['Основная', 'English'] and st['replyId'] == st['items'][1]['id'] and st['newId'] == st['items'][0]['id'], st
+    ok('several signatures: list in settings, defaults for new mail and replies, switched in the message window')
+    # Письмо изменено — «Закрыть» спрашивает, сохранить ли черновик.
     d.find_element(By.CSS_SELECTOR, '.compose-modal button[aria-label="Закрыть"]').click()
+    ask = wait(d, '[role=alertdialog][aria-label="Сохранить черновик?"]')
+    [b for b in ask.find_elements(By.TAG_NAME, 'button') if 'Удалить черновик' in b.text][0].click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.compose-modal'))
     # контакты — снова на CardDAV-сервере (выше адрес указывал на мок SOGo)
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     dav = [i for i in wait(d, '.profile-form').find_elements(By.CSS_SELECTOR, 'input') if 'автоопределение' in (i.get_attribute('placeholder') or '')][0]
@@ -2833,6 +2852,110 @@ try:
     fl = flags_u('INBOX', 'E2E отложить')
     assert '\\Seen' not in fl and 'atomsnooze-' not in fl, fl
     ok('snooze: moved to Snoozed, returned to Inbox as unread on time')
+
+    # 0.40. Автосохранение черновика: версии заменяются, «Продолжить» из «Черновиков», вопрос при закрытии.
+    drafts_id = [f['id'] for f in inv('list_folders')['ok'] if f.get('role') == 'drafts'][0]
+    def drafts_with(subj):
+        M = imap(); M.select(f'"{drafts_id}"'); _, ids = M.search(None, 'UNDELETED'); out = []
+        for i in ids[0].split():
+            _, data = M.fetch(i, '(BODY.PEEK[])')
+            m = email.message_from_bytes(data[0][1])
+            if str(make_header(decode_header(m['Subject'] or ''))) == subj:
+                part = next((p for p in m.walk() if p.get_content_type() == 'text/plain'), None)
+                out.append((m['X-Atom-Draft-Key'] or '', part.get_payload(decode=True).decode(part.get_content_charset() or 'utf-8') if part else ''))
+        M.logout(); return out
+    def save_now():
+        ActionChains(d).key_down(Keys.CONTROL).send_keys('s').key_up(Keys.CONTROL).perform()
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    cm = wait(d, '.compose-modal')
+    cm.find_element(By.CSS_SELECTOR, '.recipient-field input').send_keys('Иванов Иван Иванович <ivanov@inst.test>, ')
+    cm.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').send_keys('E2E черновик')
+    body = cm.find_element(By.CSS_SELECTOR, '[aria-label="Текст письма"]')
+    d.execute_script("arguments[0].focus(); const r = document.createRange(); r.setStart(arguments[0], 0); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('insertText', false, 'Первая версия')", body)
+    save_now()
+    W(d, 20).until(lambda d: 'Черновик сохранён' in cm.find_element(By.CSS_SELECTOR, '.draft-status').get_attribute('textContent'))
+    v1 = W(d, 10).until(lambda d: drafts_with('E2E черновик'))
+    assert len(v1) == 1 and v1[0][0].startswith('d-') and 'Первая версия' in v1[0][1], v1
+    d.execute_script("arguments[0].focus(); document.execCommand('insertText', false, ' и вторая')", body)
+    save_now()
+    W(d, 20).until(lambda d: (lambda v: len(v) == 1 and 'и вторая' in v[0][1])(drafts_with('E2E черновик')))
+    assert drafts_with('E2E черновик')[0][0] == v1[0][0], 'same draft key, previous version replaced'
+    d.save_screenshot(f'{OUT}/60-draft-autosave.png')
+    # Без изменений после сохранения — закрывается сразу, черновик остаётся.
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[aria-label="Закрыть"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.compose-modal'))
+    assert not d.find_elements(By.CSS_SELECTOR, '[role=alertdialog]')
+    ok('draft autosave: saved to Drafts (Ctrl+S / every 30 s), new version replaces the old one, closing after a save asks nothing')
+    # «Продолжить» из «Черновиков»: тот же текст, правка заменяет черновик.
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Черновики' in f.get_attribute('textContent')][0].click()
+    open_row('E2E черновик')
+    wait(d, '.reader-toolbar .continue-draft').click()
+    cm = wait(d, '.compose-modal')
+    assert cm.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'E2E черновик'
+    body = cm.find_element(By.CSS_SELECTOR, '[aria-label="Текст письма"]')
+    assert 'и вторая' in body.get_attribute('textContent') and 'ivanov@inst.test' in cm.find_element(By.CSS_SELECTOR, '.recipient-field input').get_attribute('value')
+    d.execute_script("arguments[0].focus(); document.execCommand('insertText', false, ' третья')", body)
+    save_now()
+    W(d, 20).until(lambda d: (lambda v: len(v) == 1 and 'третья' in v[0][1] and v[0][0] != v1[0][0])(drafts_with('E2E черновик')))
+    ok('continue a draft from «Черновики»: same text and recipients, saving replaces the original')
+    # Изменения после сохранения и щелчок мимо окна — вопрос; «Вернуться к письму» — письмо на месте.
+    d.execute_script("arguments[0].focus(); document.execCommand('insertText', false, ' четвёртая')", body)
+    ActionChains(d).move_to_element_with_offset(d.find_element(By.CSS_SELECTOR, '.modal-backdrop'), 5, 5).click().perform()
+    ask = wait(d, '[role=alertdialog][aria-label="Сохранить черновик?"]')
+    [b for b in ask.find_elements(By.TAG_NAME, 'button') if 'Вернуться к письму' in b.text][0].click()
+    assert 'четвёртая' in d.find_element(By.CSS_SELECTOR, '.compose-modal [aria-label="Текст письма"]').get_attribute('textContent')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[aria-label="Закрыть"]').click()
+    ask = wait(d, '[role=alertdialog][aria-label="Сохранить черновик?"]')
+    [b for b in ask.find_elements(By.TAG_NAME, 'button') if 'Удалить черновик' in b.text][0].click()
+    W(d, 15).until(lambda d: not drafts_with('E2E черновик'))
+    ok('closing a changed message asks: back to the message / save / delete the draft (deleted from Drafts)')
+
+    # Готовые ответы с переменными: {имя} — имя и отчество получателя, {тема}, {моё имя}; неизвестные выделены.
+    [f for f in d.find_elements(By.CSS_SELECTOR, 'button.folder-item') if 'Входящие' in f.get_attribute('textContent')][0].click()
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    cm = wait(d, '.compose-modal')
+    cm.find_element(By.CSS_SELECTOR, '.recipient-field input').send_keys('Иванов Иван Иванович <ivanov@inst.test>, ')
+    cm.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').send_keys('Согласование')
+    body = cm.find_element(By.CSS_SELECTOR, '[aria-label="Текст письма"]')
+    d.execute_script("arguments[0].innerHTML = '<div>Уважаемый {имя}!</div><div>По теме «{тема}» — {дата}.</div><div>{организация}</div><div>{моё имя}</div>'", body)
+    cm.find_element(By.CSS_SELECTOR, 'button[aria-label="Шаблоны"]').click()
+    pop = wait(d, '.tpl-pop')
+    set_value(d, pop.find_element(By.CSS_SELECTOR, 'input[aria-label="Название шаблона"]'), 'E2E ответ с переменными')
+    [b for b in pop.find_elements(By.TAG_NAME, 'button') if 'Сохранить текущее' in b.text][0].click()
+    W(d, 15).until(lambda d: any('E2E ответ с переменными' in b.text for b in d.find_elements(By.CSS_SELECTOR, '.tpl-pop .schedule-preset')))
+    d.execute_script("arguments[0].innerHTML = ''", body)
+    ActionChains(d).key_down(Keys.CONTROL).key_down(Keys.SHIFT).send_keys('t').key_up(Keys.SHIFT).key_up(Keys.CONTROL).perform()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.tpl-pop'))
+    ActionChains(d).key_down(Keys.CONTROL).key_down(Keys.SHIFT).send_keys('t').key_up(Keys.SHIFT).key_up(Keys.CONTROL).perform()
+    [b for b in wait(d, '.tpl-pop').find_elements(By.CSS_SELECTOR, '.schedule-preset') if 'E2E ответ с переменными' in b.text][0].click()
+    W(d, 5).until(lambda d: 'Иван Иванович' in body.get_attribute('textContent'))
+    t = body.get_attribute('textContent')
+    assert 'Уважаемый Иван Иванович!' in t and '«Согласование»' in t and time.strftime('%d.%m.%Y') in t, t
+    assert body.find_elements(By.CSS_SELECTOR, 'mark') and '{организация}' in body.find_element(By.CSS_SELECTOR, 'mark').get_attribute('textContent'), body.get_attribute('innerHTML')
+    d.save_screenshot(f'{OUT}/61-template-variables.png')
+    ok('ready answers: variables {имя} (first name and patronymic), {тема}, {дата}, {моё имя}; unknown ones highlighted; Ctrl+Shift+T')
+
+    # Проверка адресатов: внешний адрес с вложением и незнакомым доменом — предупреждение; «Отправить» — уходит.
+    set_value(d, cm.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'partner@nowhere-new.example, ivanov@inst.test, ')
+    cm.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()
+    warn = wait(d, '[role=alertdialog][aria-label="Внешние получатели"]')
+    wt = warn.get_attribute('textContent')
+    assert 'partner@nowhere-new.example' in wt and 'новый домен' in wt and 'ivanov@inst.test' not in wt and 'и сотрудники, и внешние' in wt, wt
+    d.save_screenshot(f'{OUT}/62-external-warning.png')
+    [b for b in warn.find_elements(By.TAG_NAME, 'button') if 'Вернуться к письму' in b.text][0].click()
+    assert d.find_elements(By.CSS_SELECTOR, '.compose-modal') and not any(subject_of(p)[0] == 'Согласование' for p in outbox())
+    # Только свои — без вопросов.
+    set_value(d, cm.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'ivanov@inst.test, ')
+    cm.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()
+    W(d, 20).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.compose-modal'))
+    assert not d.find_elements(By.CSS_SELECTOR, '[aria-label="Внешние получатели"]')
+    ok('recipient check: external, new-domain and mixed recipients are confirmed before sending; internal-only mail is not')
+
+    # Копия на компьютере на случай сбоя: письмо набрано и не сохранено — после перезапуска предлагается продолжить.
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    cm = wait(d, '.compose-modal')
+    cm.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').send_keys('E2E восстановление')
+    time.sleep(4)
 except Exception:
     d.save_screenshot(f'{OUT}/fail.png'); print('PAGE TEXT:', d.find_element(By.TAG_NAME,'body').text[:800]); raise
 finally:
@@ -2855,6 +2978,15 @@ open(f'{H}/import/contacts.csv', 'wb').write('"Имя";"Фамилия";"Адр�
 d = session()
 try:
     wait(d, '.message-row', 30)
+    rec = wait(d, '[role=alertdialog][aria-label="Несохранённое письмо"]', 20)
+    assert 'E2E восстановление' in rec.get_attribute('textContent'), rec.get_attribute('textContent')
+    [b for b in rec.find_elements(By.TAG_NAME, 'button') if 'Продолжить письмо' in b.text][0].click()
+    cm = wait(d, '.compose-modal')
+    assert cm.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'E2E восстановление'
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[aria-label="Закрыть"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.compose-modal'))
+    assert inv('draft_recovery_get')['ok'] is None
+    ok('crash recovery: an unsaved message (encrypted copy on this computer) is offered after restart and reopens')
     def folder_id(path):
         return W(d, 20).until(lambda d: [f['id'] for f in inv('list_folders')['ok'] if f['path'] == path] or None)[0]
     def idate(folder, subj):

@@ -1493,6 +1493,75 @@ pub async fn append_draft(conn: &mut Connection, raw: &[u8]) -> Result<String> {
     Ok(folder)
 }
 
+/// Заголовок черновика, который программа сохраняет сама: по нему находятся и заменяются
+/// прежние версии того же письма.
+pub const DRAFT_KEY_HEADER: &str = "X-Atom-Draft-Key";
+
+/// Ключ черновика: только латиница, цифры и «-» (попадает в команду IMAP SEARCH).
+pub fn valid_draft_key(key: &str) -> bool {
+    (8..=64).contains(&key.len()) && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Письма «Черновиков» с этим ключом (новые в конце).
+async fn draft_versions(conn: &mut Connection, folder: &str, key: &str) -> Result<Vec<u32>> {
+    conn.ensure_selected(folder).await?;
+    let mut uids: Vec<u32> = conn.imap()?.uid_search(format!("UNDELETED HEADER {DRAFT_KEY_HEADER} \"{key}\"")).await?.into_iter().collect();
+    uids.sort_unstable();
+    Ok(uids)
+}
+
+/// Сохранить черновик: новая версия — в «Черновики», прежние версии (тот же ключ) и
+/// черновик, с которого начали правку (`replace`), — удалить. Возвращает папку.
+pub async fn save_draft(conn: &mut Connection, raw: &[u8], key: &str, replace: Option<(&str, u32)>) -> Result<String> {
+    if !valid_draft_key(key) {
+        return Err(AppError::Other("Некорректный ключ черновика".into()));
+    }
+    if conn.is_ews() {
+        return Err(AppError::Other("Для Exchange черновик пока сохраняется только на этом компьютере".into()));
+    }
+    let folder = append_draft(conn, raw).await?;
+    let mut uids = draft_versions(conn, &folder, key).await?;
+    uids.pop(); // только что сохранённая
+    if let Some((f, u)) = replace {
+        if f == folder && !uids.contains(&u) {
+            uids.push(u);
+        }
+    }
+    if !uids.is_empty() {
+        let _: Vec<Fetch> = conn.imap()?.uid_store(uid_set(&uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+        expunge_uids(conn, &uids).await?;
+    }
+    if let Some((f, u)) = replace.filter(|(f, _)| *f != folder) {
+        remove_message(conn, f, u).await?;
+    }
+    Ok(folder)
+}
+
+/// Удалить все версии черновика (отправлен или отброшен).
+pub async fn discard_draft(conn: &mut Connection, key: &str, replace: Option<(&str, u32)>) -> Result<()> {
+    if conn.is_ews() || !valid_draft_key(key) {
+        if let Some((f, u)) = replace {
+            remove_message(conn, f, u).await?;
+        }
+        return Ok(());
+    }
+    let Some(folder) = role_folder(conn, FolderRole::Drafts).await? else { return Ok(()) };
+    let mut uids = draft_versions(conn, &folder, key).await?;
+    if let Some((f, u)) = replace {
+        if f == folder && !uids.contains(&u) {
+            uids.push(u);
+        } else if f != folder {
+            remove_message(conn, f, u).await?;
+        }
+    }
+    if !uids.is_empty() {
+        conn.ensure_selected(&folder).await?;
+        let _: Vec<Fetch> = conn.imap()?.uid_store(uid_set(&uids), "+FLAGS.SILENT (\\Deleted)").await?.try_collect().await?;
+        expunge_uids(conn, &uids).await?;
+    }
+    Ok(())
+}
+
 /// Заголовок отложенной отправки (время в RFC 3339).
 pub const SEND_AT_HEADER: &str = "X-Atom-Send-At";
 
@@ -2419,5 +2488,19 @@ mod tests {
     fn decodes_utf7_folder_names() {
         let encoded = utf7_imap::encode_utf7_imap("Отправленные".to_string());
         assert_eq!(utf7_imap::decode_utf7_imap(encoded), "Отправленные");
+    }
+}
+
+#[cfg(test)]
+mod draft_key_tests {
+    use super::valid_draft_key;
+
+    #[test]
+    fn only_safe_keys_reach_imap_search() {
+        assert!(valid_draft_key("d-lx3k9a-0123456789abcdef01234567"));
+        assert!(!valid_draft_key("short"));
+        assert!(!valid_draft_key("d-1234567\" OR ALL"));
+        assert!(!valid_draft_key("d-12345678\r\nA1 LOGOUT"));
+        assert!(!valid_draft_key(&"a".repeat(65)));
     }
 }

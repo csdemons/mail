@@ -21,6 +21,30 @@ export interface RichEditorHandle {
   insertLinks: (links: { name: string; url: string }[]) => void
   /** Вставляет готовый фрагмент (шаблон) в место курсора или в начало письма. */
   insertHtml: (html: string) => void
+  /** Заменить подпись (блок «-- …») другой; пустая — убрать. */
+  setSignature: (html: string) => void
+}
+
+/** Начало цитаты или пересылаемого письма — подпись стоит над ним. */
+function isQuoteStart(n: Element): boolean {
+  if (n.tagName === 'BLOCKQUOTE') return true
+  const t = (n.textContent ?? '').trim()
+  return t.startsWith('---------- Пересланное') || /пишет:$/.test(t)
+}
+
+/** Отметить подпись в тексте черновика (строка «-- » и строки под ней до цитаты), чтобы её можно было заменить. */
+function markSignature(el: HTMLElement) {
+  if (el.querySelector('[data-signature]')) return
+  const kids = Array.from(el.children)
+  const start = kids.findIndex((k) => k.tagName === 'DIV' && (k.textContent ?? '').replace(/\u00a0/g, ' ') === '-- ')
+  if (start < 0) return
+  let end = start
+  while (end + 1 < kids.length && !isQuoteStart(kids[end + 1])) end++
+  while (end > start && !(kids[end].textContent ?? '').trim()) end--
+  const box = document.createElement('div')
+  box.dataset.signature = '1'
+  kids[start].before(box)
+  for (const k of kids.slice(start, end + 1)) box.append(k)
 }
 
 function escapeHtml(s: string) {
@@ -59,11 +83,13 @@ interface Props {
   initialHtml?: string
   autoFocus?: boolean
   onNotice?: (text: string) => void
+  /** Текст изменился (для автосохранения черновика). */
+  onChange?: () => void
 }
 
 /** Редактор письма на contentEditable: шрифт, размер, начертание, цвет, списки,
  *  выравнивание, цитата, ссылки. Итоговый HTML дополнительно чистится в бэкенде. */
-const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initialText, initialHtml, autoFocus, onNotice }, ref) {
+const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initialText, initialHtml, autoFocus, onNotice, onChange }, ref) {
   const editor = useRef<HTMLDivElement>(null)
   const saved = useRef<Range | null>(null)
   const [state, setState] = useState({ bold: false, italic: false, underline: false, strike: false, ul: false, ol: false, font: '', size: '' })
@@ -89,6 +115,23 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
       if (!el) return
       placeCursor(el)
       document.execCommand('insertHTML', false, html)
+    },
+    setSignature: (html: string) => {
+      const el = editor.current
+      if (!el) return
+      markSignature(el)
+      const box = el.querySelector<HTMLElement>('[data-signature]')
+      if (box) {
+        if (html) box.outerHTML = html
+        else box.remove()
+      } else if (html) {
+        // Подписи не было: над цитатой (ответ, пересылка) или в конце письма.
+        const quote = Array.from(el.children).find(isQuoteStart)
+        const frag = document.createRange().createContextualFragment(`<div><br></div>${html}<div><br></div>`)
+        if (quote) quote.before(frag)
+        else el.append(document.createRange().createContextualFragment(`<div><br></div>${html}`))
+      }
+      onChange?.()
     },
     html: () => editor.current?.innerHTML ?? '',
     text: () => (editor.current?.innerText ?? '').replace(/ /g, ' ').replace(/\n{3,}/g, '\n\n'),
@@ -119,6 +162,7 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
     if (!el) return
     // Свой же HTML из этого редактора (после отмены отправки); при отправке он ещё раз чистится в бэкенде.
     el.innerHTML = initialHtml ?? textToHtml(initialText)
+    markSignature(el)
     try { document.execCommand('styleWithCSS', false, 'true') } catch { /* старые движки */ }
     if (autoFocus) {
       el.focus()
@@ -266,6 +310,7 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
         aria-label="Текст письма"
         data-placeholder="Напишите сообщение…"
         onPaste={onPaste}
+        onInput={() => onChange?.()}
         onKeyUp={refresh}
         onMouseUp={refresh}
       />

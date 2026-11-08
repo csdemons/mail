@@ -248,7 +248,16 @@ export interface Draft {
   html?: string
   files?: PickedFile[]
   readReceipt?: boolean
+  /** Ключ автосохранения: по нему в «Черновиках» заменяются прежние версии. */
+  key?: string
+  /** Черновик, с которого начали правку (заменяется при сохранении). */
+  replace?: { folder: string; uid: number } | null
+  /** Выбранная подпись (id) или null — без подписи. */
+  signatureId?: string | null
 }
+
+export interface Signature { id: string; name: string; text: string }
+export interface SignatureSet { items: Signature[]; newId: string | null; replyId: string | null }
 
 export interface EventInput {
   title: string

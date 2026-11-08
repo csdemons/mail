@@ -1,24 +1,46 @@
 import { useEffect, useState } from 'react'
-import { HardDrive, MonitorSmartphone, PenLine, RefreshCw, Send, Tag, Trash2, X } from 'lucide-react'
+import { HardDrive, MonitorSmartphone, PenLine, Plus, RefreshCw, Send, Tag, Trash2, X } from 'lucide-react'
 import { nextCategoryKeyword } from './mailExtras'
 import { loadSendPrefs, saveSendPrefs, type SendPrefs } from './sending'
 
 import { api, errorText } from './api'
-import type { Category, DesktopPrefs, OfflineStatus } from './types'
+import type { Category, DesktopPrefs, OfflineStatus, Signature, SignatureSet } from './types'
 
-/** Личная подпись: вставляется в новые письма, ответы и пересылку; сохраняется и в веб-почте. */
-export function SignatureSettings({ signature, onSaved }: { signature: string; onSaved: (text: string, notice: string) => void }) {
-  const [text, setText] = useState(signature)
+/**
+ * Подписи: несколько (отделы, языки), у каждой — название. Подпись по умолчанию для новых
+ * писем и для ответов/пересылки; в окне письма можно выбрать другую. Подпись для новых
+ * писем сохраняется и в веб-почте (SOGo).
+ */
+export function SignaturesSettings({ set, onSaved }: { set: SignatureSet | null; onSaved: (set: SignatureSet, notice: string) => void }) {
+  const [draft, setDraft] = useState<SignatureSet>(set ?? { items: [], newId: null, replyId: null })
   const [busy, setBusy] = useState(false)
-  useEffect(() => setText(signature), [signature])
+  const [error, setError] = useState('')
+  useEffect(() => { if (set) setDraft(set) }, [set])
+  const dirty = JSON.stringify(draft) !== JSON.stringify(set ?? { items: [], newId: null, replyId: null })
 
+  function patch(id: string, p: Partial<Signature>) {
+    setDraft((d) => ({ ...d, items: d.items.map((x) => (x.id === id ? { ...x, ...p } : x)) }))
+  }
+  function add() {
+    const id = `s${Date.now().toString(36)}`
+    setDraft((d) => ({
+      items: [...d.items, { id, name: d.items.length ? `Подпись ${d.items.length + 1}` : 'Основная', text: '' }],
+      newId: d.newId ?? id,
+      replyId: d.replyId ?? id,
+    }))
+  }
+  function remove(id: string) {
+    setDraft((d) => ({ items: d.items.filter((x) => x.id !== id), newId: d.newId === id ? null : d.newId, replyId: d.replyId === id ? null : d.replyId }))
+  }
   async function save() {
+    if (draft.items.some((x) => !x.name.trim())) { setError('У каждой подписи должно быть название'); return }
     setBusy(true)
+    setError('')
     try {
-      const warning = await api.signatureSave(text)
-      onSaved(text.trim(), warning ?? 'Подпись сохранена — в программе и в веб-почте.')
-    } catch (error) {
-      onSaved(signature, `Не удалось сохранить подпись: ${errorText(error)}`)
+      const warning = await api.signaturesSave(draft)
+      onSaved(draft, warning ?? 'Подписи сохранены.')
+    } catch (e) {
+      setError(errorText(e))
     } finally {
       setBusy(false)
     }
@@ -26,18 +48,46 @@ export function SignatureSettings({ signature, onSaved }: { signature: string; o
 
   return (
     <div className="settings-section signature-settings">
-      <strong><PenLine size={15} /> Подпись</strong>
-      <span className="settings-hint">Добавляется в новые письма, ответы и пересылку (над цитатой). Пусто — без подписи.</span>
-      <textarea
-        aria-label="Подпись"
-        spellCheck
-        rows={4}
-        value={text}
-        placeholder={'С уважением,\nИванов Иван Иванович\nНИЦ «Курчатовский институт»\nтел. +7 (499) 000-00-00'}
-        onChange={(e) => setText(e.target.value)}
-      />
+      <strong><PenLine size={15} /> Подписи</strong>
+      <span className="settings-hint">Добавляется в письмо над цитатой. Можно завести несколько — для отделов или языков — и выбрать нужную в окне письма.</span>
+      {draft.items.map((x) => (
+        <div key={x.id} className="signature-item">
+          <div className="signature-item-head">
+            <input aria-label="Название подписи" value={x.name} maxLength={60} onChange={(e) => patch(x.id, { name: e.target.value })} placeholder="Название" />
+            <button type="button" className="icon-button" aria-label={`Удалить подпись ${x.name}`} title="Удалить подпись" onClick={() => remove(x.id)}><Trash2 size={14} /></button>
+          </div>
+          <textarea
+            aria-label={`Текст подписи ${x.name}`}
+            spellCheck
+            rows={4}
+            value={x.text}
+            placeholder={'С уважением,\nИванов Иван Иванович\nНИЦ «Курчатовский институт»\nтел. +7 (499) 000-00-00'}
+            onChange={(e) => patch(x.id, { text: e.target.value })}
+          />
+        </div>
+      ))}
+      <button type="button" className="text-button" onClick={add}><Plus size={14} /> Добавить подпись</button>
+      {draft.items.length > 0 && (
+        <div className="signature-defaults">
+          <label>
+            <span>Новые письма</span>
+            <select aria-label="Подпись для новых писем" value={draft.newId ?? ''} onChange={(e) => setDraft({ ...draft, newId: e.target.value || null })}>
+              <option value="">Без подписи</option>
+              {draft.items.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Ответы и пересылка</span>
+            <select aria-label="Подпись для ответов" value={draft.replyId ?? ''} onChange={(e) => setDraft({ ...draft, replyId: e.target.value || null })}>
+              <option value="">Без подписи</option>
+              {draft.items.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
+      {error && <div className="login-error" role="alert">{error}</div>}
       <div className="settings-actions">
-        <button className="secondary-button" disabled={busy || text === signature} onClick={() => void save()}>Сохранить подпись</button>
+        <button className="secondary-button" disabled={busy || !dirty} onClick={() => void save()}>Сохранить подписи</button>
       </div>
     </div>
   )
