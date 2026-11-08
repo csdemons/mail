@@ -2918,7 +2918,8 @@ try:
     ok('continue a draft from «Черновики»: same text and recipients, saving replaces the original')
     # Изменения после сохранения и щелчок мимо окна — вопрос; «Вернуться к письму» — письмо на месте.
     d.execute_script("arguments[0].focus(); document.execCommand('insertText', false, ' четвёртая')", body)
-    ActionChains(d).move_to_element_with_offset(d.find_element(By.CSS_SELECTOR, '.modal-backdrop'), 5, 5).click().perform()
+    bd = d.find_element(By.CSS_SELECTOR, '.modal-backdrop')  # смещение — от центра, поэтому к левому верхнему углу
+    ActionChains(d).move_to_element_with_offset(bd, -bd.size['width'] // 2 + 5, -bd.size['height'] // 2 + 5).click().perform()
     ask = wait(d, '[role=alertdialog][aria-label="Сохранить черновик?"]')
     [b for b in ask.find_elements(By.TAG_NAME, 'button') if 'Вернуться к письму' in b.text][0].click()
     assert 'четвёртая' in d.find_element(By.CSS_SELECTOR, '.compose-modal [aria-label="Текст письма"]').get_attribute('textContent')
@@ -2949,9 +2950,13 @@ try:
     W(d, 5).until(lambda d: 'Иван Иванович' in body.get_attribute('textContent'))
     t = body.get_attribute('textContent')
     assert 'Уважаемый Иван Иванович!' in t and '«Согласование»' in t and time.strftime('%d.%m.%Y') in t, t
-    assert body.find_elements(By.CSS_SELECTOR, 'mark') and '{организация}' in body.find_element(By.CSS_SELECTOR, 'mark').get_attribute('textContent'), body.get_attribute('innerHTML')
+    # Имени отправителя у тестовой учётной записи нет — {моё имя} выделено; организация — из адресной
+    # книги (если она уже загружена), иначе тоже выделена.
+    marks = [m.get_attribute('textContent') for m in body.find_elements(By.CSS_SELECTOR, 'mark')]
+    assert marks in (['{моё имя}'], ['{организация}', '{моё имя}']), body.get_attribute('innerHTML')
+    assert marks != ['{моё имя}'] or 'НИЦ КИ, УИТ' in t, t
     d.save_screenshot(f'{OUT}/61-template-variables.png')
-    ok('ready answers: variables {имя} (first name and patronymic), {тема}, {дата}, {моё имя}; unknown ones highlighted; Ctrl+Shift+T')
+    ok('ready answers: variables {имя} (first name and patronymic), {тема}, {дата}, {организация}; unknown ones highlighted; Ctrl+Shift+T')
 
     # Проверка адресатов: внешний адрес с вложением и незнакомым доменом — предупреждение; «Отправить» — уходит.
     set_value(d, cm.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'partner@nowhere-new.example, ivanov@inst.test, ')
