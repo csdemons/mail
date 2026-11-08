@@ -128,6 +128,8 @@ try:
     d.execute_script("document.documentElement.style.zoom = '1.5'; document.documentElement.style.setProperty('--css-zoom', '1.5')"); time.sleep(1)
     geo = d.execute_script('''
       const fl = document.querySelector('.folder-list'), ml = document.querySelector('.message-list');
+      // Карточка обновления лежит поверх левого нижнего угла — на время проверки убираем её.
+      document.querySelectorAll('.update-card').forEach((c) => { c.style.visibility = 'hidden' });
       const seen = (el) => { const r = el.getBoundingClientRect(); const h = document.elementFromPoint(r.left + r.width / 2, r.bottom - 3); return !!h && el.contains(h) };
       const before = fl.scrollTop; fl.scrollTop = 10000; const moved = fl.scrollTop > before;
       const r = (el) => Math.round(el.getBoundingClientRect().bottom);
@@ -135,7 +137,7 @@ try:
                list: r(ml), flOverflow: getComputedStyle(fl).overflowY, flScroll: fl.scrollHeight > fl.clientHeight, moved,
                last: r([...fl.querySelectorAll('.folder-item')].pop()) <= r(fl) + 1, mlScroll: ml.scrollHeight > ml.clientHeight,
                footer: seen(document.querySelector('.sidebar-footer')), status: seen(document.querySelector('.status-bar') || document.querySelector('.sidebar-footer')),
-               listEnd: seen(ml) };''')
+               listEnd: seen(ml), _: document.querySelectorAll('.update-card').forEach((c) => { c.style.visibility = '' }) };''')
     assert geo['footer'] and geo['status'] and geo['listEnd'], geo
     assert geo['flOverflow'] == 'auto' and geo['flScroll'] and geo['moved'] and geo['last'] and geo['mlScroll'], geo
     d.execute_script("document.querySelector('.folder-list').scrollTop = 0; document.documentElement.style.zoom = ''; document.documentElement.style.setProperty('--css-zoom', '1')")
