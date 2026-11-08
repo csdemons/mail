@@ -1558,8 +1558,8 @@ html[data-density="compact"] .message-group { padding: 4px 10px 3px; }
 .theme-dark .message-row.unread.selected { background: #263a55; }
 
 /* Панель разделов: подписи крупнее и контрастнее, «Контрагенты» помещается целиком. */
-.module-rail { flex-basis: 74px; padding: 8px 4px; }
-.module { font-size: 10.5px; line-height: 1.15; color: #6f7a8c; padding: 8px 1px 7px; gap: 4px; letter-spacing: -.01em; }
+.module-rail { flex-basis: 76px; padding: 8px 3px; }
+.module { font-size: 10px; line-height: 1.15; color: #6f7a8c; padding: 8px 0 7px; gap: 4px; letter-spacing: -.02em; }
 .module span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .theme-dark .module { color: #9aa6b8; }
 @media (max-width: 900px) { .module-rail { flex-basis: 48px; padding: 7px 3px; } .module span { display: none; } .module { padding: 10px 0; } }

@@ -155,6 +155,8 @@ try:
     d.execute_script("document.querySelector('.folder-list').scrollTop = 0; document.documentElement.style.zoom = ''; document.documentElement.style.setProperty('--css-zoom', '1')")
     d.set_window_size(1400, 900); time.sleep(1)
     ok('long folder and message lists scroll inside their columns; nothing is cut off in a low window')
+    cut = d.execute_script("return [...document.querySelectorAll('.module-rail .module span')].filter((s) => s.scrollWidth > s.clientWidth + 1).map((s) => s.textContent)")
+    assert not cut, f'rail labels cut off: {cut}'
     # Главное окно не уходит на чужие страницы (ссылка мимо обработчиков, data:, перенаправление).
     for target in ['https://phish.example/login', 'data:text/html,<h1>phish</h1>', 'file:///etc/passwd']:
         d.execute_script("location.href = arguments[0]", target); time.sleep(1.5)
