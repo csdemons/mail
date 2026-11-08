@@ -332,14 +332,20 @@ pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url:
     let base = url.clone();
     let (nav_app, new_app) = (app.clone(), app.clone());
     let nav_base = base.clone();
-    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::External(url))
+    let mut builder = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::External(url))
         .title(title)
         .inner_size(1280.0, 860.0)
         .min_inner_size(640.0, 480.0)
-        // Куки и хранилище страниц Nextcloud — в своём каталоге учётной записи (удаляется при
-        // выходе), а не в общем профиле программы. В macOS отдельного каталога нет — без сохранения.
-        .data_directory(profile.to_path_buf())
-        .incognito(cfg!(target_os = "macos"))
+        .incognito(cfg!(target_os = "macos"));
+    // Куки и хранилище страниц Nextcloud — в своём каталоге учётной записи (удаляется при
+    // выходе), а не в общем профиле программы. В macOS отдельного каталога нет — без сохранения.
+    // E2E (отладочная сборка): WebKitWebDriver видит только окна основного контекста веб-движка,
+    // поэтому там окно остаётся в нём (каталог учётной записи всё равно создаётся и удаляется).
+    let e2e = cfg!(debug_assertions) && std::env::var_os("RRCKI_E2E_SAVE_DIR").is_some();
+    if !e2e {
+        builder = builder.data_directory(profile.to_path_buf());
+    }
+    builder
         .on_navigation(move |u| {
             if crate::nextcloud::editor_url_allowed(&nav_base, u) {
                 return true;
