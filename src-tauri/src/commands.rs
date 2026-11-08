@@ -197,6 +197,7 @@ impl AppState {
 /// Трей, настройки окна и запуск свёрнутым (автозапуск передаёт `--minimized`).
 pub fn setup_desktop(app: &AppHandle) {
     use tauri::Manager;
+    cleanup_web_profiles(app);
     if let Ok(dir) = host::data_dir(app) {
         crate::ews::set_data_dir(dir);
     }
@@ -926,7 +927,7 @@ pub async fn auto_login(app: AppHandle, state: State<'_, AppState>) -> Result<Op
 pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Option<bool>) -> Result<()> {
     let _one_at_a_time = state.switching.lock().await;
     // Окна писем показывают данные этой учётной записи.
-    host::close_message_windows(&app);
+    host::close_account_windows(&app);
     // Телефон потерян: с экрана блокировки можно выйти со сбросом защиты кодом.
     // Сохранённый пароль при этом тоже забывается — снова войти можно только зная
     // пароль почты (с ним переписку и так можно прочитать в веб-почте).
@@ -956,6 +957,8 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
             log::warn!("local store not removed on logout: {e}");
         }
         crate::ews::forget(&acc);
+        // Куки входа в Nextcloud окон редактора и звонков.
+        forget_web_profile(&app, &acc);
     }
     // «Выйти и забыть пароль» забывает и подключение к Nextcloud: пароль приложения
     // отзывается на сервере и удаляется из системного хранилища — именно этой
@@ -2743,11 +2746,14 @@ pub async fn forward_attachments(state: State<'_, AppState>, folder: String, uid
 /// каталоге, затем открытие программой по умолчанию. Только документы, таблицы,
 /// картинки и т. п. — исполняемые файлы так не открываются.
 #[tauri::command]
-pub async fn attachment_open(app: AppHandle, state: State<'_, AppState>, folder: String, uid: u32, index: usize) -> Result<String> {
+pub async fn attachment_open(app: AppHandle, state: State<'_, AppState>, folder: String, uid: u32, index: usize, allow_macros: Option<bool>) -> Result<String> {
     let ctx = state.ctx().await?;
     let (name, data) = attachment(&ctx, &folder, uid, index).await?;
     if !crate::dragout::openable(&name) {
         return Err(AppError::Other(format!("«{name}» нельзя открыть прямо из письма — сохраните файл и проверьте его перед открытием")));
+    }
+    if crate::dragout::has_macros(&name) && allow_macros != Some(true) {
+        return Err(AppError::Other(format!("«{name}» содержит макросы — откройте его, только если доверяете отправителю (нужно подтверждение)")));
     }
     let path = tokio::task::spawn_blocking(move || crate::dragout::stage_for_open(&name, &data)).await.map_err(|e| AppError::Other(e.to_string()))??;
     // E2E (отладочная сборка): программу не запускаем — проверяется подготовленный файл.
@@ -3672,7 +3678,7 @@ fn editor_label(path: &str) -> String {
 
 /// Открывает файл Nextcloud на редактирование: через Direct Editing — в окне
 /// программы (вход не нужен), иначе — страница файла в браузере.
-async fn edit_in_nextcloud(app: &AppHandle, nc: &nextcloud::Nc, path: &str, mime: &str) -> Result<EditResult> {
+async fn edit_in_nextcloud(app: &AppHandle, account: &str, nc: &nextcloud::Nc, path: &str, mime: &str) -> Result<EditResult> {
     let name = path.rsplit('/').next().unwrap_or(path).to_string();
     // Тип от сервера бывает общим (application/zip, octet-stream) — пробуем и тип по расширению.
     let editors = nc.editors().await;
@@ -3680,7 +3686,7 @@ async fn edit_in_nextcloud(app: &AppHandle, nc: &nextcloud::Nc, path: &str, mime
     if let Some(editor) = editor {
         let url = nc.direct_open(path, &editor.id).await?;
         let url = url::Url::parse(&url).map_err(|e| AppError::Other(e.to_string()))?;
-        host::open_external_window(app, &editor_label(path), &format!("{name} — {}", editor.name), url)?;
+        host::open_external_window(app, &editor_label(path), &format!("{name} — {}", editor.name), url, &web_profile(app, account)?)?;
         return Ok(EditResult { in_app: true, path: path.to_string() });
     }
     let id = nc.file_id(path).await?;
@@ -3700,7 +3706,7 @@ pub async fn nc_editors(state: State<'_, AppState>) -> Result<nextcloud::NcEdito
 pub async fn nc_edit(app: AppHandle, state: State<'_, AppState>, path: String, mime: String) -> Result<EditResult> {
     let ctx = state.ctx().await?;
     let nc = nc(&ctx).await?;
-    edit_in_nextcloud(&app, &nc, &path, &mime).await
+    edit_in_nextcloud(&app, &ctx.key, &nc, &path, &mime).await
 }
 
 /// Новый документ/таблица/презентация в папке `dir` и сразу на редактирование.
@@ -3725,12 +3731,12 @@ pub async fn nc_create_document(app: AppHandle, state: State<'_, AppState>, dir:
         let url = nc.direct_create(&path, &c.editor, &c.id).await?;
         let url = url::Url::parse(&url).map_err(|e| AppError::Other(e.to_string()))?;
         let editor = editors.editors.iter().find(|e| e.id == c.editor).map(|e| e.name.clone()).unwrap_or_default();
-        host::open_external_window(&app, &editor_label(&path), &format!("{file} — {editor}"), url)?;
+        host::open_external_window(&app, &editor_label(&path), &format!("{file} — {editor}"), url, &web_profile(&app, &ctx.key)?)?;
         return Ok(EditResult { in_app: true, path });
     }
     // Нет Direct Editing — пустой файл из шаблона программы, затем открыть.
     let path = nc_upload(&ctx).await?.upload_unique(&dir, &file, blank.to_vec()).await?;
-    edit_in_nextcloud(&app, &nc, &path, nextcloud::office_mime(&file).unwrap_or("")).await
+    edit_in_nextcloud(&app, &ctx.key, &nc, &path, nextcloud::office_mime(&file).unwrap_or("")).await
 }
 
 /// Вложение письма → Nextcloud («Почта») → на редактирование.
@@ -3740,7 +3746,7 @@ pub async fn nc_edit_attachment(app: AppHandle, state: State<'_, AppState>, fold
     let (name, data) = attachment(&ctx, &folder, uid, index).await?;
     let path = nc_upload(&ctx).await?.upload_unique(&dir, &name, data).await?;
     let nc = nc(&ctx).await?;
-    edit_in_nextcloud(&app, &nc, &path, nextcloud::office_mime(&name).unwrap_or("")).await
+    edit_in_nextcloud(&app, &ctx.key, &nc, &path, nextcloud::office_mime(&name).unwrap_or("")).await
 }
 
 /// Политика администратора для интерфейса (галочка пароля, внешние картинки, срок ссылок).
@@ -3842,7 +3848,7 @@ pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> 
     }
     let creds = ctx.creds.clone();
     let profile = ctx.profile().await;
-    host::close_message_windows(&app);
+    host::close_account_windows(&app);
     end_session(&state).await;
     drop_others(&state).await;
     *state.pending.lock().await = Some(Pending { creds, profile, remember: None });
@@ -4065,6 +4071,9 @@ pub async fn nc_connect_manual(
 #[tauri::command]
 pub async fn nc_disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<NcStatus> {
     let ctx = state.ctx().await?;
+    // Окна редактора и звонков работают с этим Nextcloud — закрыть и забыть их вход.
+    host::close_account_windows(&app);
+    forget_web_profile(&app, &ctx.key);
     *ctx.nc_flow.lock().await = None;
     if let Some((creds, uid)) = ctx.nc.lock().await.take() {
         if let Ok(client) = nextcloud::Nc::new(creds.clone(), &uid) {
@@ -4116,6 +4125,89 @@ pub async fn deck_create_card(
 ) -> Result<i64> {
     let ctx = state.ctx().await?;
     nc(&ctx).await?.deck_create_card(board_id, stack_id, &title, &description, duedate.as_deref()).await
+}
+
+/// Адреса, по которым может ходить главное окно и окна писем: только сама программа
+/// (`tauri://localhost`, в Windows `http(s)://tauri.localhost`), пустые и встроенные рамки
+/// (`about:blank`, `about:srcdoc`) и `blob:` самой программы; в отладочной сборке — ещё
+/// сервер разработки. Всё остальное (ссылка, обошедшая обработчики, перенаправление
+/// встроенной страницы) не открывается в окне программы.
+pub fn app_url_allowed(u: &url::Url) -> bool {
+    match u.scheme() {
+        "tauri" => u.host_str() == Some("localhost"),
+        "http" | "https" => u.host_str() == Some("tauri.localhost") || (cfg!(debug_assertions) && u.host_str() == Some("localhost") && u.port() == Some(5173)),
+        "about" => matches!(u.path(), "blank" | "srcdoc"),
+        "blob" => url::Url::parse(u.path()).is_ok_and(|inner| inner.scheme() != "blob" && app_url_allowed(&inner)),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::app_url_allowed;
+    fn ok(s: &str) -> bool { app_url_allowed(&url::Url::parse(s).unwrap()) }
+
+    #[test]
+    fn only_the_app_itself() {
+        assert!(ok("tauri://localhost/index.html"));
+        assert!(ok("http://tauri.localhost/"));
+        assert!(ok("https://tauri.localhost/index.html#x"));
+        assert!(ok("about:blank") && ok("about:srcdoc"));
+        assert!(ok("blob:tauri://localhost/2f1c-uuid"));
+        assert!(!ok("https://evil.example/login"));
+        assert!(!ok("http://tauri.localhost.evil.example/"));
+        assert!(!ok("tauri://evil/"));
+        assert!(!ok("data:text/html,<script>1</script>"));
+        assert!(!ok("javascript:alert(1)"));
+        assert!(!ok("file:///etc/passwd"));
+        assert!(!ok("blob:https://evil.example/uuid"));
+        assert!(!ok("about:config"));
+    }
+}
+
+/// Профиль веб-движка для страниц Nextcloud учётной записи (окна редактора и звонков):
+/// `<данные программы>/web/<хэш учётной записи>`, только для владельца.
+fn web_profile(app: &AppHandle, account: &str) -> Result<PathBuf> {
+    let dir = host::data_dir(app)?.join("web").join(store::account_hash(account));
+    std::fs::create_dir_all(&dir).map_err(|e| AppError::Other(format!("Каталог профиля окна недоступен: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        if let Some(parent) = dir.parent() {
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    crate::winacl::restrict(&dir);
+    Ok(dir)
+}
+
+/// Удалить профиль веб-движка учётной записи (куки входа в Nextcloud и т. п.). Окна,
+/// которые им пользуются, к этому моменту уже закрыты.
+fn forget_web_profile(app: &AppHandle, account: &str) {
+    let Ok(root) = host::data_dir(app) else { return };
+    let web = root.join("web");
+    let dir = web.join(store::account_hash(account));
+    if dir.exists() && std::fs::remove_dir_all(&dir).is_err() {
+        // Процесс веб-движка ещё держит файлы (Windows) — удалим при следующем запуске.
+        let _ = std::fs::write(web.join(format!("{}.forget", store::account_hash(account))), b"");
+        log::warn!("web profile is busy, will be removed on next start");
+    }
+}
+
+/// При запуске: удалить профили веб-движка, которые не удалось удалить при выходе.
+pub fn cleanup_web_profiles(app: &AppHandle) {
+    let Ok(root) = host::data_dir(app) else { return };
+    let Ok(list) = std::fs::read_dir(root.join("web")) else { return };
+    for e in list.flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "forget") {
+            let dir = p.with_extension("");
+            if !dir.exists() || std::fs::remove_dir_all(&dir).is_ok() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
 }
 
 /// Папка документов организации в Nextcloud: «/Контрагенты/<домен>».
@@ -4365,7 +4457,7 @@ pub async fn talk_call_window(app: AppHandle, state: State<'_, AppState>, token:
         let _ = std::fs::write(std::path::Path::new(&dir).join("call-window.txt"), url.as_str());
         return Ok(());
     }
-    host::open_external_window(&app, &format!("call-{token}"), "Звонок — Atom Workspace", url)
+    host::open_external_window(&app, &format!("call-{token}"), "Звонок — Atom Workspace", url, &web_profile(&app, &ctx.key)?)
 }
 
 #[tauri::command]
@@ -5296,7 +5388,7 @@ pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: Str
     };
     check.logout().await;
 
-    host::close_message_windows(&app);
+    host::close_account_windows(&app);
     state.outbox.flush().await;
     state.jobs.cancel_all();
     state.import_sources.lock().await.clear();
@@ -5341,6 +5433,7 @@ pub async fn account_remove(app: AppHandle, state: State<'_, AppState>, key: Str
         crate::rules::forget(&dir, &key);
         crate::counterparty::forget(&dir, &key);
     }
+    forget_web_profile(&app, &key);
     if let Some(c) = state.others.lock().await.remove(&key) {
         c.logout().await;
     }

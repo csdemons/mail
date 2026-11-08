@@ -86,6 +86,7 @@ fn main() {
         .manage(commands::AppState::default())
         .setup(|app| {
             let handle = app.handle();
+            host::create_main_window(&handle)?;
             host::enable_spellcheck(&handle);
             commands::setup_desktop(&handle);
             Ok(())

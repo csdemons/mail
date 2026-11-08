@@ -29,7 +29,8 @@ pub fn normalize_base(raw: &str) -> Result<Url> {
     let raw = raw.trim();
     let with_scheme = if raw.contains("://") { raw.to_string() } else { format!("https://{raw}") };
     let mut url = Url::parse(&with_scheme).map_err(|_| AppError::Other(format!("Некорректный адрес Nextcloud: {raw}")))?;
-    if url.scheme() != "https" && url.host_str() != Some("localhost") {
+    // http — только для отладочной сборки на этом компьютере (автотесты); в релизе только HTTPS.
+    if url.scheme() != "https" && !(cfg!(debug_assertions) && url.host_str() == Some("localhost")) {
         return Err(AppError::Other("Nextcloud подключается только по HTTPS".into()));
     }
     if !url.path().ends_with('/') {

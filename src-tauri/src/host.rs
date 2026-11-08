@@ -209,6 +209,35 @@ pub fn open_file(app: &AppHandle, path: &std::path::Path) -> Result<()> {
         .map_err(|e| AppError::Other(format!("Не удалось открыть файл: {e}")))
 }
 
+/// Главное окно — из настроек `tauri.conf.json` (там `create: false`), но с теми же
+/// ограничениями переходов, что у окон писем.
+pub fn create_main_window(app: &AppHandle) -> Result<()> {
+    let config = app.config().app.windows.iter().find(|w| w.label == "main").cloned().ok_or_else(|| AppError::Other("Нет настроек главного окна".into()))?;
+    tauri::WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|e| AppError::Other(e.to_string()))?
+        .on_navigation(guard_navigation)
+        .on_new_window(|u, _| deny_new_window(&u))
+        .build()
+        .map_err(|e| AppError::Other(format!("Не удалось открыть окно: {e}")))?;
+    Ok(())
+}
+
+/// Окно программы не уходит на чужие страницы (у него нет адресной строки — удобная сцена
+/// для поддельной формы входа). Ссылки открываются только обработчиками интерфейса — с
+/// проверкой домена, — поэтому здесь переход просто не выполняется.
+fn guard_navigation(u: &url::Url) -> bool {
+    let ok = crate::commands::app_url_allowed(u);
+    if !ok {
+        log::warn!("navigation blocked: {}", u.scheme());
+    }
+    ok
+}
+
+fn deny_new_window<R: tauri::Runtime>(u: &url::Url) -> tauri::webview::NewWindowResponse<R> {
+    log::warn!("new window blocked: {}", u.scheme());
+    tauri::webview::NewWindowResponse::Deny
+}
+
 /// Отдельное окно приложения (тот же интерфейс); `init` выполняется до загрузки страницы.
 pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Result<()> {
     if let Some(w) = app.get_webview_window(label) {
@@ -222,6 +251,8 @@ pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Res
         .min_inner_size(480.0, 400.0)
         .initialization_script(init)
         .disable_drag_drop_handler()
+        .on_navigation(guard_navigation)
+        .on_new_window(|u, _| deny_new_window(&u))
         .build()
         .map_err(|e| AppError::Other(format!("Не удалось открыть окно: {e}")))?;
     Ok(())
@@ -247,10 +278,12 @@ pub fn start_drag_out(app: &AppHandle, label: &str, paths: Vec<PathBuf>) -> Resu
 }
 
 /// Закрывает окна писем (при выходе из учётной записи).
-pub fn close_message_windows(app: &AppHandle) {
+/// Все окна, кроме главного: письма, редактор документов, звонки — в них данные и сеанс
+/// учётной записи. Закрываются при выходе, переключении, блокировке и отключении Nextcloud.
+pub fn close_account_windows(app: &AppHandle) {
     for (label, w) in app.webview_windows() {
-        if label.starts_with("msg-") {
-            let _ = w.close();
+        if label != "main" {
+            let _ = w.destroy();
         }
     }
 }
@@ -290,7 +323,7 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) -> Result<()> {
 /// эта страница недоступна: окна `doc-*` не входят в capabilities. Переходы на
 /// чужие сайты не выполняются в этом окне (у него нет адресной строки — удобная
 /// сцена для поддельной формы входа): такие ссылки открываются в браузере.
-pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url::Url) -> Result<()> {
+pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url::Url, profile: &std::path::Path) -> Result<()> {
     if let Some(w) = app.get_webview_window(label) {
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -303,6 +336,10 @@ pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url:
         .title(title)
         .inner_size(1280.0, 860.0)
         .min_inner_size(640.0, 480.0)
+        // Куки и хранилище страниц Nextcloud — в своём каталоге учётной записи (удаляется при
+        // выходе), а не в общем профиле программы. В macOS отдельного каталога нет — без сохранения.
+        .data_directory(profile.to_path_buf())
+        .incognito(cfg!(target_os = "macos"))
         .on_navigation(move |u| {
             if crate::nextcloud::editor_url_allowed(&nav_base, u) {
                 return true;

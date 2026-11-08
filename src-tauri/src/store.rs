@@ -107,6 +107,11 @@ fn hash(s: &str) -> String {
     Sha256::digest(s.as_bytes()).iter().take(10).map(|b| format!("{b:02x}")).collect()
 }
 
+/// Короткий хэш учётной записи для имён каталогов (без адреса в открытом виде).
+pub fn account_hash(account: &str) -> String {
+    hash(account)
+}
+
 /// Каталог хранилища учётной записи.
 pub fn account_dir(root: &Path, account: &str) -> PathBuf {
     root.join("mailstore").join(hash(account))

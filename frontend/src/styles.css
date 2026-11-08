@@ -16,11 +16,11 @@
 html.theme-dark { color-scheme: dark; }
 html.theme-dark body { background: #151a23; color: #e6ebf3; }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 360px; min-height: 100vh; }
+body { margin: 0; min-width: 360px; min-height: calc(100vh / var(--css-zoom, 1)); }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid #75a7ff; outline-offset: 2px; }
-.app-shell { height: 100vh; min-height: 600px; display: flex; flex-direction: column; background: #fff; color: #202939; overflow: hidden; --line: #e8edf4; --muted: #778397; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed; }
+.app-shell { height: calc(100vh / var(--css-zoom, 1)); min-height: 0; display: flex; flex-direction: column; background: #fff; color: #202939; overflow: hidden; --line: #e8edf4; --muted: #778397; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed; }
 .theme-dark { background: #151a23; color: #e6ebf3; --line: #30394a; --muted: #9aa7ba; --panel: #1c2330; --surface: #202735; --hover: #2b3547; --blue: #5794ff; }
 .topbar { height: 58px; flex: 0 0 58px; border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 18px; gap: 24px; position: relative; z-index: 5; background: var(--surface); }
 .brand { width: 205px; flex: 0 0 205px; display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--blue); font-size: 16px; }
@@ -143,7 +143,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .toast { position: fixed; right: 20px; bottom: 20px; z-index: 50; display: flex; align-items: center; gap: 15px; max-width: min(500px, calc(100vw - 40px)); padding: 13px 15px; border-radius: 10px; background: #172235; color: #fff; box-shadow: 0 10px 35px #0002; font-size: 12px; }
 .toast button { border: 0; color: #fff; background: transparent; padding: 2px; }
 .modal-backdrop { position: fixed; inset: 0; background: #0c15266b; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 20px; }
-.compose-modal, .settings-modal { width: min(620px, 100%); max-height: min(800px, 92vh); overflow-y: auto; display: flex; flex-direction: column; background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 24px 80px #0003; padding: 18px; }
+.compose-modal, .settings-modal { width: min(620px, 100%); max-height: min(800px, calc(92vh / var(--css-zoom, 1))); overflow-y: auto; display: flex; flex-direction: column; background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 24px 80px #0003; padding: 18px; }
 .compose-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
 .compose-header > div { display: flex; flex-direction: column; gap: 5px; }
 .compose-header strong { font-size: 15px; }
@@ -215,8 +215,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 }
 
 /* --- RRCKI Mail desktop --- */
-.splash { height: 100vh; display: flex; align-items: center; justify-content: center; gap: 12px; color: #778397; }
-.login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(160deg, #eef3fb, #f8fafc); }
+.splash { height: calc(100vh / var(--css-zoom, 1)); display: flex; align-items: center; justify-content: center; gap: 12px; color: #778397; }
+.login-screen { min-height: calc(100vh / var(--css-zoom, 1)); display: grid; place-items: center; padding: 24px; background: linear-gradient(160deg, #eef3fb, #f8fafc); }
 .login-card { width: min(420px, 100%); display: flex; flex-direction: column; gap: 14px; background: #fff; border: 1px solid #e8edf4; border-radius: 16px; padding: 28px; box-shadow: 0 24px 60px #1d3a6b14; }
 .login-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: #2474ed; font-size: 16px; }
 .login-card h1 { margin: 6px 0 0; font-size: 20px; }
@@ -431,7 +431,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .rt-btn.active { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); }
 .rt-sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
 .rt-a { font-weight: 700; font-size: 15px; text-decoration: underline; text-decoration-color: #d0021b; text-decoration-thickness: 3px; }
-.rt-content { resize: none; flex: 1; min-height: 220px; max-height: 50vh; overflow: auto; font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4; padding: 12px 2px; cursor: text; }
+.rt-content { resize: none; flex: 1; min-height: 220px; max-height: calc(50vh / var(--css-zoom, 1)); overflow: auto; font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.4; padding: 12px 2px; cursor: text; }
 .rt-content:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
 .rt-content blockquote { margin: 6px 0 6px 2px; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
 .rt-content a { color: var(--blue); }
@@ -667,7 +667,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .confirm-modal p { margin: 0; color: var(--muted, #667085); }
 .folder-picker { width: min(460px, 100%); gap: 10px; }
 .folder-picker .search-box { width: 100%; }
-.folder-picker-list { overflow-y: auto; max-height: 55vh; display: flex; flex-direction: column; }
+.folder-picker-list { overflow-y: auto; max-height: calc(55vh / var(--css-zoom, 1)); display: flex; flex-direction: column; }
 .folder-picker-list .folder-item:disabled { opacity: .45; cursor: default; }
 
 /* Фильтры почты */
@@ -705,7 +705,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .theme-dark .message-meta .important-mark { color: #ffa040; }
 .reader-toolbar { flex-wrap: wrap; row-gap: 4px; }
 .reader-toolbar .icon-button:disabled { opacity: .4; }
-.message-window { display: flex; flex-direction: column; height: 100vh; }
+.message-window { display: flex; flex-direction: column; height: calc(100vh / var(--css-zoom, 1)); }
 .message-window-toolbar { flex: none; gap: 6px; }
 .message-window-toolbar .secondary-button { padding: 7px 11px; }
 .message-window-content { flex: 1; overflow-y: auto; max-width: 980px; width: 100%; margin: 0 auto; }
@@ -955,7 +955,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .account-pick-text b, .account-pick-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-pick-text small, .account-current { color: var(--muted); font-size: 11px; }
 .status-dot.idle { background: var(--muted); }
-.add-account .login-card { max-height: 92vh; overflow: auto; }
+.add-account .login-card { max-height: calc(92vh / var(--css-zoom, 1)); overflow: auto; }
 .search-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px 8px; font-size: 12px; }
 .search-scope { display: inline-flex; gap: 4px; }
 .search-saved { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
@@ -1098,7 +1098,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .ics-calendar { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .ics-calendar select { flex: 1; border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; background: var(--surface); color: inherit; }
 .ics-all { display: flex; align-items: center; gap: 12px; font-size: 12px; }
-.ics-events { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 9px; }
+.ics-events { list-style: none; margin: 0; padding: 0; max-height: calc(46vh / var(--css-zoom, 1)); overflow-y: auto; border: 1px solid var(--line); border-radius: 9px; }
 .ics-events li + li { border-top: 1px solid var(--line); }
 .ics-events label { display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; cursor: pointer; }
 .ics-events input { margin-top: 3px; }
@@ -1122,7 +1122,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .login-diag { margin-top: 4px; }
 .login-diag .diag-text { height: 220px; }
 .login-diag-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); }
-.login-card { max-height: calc(100vh - 48px); overflow-y: auto; }
+.login-card { max-height: calc(100vh / var(--css-zoom, 1) - 48px); overflow-y: auto; }
 
 /* Чат: избранные беседы и отметки о прочтении */
 .room-favorite { color: #e2a400; flex: none; margin-left: 4px; }
@@ -1428,8 +1428,8 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 .global-search-open kbd, .global-search-keys kbd { font: 11px/1 inherit; padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); }
 .compose-top + .global-search-open { margin-left: 0; }
 @media (max-width: 1100px) { .global-search-open span, .global-search-open kbd { display: none; } .global-search-open { width: 36px; padding: 0; justify-content: center; } }
-.global-search-backdrop { align-items: flex-start; padding-top: 8vh; }
-.global-search { width: min(760px, 100%); max-height: 80vh; display: flex; flex-direction: column; background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 24px 80px #0004; overflow: hidden; }
+.global-search-backdrop { align-items: flex-start; padding-top: calc(8vh / var(--css-zoom, 1)); }
+.global-search { width: min(760px, 100%); max-height: calc(80vh / var(--css-zoom, 1)); display: flex; flex-direction: column; background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 24px 80px #0004; overflow: hidden; }
 .global-search-input { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); color: var(--muted); }
 .global-search-input input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: inherit; font-size: 16px; }
 .global-search-input input:focus-visible { outline: 0; }
@@ -1479,3 +1479,15 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 .deck-chain-item:hover { background: var(--hover); border-color: var(--blue); }
 .deck-chain-item svg { flex: none; color: var(--blue); }
 .timeline-card.done b { text-decoration: line-through; opacity: .7; }
+
+/* Длинные списки прокручиваются внутри своей колонки: папки (с общими ящиками и поисками),
+   панель разделов; шапка и подвал колонки папок остаются на месте. */
+.folder-sidebar { overflow-y: auto; }
+.folder-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -6px; padding: 0 6px 6px; }
+.folder-sidebar .sidebar-footer, .folder-sidebar .scheduled-link, .folder-sidebar .sidebar-heading { flex: none; }
+.module-rail { overflow-y: auto; scrollbar-width: none; }
+.module-rail::-webkit-scrollbar { display: none; }
+.primary-button.danger { background: #c0392b; border-color: #c0392b; }
+.primary-button.danger:hover { background: #a93226; }
+.macro-ask { width: min(520px, 100%); }
+.macro-ask p { margin: 4px 0 14px; line-height: 1.5; }

@@ -97,6 +97,31 @@ pub fn open_file(_app: &AppHandle, path: &std::path::Path) -> Result<()> {
     open::that_detached(path).map_err(|e| AppError::Other(format!("Не удалось открыть файл: {e}")))
 }
 
+/// Главное окно (в tauri.conf.json окон нет — создаётся здесь, с ограничением переходов).
+pub fn create_main_window(app: &AppHandle) -> Result<()> {
+    tauri::WindowBuilder::new(app, "main", tauri::WindowUrl::App("index.html".into()))
+        .title("Atom Workspace")
+        .inner_size(1400.0, 900.0)
+        .min_inner_size(960.0, 600.0)
+        .resizable(true)
+        .center()
+        .disable_file_drop_handler()
+        .on_navigation(guard_navigation)
+        .build()
+        .map_err(|e| AppError::Other(format!("Не удалось открыть окно: {e}")))?;
+    Ok(())
+}
+
+/// Окно программы не уходит на чужие страницы (см. `app_url_allowed`). Новых окон
+/// WebKitGTK без обработчика не открывает.
+fn guard_navigation(u: url::Url) -> bool {
+    let ok = crate::commands::app_url_allowed(&u);
+    if !ok {
+        log::warn!("navigation blocked: {}", u.scheme());
+    }
+    ok
+}
+
 pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Result<()> {
     if let Some(w) = app.get_window(label) {
         let _ = w.unminimize();
@@ -104,6 +129,7 @@ pub fn open_window(app: &AppHandle, label: &str, title: &str, init: &str) -> Res
         return Ok(());
     }
     tauri::WindowBuilder::new(app, label, tauri::WindowUrl::App("index.html".into()))
+        .on_navigation(guard_navigation)
         .title(title)
         .inner_size(920.0, 820.0)
         .min_inner_size(480.0, 400.0)
@@ -134,9 +160,11 @@ pub fn start_drag_out(app: &AppHandle, label: &str, paths: Vec<PathBuf>) -> Resu
 }
 
 /// Закрывает окна писем (при выходе из учётной записи).
-pub fn close_message_windows(app: &AppHandle) {
+/// Все окна, кроме главного: письма, редактор документов, звонки — в них данные и сеанс
+/// учётной записи. Закрываются при выходе, переключении, блокировке и отключении Nextcloud.
+pub fn close_account_windows(app: &AppHandle) {
     for (label, w) in app.windows() {
-        if label.starts_with("msg-") {
+        if label != "main" {
             let _ = w.close();
         }
     }
@@ -173,7 +201,7 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) -> Result<()> {
 
 /// Окно с внешней страницей (редактор документов Nextcloud), без доступа к IPC.
 /// Переходы на чужие сайты открываются в браузере, а не в этом окне.
-pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url::Url) -> Result<()> {
+pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url::Url, profile: &std::path::Path) -> Result<()> {
     if let Some(w) = app.get_window(label) {
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -184,6 +212,8 @@ pub fn open_external_window(app: &AppHandle, label: &str, title: &str, url: url:
         .title(title)
         .inner_size(1280.0, 860.0)
         .min_inner_size(640.0, 480.0)
+        // Куки страниц Nextcloud — в своём каталоге учётной записи (удаляется при выходе).
+        .data_directory(profile.to_path_buf())
         .on_navigation(move |u| {
             if crate::nextcloud::editor_url_allowed(&base, &u) {
                 return true;

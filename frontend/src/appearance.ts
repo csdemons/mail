@@ -36,9 +36,15 @@ const listeners = new Set<(a: Appearance) => void>()
 export function applyAppearance(a: Appearance = current) {
   const root = document.documentElement
   root.style.setProperty('--content-font', `${a.text}px`)
+  // Масштаб через CSS (движок не умеет, например Astra 1.7) увеличивает и 100vh — высоту окна
+  // делим обратно (--css-zoom), иначе низ окна со списками уходит за край без прокрутки.
+  const css = (on: boolean) => {
+    root.style.zoom = on ? String(a.zoom) : ''
+    root.style.setProperty('--css-zoom', on ? String(a.zoom) : '1')
+  }
   invoke<boolean>('set_zoom', { factor: a.zoom })
-    .then((native) => { root.style.zoom = native || a.zoom === 1 ? '' : String(a.zoom) })
-    .catch(() => { root.style.zoom = a.zoom === 1 ? '' : String(a.zoom) })
+    .then((native) => css(!native && a.zoom !== 1))
+    .catch(() => css(a.zoom !== 1))
 }
 
 export function getAppearance(): Appearance {

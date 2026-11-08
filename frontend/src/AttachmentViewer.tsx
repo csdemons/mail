@@ -26,7 +26,12 @@ export function previewKind(a: Pick<AttachmentInfo, 'name' | 'contentType'>): Pr
 }
 
 /** Что можно открыть программой компьютера прямо из письма (тот же список, что в программе — dragout::openable). */
-const OPENABLE_EXT = /\.(docx?|docm|dotx?|rtf|odt|ott|xlsx?|xlsm|xltx?|csv|ods|ots|pptx?|pptm|ppsx?|odp|otp|pdf|djvu|txt|log|md|xml|json|png|jpe?g|gif|bmp|tiff?|webp|svg|heic|vsdx?|odg|mpp|zip|7z|rar|eml|msg|ics|vcf|mp3|mp4|wav|avi|mkv|mov)$/i
+const OPENABLE_EXT = /\.(docx?|docm|dotx?|rtf|odt|ott|xlsx?|xlsm|xltx?|csv|ods|ots|pptx?|pptm|ppsx?|odp|otp|pdf|djvu|txt|log|md|xml|json|png|jpe?g|gif|bmp|tiff?|webp|heic|vsdx?|odg|mpp|eml|msg|ics|vcf|mp3|mp4|wav|avi|mkv|mov)$/i
+/** Документы с макросами — только после подтверждения (dragout::has_macros). */
+const MACRO_EXT = /\.(docm|xlsm|pptm)$/i
+export function hasMacros(name: string): boolean {
+  return MACRO_EXT.test(name.trim().replace(/[. ]+$/, ''))
+}
 
 export function canOpenLocally(name: string): boolean {
   const n = name.trim().replace(/[. ]+$/, '')
@@ -130,11 +135,13 @@ export function AttachmentList({ folder, uid, attachments, onSave, onCloud, clou
   const [importing, setImporting] = useState<AttachmentInfo | null>(null)
   const previewable = attachments.filter((a) => previewKind(a))
   const opening = useRef(new Set<number>())
-  function openLocally(a: AttachmentInfo) {
+  const [macroAsk, setMacroAsk] = useState<AttachmentInfo | null>(null)
+  function openLocally(a: AttachmentInfo, allowMacros = false) {
+    if (hasMacros(a.name) && !allowMacros) { setMacroAsk(a); return }
     if (opening.current.has(a.index)) return
     opening.current.add(a.index)
     onNotice?.(`Открываю «${a.name}» в программе компьютера…`)
-    api.attachmentOpen(folder, uid, a.index)
+    api.attachmentOpen(folder, uid, a.index, allowMacros)
       .then(() => onNotice?.(`«${a.name}» открыт в программе компьютера (это копия — чтобы сохранить изменения, используйте «Сохранить как»)`))
       .catch((err) => onNotice?.(`Не удалось открыть «${a.name}»: ${errorText(err)}`))
       .finally(() => setTimeout(() => opening.current.delete(a.index), 1500))
@@ -172,6 +179,21 @@ export function AttachmentList({ folder, uid, attachments, onSave, onCloud, clou
         })}
       </div>
       {importing && onNotice && <CalendarImportDialog folder={folder} uid={uid} attachment={importing} onClose={() => setImporting(null)} onNotice={onNotice} />}
+      {macroAsk && (
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setMacroAsk(null) }}>
+          <div className="settings-modal macro-ask" role="alertdialog" aria-label="Документ с макросами">
+            <div className="compose-header"><div><strong>Документ с макросами</strong><small>{macroAsk.name}</small></div></div>
+            <p>В файле могут быть макросы — программы, которые выполнятся на вашем компьютере. Через такие документы часто распространяют вирусы.
+              Открывайте его, только если ждали этот файл и доверяете отправителю; не разрешайте макросы, если программа спросит.</p>
+            <div className="settings-actions">
+              <div className="reader-toolbar-spacer" />
+              <button className="text-button" onClick={() => setMacroAsk(null)}>Отмена</button>
+              <button className="text-button" onClick={() => { const a = macroAsk; setMacroAsk(null); onSave(a.index) }}>Сохранить как…</button>
+              <button className="primary-button danger" onClick={() => { const a = macroAsk; setMacroAsk(null); openLocally(a, true) }}>Всё равно открыть</button>
+            </div>
+          </div>
+        </div>
+      )}
       {open !== null && (
         <AttachmentViewer
           folder={folder}

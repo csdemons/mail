@@ -60,6 +60,7 @@ pub fn run() {
         .manage(commands::AppState::default())
         .setup(|app| {
             let handle = app.handle().clone();
+            host::create_main_window(&handle)?;
             host::enable_spellcheck(&handle);
             commands::setup_desktop(&handle);
             Ok(())

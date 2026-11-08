@@ -55,11 +55,22 @@ fn stage_in(prefix: &str, name: &str, data: &[u8]) -> crate::error::Result<PathB
 /// Файлы, которые можно открыть программой компьютера прямо из письма: документы,
 /// таблицы, презентации, PDF, картинки, текст, архивы. Исполняемые файлы, скрипты,
 /// ярлыки и всё неизвестное так не открываются — только «Сохранить».
+/// Без `svg` (открывается браузером как локальная страница — со скриптами) и архивов
+/// (внутри могут быть программы и ярлыки): их — только «Сохранить как».
 const OPENABLE: &[&str] = &[
     "doc", "docx", "docm", "dot", "dotx", "rtf", "odt", "ott", "xls", "xlsx", "xlsm", "xlt", "xltx", "csv", "ods", "ots", "ppt", "pptx", "pptm", "pps", "ppsx", "odp", "otp",
-    "pdf", "djvu", "txt", "log", "md", "xml", "json", "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "svg", "heic", "vsd", "vsdx", "odg", "mpp", "zip", "7z", "rar",
+    "pdf", "djvu", "txt", "log", "md", "xml", "json", "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "heic", "vsd", "vsdx", "odg", "mpp",
     "eml", "msg", "ics", "vcf", "mp3", "mp4", "wav", "avi", "mkv", "mov",
 ];
+
+/// Документы с макросами: открываются только после явного подтверждения (в Linux и Astra
+/// нет пометки «файл из интернета», которая в Windows включает защищённый просмотр Office).
+const MACRO: &[&str] = &["docm", "xlsm", "pptm"];
+
+pub fn has_macros(name: &str) -> bool {
+    let n = name.trim().trim_end_matches(['.', ' ']).to_ascii_lowercase();
+    n.rsplit_once('.').is_some_and(|(_, ext)| MACRO.contains(&ext))
+}
 
 pub fn openable(name: &str) -> bool {
     let n = name.trim().trim_end_matches(['.', ' ']).to_ascii_lowercase();
@@ -133,8 +144,19 @@ mod tests {
         for ok in ["Смета.xlsx", "Отчёт.DOCX", "план.pdf", "фото.jpg", "a.b.odt"] {
             assert!(openable(ok), "{ok}");
         }
-        for bad in ["setup.exe", "отчёт.docx.exe", "run.bat", "x.ps1", "x.js", "x.vbs", "x.lnk", "x.desktop", "x.sh", "x.jar", "x.scr", "x.hta", "x.msi", "README", ".docx"] {
+        for bad in ["setup.exe", "отчёт.docx.exe", "run.bat", "x.ps1", "x.js", "x.vbs", "x.lnk", "x.desktop", "x.sh", "x.jar", "x.scr", "x.hta", "x.msi", "README", ".docx",
+                    "схема.svg", "архив.zip", "a.7z", "a.RAR"] {
             assert!(!openable(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn macro_documents_are_marked() {
+        for m in ["Расчёт.xlsm", "шаблон.DOCM", "доклад.pptm "] {
+            assert!(openable(m) && has_macros(m), "{m}");
+        }
+        for plain in ["Расчёт.xlsx", "письмо.docx", "xlsm", "a.xlsm.pdf"] {
+            assert!(!has_macros(plain), "{plain}");
         }
     }
 }

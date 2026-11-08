@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "RRCKI Mail",
-    "version": "0.37.0"
+    "version": "0.38.0"
   },
   "tauri": {
     "allowlist": {
@@ -33,18 +33,6 @@
     "security": {
       "csp": "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     },
-    "windows": [
-      {
-        "label": "main",
-        "title": "Atom Workspace",
-        "width": 1400,
-        "height": 900,
-        "minWidth": 960,
-        "minHeight": 600,
-        "resizable": true,
-        "center": true,
-        "fileDropEnabled": false
-      }
-    ]
+    "windows": []
   }
 }

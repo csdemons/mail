@@ -122,6 +122,32 @@ try:
     # Отмена отправки проверяется отдельно (14d); в остальных проверках письма уходят сразу.
     d.execute_script("localStorage.setItem('rrcki-mail.send-prefs', JSON.stringify({undoSecs: 0}))")
     time.sleep(1)
+    # Длинные списки прокручиваются в своей колонке и не уходят за край низкого окна (масштаб, ноутбук).
+    d.set_window_size(1280, 600); time.sleep(1)
+    # Масштаб 150% — так, как его делает Astra 1.7 (CSS zoom): высота окна делится обратно.
+    d.execute_script("document.documentElement.style.zoom = '1.5'; document.documentElement.style.setProperty('--css-zoom', '1.5')"); time.sleep(1)
+    geo = d.execute_script('''
+      const fl = document.querySelector('.folder-list'), ml = document.querySelector('.message-list');
+      const seen = (el) => { const r = el.getBoundingClientRect(); const h = document.elementFromPoint(r.left + r.width / 2, r.bottom - 3); return !!h && el.contains(h) };
+      const before = fl.scrollTop; fl.scrollTop = 10000; const moved = fl.scrollTop > before;
+      const r = (el) => Math.round(el.getBoundingClientRect().bottom);
+      return { vh: innerHeight, shell: r(document.querySelector('.app-shell')), side: r(document.querySelector('.folder-sidebar')),
+               list: r(ml), flOverflow: getComputedStyle(fl).overflowY, flScroll: fl.scrollHeight > fl.clientHeight, moved,
+               last: r([...fl.querySelectorAll('.folder-item')].pop()) <= r(fl) + 1, mlScroll: ml.scrollHeight > ml.clientHeight,
+               footer: seen(document.querySelector('.sidebar-footer')), status: seen(document.querySelector('.status-bar') || document.querySelector('.sidebar-footer')),
+               listEnd: seen(ml) };''')
+    assert geo['footer'] and geo['status'] and geo['listEnd'], geo
+    assert geo['flOverflow'] == 'auto' and geo['flScroll'] and geo['moved'] and geo['last'] and geo['mlScroll'], geo
+    d.execute_script("document.querySelector('.folder-list').scrollTop = 0; document.documentElement.style.zoom = ''; document.documentElement.style.setProperty('--css-zoom', '1')")
+    d.set_window_size(1400, 900); time.sleep(1)
+    ok('long folder and message lists scroll inside their columns; nothing is cut off in a low window')
+    # Главное окно не уходит на чужие страницы (ссылка мимо обработчиков, data:, перенаправление).
+    for target in ['https://phish.example/login', 'data:text/html,<h1>phish</h1>', 'file:///etc/passwd']:
+        d.execute_script("location.href = arguments[0]", target); time.sleep(1.5)
+        assert d.find_elements(By.CSS_SELECTOR, '.message-row') and 'phish' not in d.current_url and not d.current_url.startswith(('data:', 'file:')), (target, d.current_url)
+    d.execute_script("window.open('https://phish.example/popup')"); time.sleep(1.5)
+    assert len(d.window_handles) == 1, d.window_handles
+    ok('main window stays on the app: foreign pages, data: and file: are not opened, no pop-up windows')
     rows = d.find_elements(By.CSS_SELECTOR, '.message-row')
     assert len(rows) == 50, len(rows); ok('first page: 50 rows')
 
@@ -1171,6 +1197,9 @@ try:
             t.invoke('get_profile').then((r) => done('ALLOWED ' + JSON.stringify(r))).catch((e) => done('denied: ' + e))''')
         print('   editor IPC:', res)
         assert not res.startswith('ALLOWED'), res
+        # Куки Nextcloud окна — в своём каталоге учётной записи, не в общем профиле программы.
+        prof = [p for p in glob.glob(os.environ['XDG_DATA_HOME'] + '/**/web/*', recursive=True) if os.path.isdir(p)]
+        assert prof and all(os.stat(p).st_mode & 0o077 == 0 for p in prof), prof
         # Переход на чужой сайт в окне редактора не выполняется (ссылка уходит в браузер).
         d.execute_script("location.href = 'https://phish.example/login'")
         time.sleep(1.5)
@@ -1373,6 +1402,11 @@ try:
     W(d, 20).until(lambda d: 'E2E window' in d.find_element(By.CSS_SELECTOR, '.message-window .reader-title-row').get_attribute('textContent'))
     d.find_element(By.CSS_SELECTOR, '.message-window button[aria-label="Крупнее"]').click()
     assert d.execute_script("return getComputedStyle(document.querySelector('.message-window .message-body')).fontSize") == '16px'
+    # Окно письма не уходит на чужой сайт и не открывает новых окон.
+    d.execute_script("location.href = 'https://phish.example/login'"); time.sleep(1.5)
+    assert 'phish' not in d.current_url and d.find_elements(By.CSS_SELECTOR, '.message-window'), d.current_url
+    d.execute_script("window.open('https://phish.example/popup')"); time.sleep(1.5)
+    assert len(d.window_handles) == 2, d.window_handles
     d.save_screenshot(f'{OUT}/21-message-window.png')
     d.find_element(By.CSS_SELECTOR, '.message-window button[aria-label="Флажок"]').click()
     W(d, 10).until(lambda d: '\\Flagged' in (flags_of('INBOX', 'E2E window') or ''))
@@ -3060,7 +3094,11 @@ try:
     assert len(inv('totp_setup_confirm', {'code': code_now(setup['secret'])})['ok']) == 8
     assert 'ok' in inv('account_switch', {'key': 'test@corp.test@localhost'})
     assert inv('nc_status')['ok']['connected'], 'precondition: Nextcloud of A connected'
+    # Окно документа A открыто — при переходе к B оно закрывается вместе с сеансом A.
+    assert 'ok' in inv('nc_edit', {'path': '/Документы/План.docx', 'mime': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'})
+    W(d, 15).until(lambda d: len(d.window_handles) == 2)
     locked = inv('account_switch', {'key': 'second@corp.test@localhost'})['ok']
+    W(d, 15).until(lambda d: len(d.window_handles) == 1)
     assert locked['account']['locked'] and locked['account']['username'] == 'second@corp.test', locked
     st_nc = inv('nc_status')
     assert 'err' in st_nc or not st_nc['ok']['connected'], ('Nextcloud of A still in memory while B is locked', st_nc)
@@ -3286,6 +3324,9 @@ try:
     cfg = [json.load(open(f)) for f in glob.glob(os.environ['XDG_CONFIG_HOME'] + '/*/settings.json')]
     assert cfg and all(not c.get('nextcloudLogin') for c in cfg), cfg
     ok('logout also revokes and forgets the Nextcloud app password')
+    web_left = lambda: [p for p in glob.glob(os.environ['XDG_DATA_HOME'] + '/**/web/*', recursive=True) if os.path.isdir(p) and not os.path.exists(p + '.forget')]
+    assert not web_left(), web_left()
+    ok('logout removes the Nextcloud cookies of document and call windows')
 finally:
     d.quit()
 
@@ -3293,6 +3334,8 @@ finally:
 d = session()
 try:
     wait(d, '.login-card', 30)
+    # занятый при выходе профиль окон Nextcloud удаляется при следующем запуске
+    assert not [p for p in glob.glob(os.environ['XDG_DATA_HOME'] + '/**/web/*', recursive=True)], glob.glob(os.environ['XDG_DATA_HOME'] + '/**/web/*', recursive=True)
     assert d.find_element(By.CSS_SELECTOR, 'input[autocomplete=username]').get_attribute('value') == 'test@corp.test'
     ok('after logout: login screen, username prefilled, password not remembered')
 finally:

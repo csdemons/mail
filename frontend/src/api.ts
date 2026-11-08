@@ -97,7 +97,7 @@ export const api = {
   forwardAttachments: (folder: string, uid: number) => invoke<PickedFile[]>('forward_attachments', { folder, uid }),
   attachmentDragOut: (folder: string, uid: number, index: number) => invoke<void>('attachment_drag_out', { folder, uid, index }),
   /** Открыть вложение программой компьютера (копия во временном каталоге); возвращает путь копии. */
-  attachmentOpen: (folder: string, uid: number, index: number) => invoke<string>('attachment_open', { folder, uid, index }),
+  attachmentOpen: (folder: string, uid: number, index: number, allowMacros = false) => invoke<string>('attachment_open', { folder, uid, index, allowMacros }),
   calendarFilePreview: (folder: string, uid: number, index: number) => invoke<CalendarFile>('calendar_file_preview', { folder, uid, index }),
   calendarFileImport: (folder: string, uid: number, index: number, calendarUrl: string, uids: string[]) =>
     invoke<CalendarImport>('calendar_file_import', { folder, uid, index, calendarUrl, uids }),
