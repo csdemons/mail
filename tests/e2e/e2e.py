@@ -680,9 +680,14 @@ try:
     ok('appearance: zoom with Ctrl +/0 and in settings, chat/mail text size')
 
     # Группы досок (по проекту): вручную через меню правой кнопки; запоминается.
+    d.execute_script("""window.__ev = []; const log = (k) => (e) => window.__ev.push(k + ':' + (e.target && (e.target.className || e.target.nodeName || 'window')).toString().slice(0, 60) + '@' + Math.round(performance.now()));
+      document.addEventListener('scroll', log('scroll'), true); window.addEventListener('blur', log('blur')); window.addEventListener('resize', log('resize')); document.addEventListener('mousedown', log('down'), true)""")
     def dctx(el):
-        d.execute_script("const r = arguments[0].getBoundingClientRect(); arguments[0].dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 8}))", el)
-        return wait(d, '.ctx-menu')
+        d.execute_script("window.__ev.push('open@' + Math.round(performance.now())); const r = arguments[0].getBoundingClientRect(); arguments[0].dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 8}))", el)
+        try:
+            return wait(d, '.ctx-menu')
+        finally:
+            print('   EVENTS:', d.execute_script('return window.__ev.slice(-12)'))
     def dpick(label):
         [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.strip() == label][0].click()
         W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.ctx-menu'))
