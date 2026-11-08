@@ -105,7 +105,16 @@ jobs:
             echo "npm ci — попытка $i не удалась"; sleep 15
           done
           exit 1
-      - run: npx tauri build --bundles ${{ matrix.bundles }}
+      - name: tauri build (с повтором при сбое загрузки инструментов)
+        shell: bash
+        # Сборщик скачивает AppRun, linuxdeploy, NSIS, WiX с GitHub Releases; при сбоях
+        # GitHub (504) повторяем — скомпилированное остаётся, повтор только упаковывает.
+        run: |
+          for i in 1 2 3; do
+            npx tauri build --bundles ${{ matrix.bundles }} && exit 0
+            echo "tauri build — попытка $i не удалась, повтор через $((i * 60)) с"; sleep $((i * 60))
+          done
+          exit 1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: rrcki-mail-${{ matrix.name }}
