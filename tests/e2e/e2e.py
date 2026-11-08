@@ -51,7 +51,7 @@ def reader_more(d, label):
 
 def close_composer(d):
     # Закрыть окно письма; если в нём что-то набрано — оно спросит про черновик: удалить.
-    close_composer(d)
+    d.find_element(By.CSS_SELECTOR, '.compose-modal .compose-header button[aria-label="Закрыть"]').click()
     time.sleep(0.4)
     for ask in d.find_elements(By.CSS_SELECTOR, '[role=alertdialog][aria-label="Сохранить черновик?"]'):
         [b for b in ask.find_elements(By.TAG_NAME, 'button') if 'Удалить черновик' in b.text][0].click()
