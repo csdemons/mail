@@ -6,7 +6,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.options import ArgOptions
 from selenium.webdriver.common.keys import Keys
 
@@ -680,29 +680,34 @@ try:
     ok('appearance: zoom with Ctrl +/0 and in settings, chat/mail text size')
 
     # Группы досок (по проекту): вручную через меню правой кнопки; запоминается.
-    d.execute_script("""window.__ev = []; const log = (k) => (e) => window.__ev.push(k + ':' + (e.target && (e.target.className || e.target.nodeName || 'window')).toString().slice(0, 60) + '@' + Math.round(performance.now()));
-      document.addEventListener('scroll', log('scroll'), true); window.addEventListener('blur', log('blur')); window.addEventListener('resize', log('resize')); document.addEventListener('mousedown', log('down'), true)""")
-    def dctx(el):
-        d.execute_script("window.__ev.push('open@' + Math.round(performance.now())); const r = arguments[0].getBoundingClientRect(); arguments[0].dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 8}))", el)
-        try:
-            return wait(d, '.ctx-menu')
-        finally:
-            print('   EVENTS:', d.execute_script('return window.__ev.slice(-12)'))
-    def dpick(label):
-        [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.strip() == label][0].click()
-        W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.ctx-menu'))
     board_btn = lambda title: [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item') if title in b.get_attribute('textContent')][0]
+    def dmenu(title, label):
+        # Список досок перерисовывается после загрузки и при группировке: элемент берём заново
+        # и повторяем, если меню не открылось или пункт устарел.
+        for attempt in range(4):
+            try:
+                el = board_btn(title)
+                d.execute_script("const r = arguments[0].getBoundingClientRect(); arguments[0].dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 8}))", el)
+                W(d, 3).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.strip() == label])
+                [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.strip() == label][0].click()
+                W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.ctx-menu'))
+                return
+            except (TimeoutException, StaleElementReferenceException, IndexError):
+                if attempt == 3:
+                    raise
+                d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+                time.sleep(0.5)
     d.execute_script("window.prompt = () => 'Проект Альфа'")
-    dctx(board_btn('Объявления')); dpick('В новую группу…')
+    dmenu('Объявления', 'В новую группу…')
     W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"]'))
-    dctx(board_btn('УИТ — задачи')); dpick('В группу «Проект Альфа»')
+    dmenu('УИТ — задачи', 'В группу «Проект Альфа»')
     W(d, 5).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"] .folder-item')) == 2)
     assert not [h for h in d.find_elements(By.CSS_SELECTOR, '.board-group-head.static')], 'no "Без группы" when every board is grouped'
     d.find_element(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"] .board-group-head').click()
     W(d, 5).until(lambda d: 'Проект Альфа' in (d.execute_script("return localStorage.getItem('atom.deck.folded')") or ''))
     d.find_element(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"] .board-group-head').click()
-    dctx(board_btn('Объявления')); dpick('Группа по названию (как было)')
-    dctx(board_btn('УИТ — задачи')); dpick('Группа по названию (как было)')
+    dmenu('Объявления', 'Группа по названию (как было)')
+    dmenu('УИТ — задачи', 'Группа по названию (как было)')
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.board-group'))
     ok('deck: boards grouped by project via right-click menu, groups fold, back to automatic grouping')
 

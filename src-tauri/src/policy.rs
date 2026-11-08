@@ -251,6 +251,11 @@ pub fn load() -> Policy {
             }
         }
     }
+    // E2E (отладочная сборка): тестовые домены коллег — свои, как internalDomains в политике.
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("RRCKI_E2E_INTERNAL_DOMAINS") {
+        p.internal_domains = v.split([',', ';', ' ']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+    }
     p
 }
 

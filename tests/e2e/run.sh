@@ -34,6 +34,7 @@ export RRCKI_E2E_NOTIFY_LOG="$E2E_HOME/notify.log"
 export RRCKI_E2E_VARIANT=test
 export RRCKI_E2E_AUTOCONFIG_URL=https://localhost:8443/autoconfig/mail/config-v1.1.xml  # автоопределение серверов
 export RRCKI_E2E_AUTODISCOVER_EWS=https://localhost:8445/autodiscover/autodiscover.xml  # Autodiscover Exchange
+export RRCKI_E2E_INTERNAL_DOMAINS=corp.test,inst.test  # адреса коллег — свои, как internalDomains в политике
 export RRCKI_E2E_EXCHANGE_HOSTS=localhost  # сервер из Autodiscover вне домена почты — разрешён, как exchangeHosts в политике
 # Импорт и резервная копия: файлы, которые «выберет» отладочная сборка (их создаёт и e2e.py).
 export E2E_HOME
