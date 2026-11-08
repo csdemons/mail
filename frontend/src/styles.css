@@ -1483,7 +1483,7 @@ input, textarea, select, [contenteditable="true"], .totp-secret, .settings-hint,
 /* Длинные списки прокручиваются внутри своей колонки: папки (с общими ящиками и поисками),
    панель разделов; шапка и подвал колонки папок остаются на месте. */
 .folder-sidebar { overflow-y: auto; }
-.folder-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -6px; padding: 0 6px 6px; }
+.folder-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -6px; padding: 0 6px 6px; }
 .folder-sidebar .sidebar-footer, .folder-sidebar .scheduled-link, .folder-sidebar .sidebar-heading { flex: none; }
 .module-rail { overflow-y: auto; scrollbar-width: none; }
 .module-rail::-webkit-scrollbar { display: none; }
