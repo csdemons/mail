@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { HardDrive, MonitorSmartphone, PenLine, Plus, RefreshCw, Send, Tag, Trash2, X } from 'lucide-react'
+import { HardDrive, Inbox, MonitorSmartphone, PenLine, Plus, RefreshCw, Send, Tag, Trash2, X } from 'lucide-react'
 import { nextCategoryKeyword } from './mailExtras'
 import { loadSendPrefs, saveSendPrefs, type SendPrefs } from './sending'
 
 import { api, errorText } from './api'
-import type { Category, DesktopPrefs, OfflineStatus, Signature, SignatureSet } from './types'
+import type { Category, DesktopPrefs, MailboxSet, OfflineStatus, Signature, SignatureSet } from './types'
 
 /**
  * Подписи: несколько (отделы, языки), у каждой — название. Подпись по умолчанию для новых
@@ -96,6 +96,64 @@ export function SignaturesSettings({ set, onSaved }: { set: SignatureSet | null;
 function size(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} КБ`
   return `${(bytes / 1024 / 1024).toFixed(bytes < 100 * 1024 * 1024 ? 1 : 0)} МБ`
+}
+
+/**
+ * Подключённые ящики Exchange (общие, делегированные). Ящики, к которым у сотрудника полный
+ * доступ, сервер сообщает сам (Autodiscover) — они подключаются, как в Outlook; остальные можно
+ * добавить по адресу.
+ */
+export function MailboxesSettings({ onChanged, onNotice }: { onChanged: () => void; onNotice: (text: string) => void }) {
+  const [set, setSet] = useState<MailboxSet | null>(null)
+  const [address, setAddress] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => { api.mailboxesGet().then(setSet).catch(() => undefined) }, [])
+  if (!set) return null
+
+  async function save(list: string[], done: string) {
+    setBusy(true); setError('')
+    try {
+      await api.mailboxesSave(list)
+      setSet(await api.mailboxesGet())
+      setAddress('')
+      onNotice(done)
+      onChanged()
+    } catch (e) { setError(errorText(e)) } finally { setBusy(false) }
+  }
+
+  const add = () => {
+    const a = address.trim().toLowerCase()
+    if (!a) return
+    void save([...set.manual, a], `Ящик ${a} подключён.`)
+  }
+
+  return (
+    <div className="settings-section mailboxes-settings">
+      <strong><Inbox size={15} /> Подключённые ящики</strong>
+      <span className="settings-hint">Общие и делегированные ящики Exchange показываются в списке папок в разделе «Подключённые ящики». Ящики, к которым у вас полный доступ, подключаются сами — как в Outlook; другой ящик можно добавить по адресу.</span>
+      {set.discovered.length > 0 && (
+        <ul className="mailbox-list" aria-label="Подключены автоматически">
+          {set.discovered.map((m) => <li key={m.address}><span>{m.name !== m.address ? <>{m.name} <small>{m.address}</small></> : m.address}</span><small>автоматически</small></li>)}
+        </ul>
+      )}
+      {set.manual.length > 0 && (
+        <ul className="mailbox-list" aria-label="Подключены вручную">
+          {set.manual.map((a) => (
+            <li key={a}><span>{a}</span>
+              <button className="icon-button soft" aria-label={`Отключить ящик ${a}`} title="Отключить" disabled={busy} onClick={() => void save(set.manual.filter((x) => x !== a), `Ящик ${a} отключён.`)}><X size={14} /></button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mailbox-add">
+        <input aria-label="Адрес подключаемого ящика" placeholder="office@организация.ru" value={address} disabled={busy}
+          onChange={(e) => setAddress(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }} />
+        <button className="secondary-button" disabled={busy || !address.trim()} onClick={add}><Plus size={15} /> Подключить</button>
+      </div>
+      {error && <span className="login-error" role="alert">{error}</span>}
+    </div>
+  )
 }
 
 /** Письма на компьютере: срок хранения, объём, очистка. */

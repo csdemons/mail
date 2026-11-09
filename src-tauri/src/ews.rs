@@ -136,6 +136,7 @@ fn save_map(key: &str, map: &Shared, force: bool) {
 /// Учётную запись удалили — соответствие номеров писем больше не нужно.
 pub fn forget(key: &str) {
     lock(registry()).remove(key);
+    lock(mailbox_registry()).remove(key);
     if let Some(p) = map_file(key) {
         let _ = std::fs::remove_file(p);
     }
@@ -691,25 +692,238 @@ fn segment(name: &str) -> String {
     name.replace('/', "\u{2215}")
 }
 
-impl EwsSession {
-    /// Список почтовых папок (дерево, как у IMAP).
-    pub async fn list_folders(&mut self) -> Result<Vec<Folder>> {
-        let ids: String = DISTINGUISHED.iter().map(|(id, _)| format!(r#"<t:DistinguishedFolderId Id="{id}"/>"#)).collect();
-        let text = self.call(&format!(r#"<m:GetFolder><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape></m:FolderShape><m:FolderIds>{ids}</m:FolderIds></m:GetFolder>"#), crate::netio::SMALL_LIMIT).await?;
-        let d = doc(&text)?;
-        let mut roles: HashMap<String, FolderRole> = HashMap::new();
-        for (r, (_, role)) in responses(&d)?.into_iter().zip(DISTINGUISHED.iter()) {
-            if response_error(r).is_none() {
-                if let Some(id) = descendants(r, "FolderId").next().and_then(|f| f.attribute("Id")) {
-                    roles.insert(id.to_string(), *role);
-                }
+// ---------------------------------------------------------------- подключённые ящики
+
+/// Корень подключённых ящиков в дереве папок — как `shared/<ящик>/…` у IMAP.
+const SHARED_ROOT: &str = "shared";
+
+/// Сколько ящиков подключаем самое большее (и найденных Autodiscover, и вручную).
+pub const MAX_MAILBOXES: usize = 30;
+
+/// Повторить Autodiscover, если в прошлый раз сервер не ответил.
+const DISCOVER_RETRY: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Default)]
+struct Mailboxes {
+    /// Свой адрес почты: для Autodiscover и чтобы не подключить свой ящик второй раз.
+    email: String,
+    /// Добавленные пользователем.
+    manual: Vec<String>,
+    /// Найденные Autodiscover (ящики с полным доступом — Outlook подключает их сам):
+    /// (адрес, имя). `None` — ещё не спрашивали.
+    discovered: Option<Vec<(String, String)>>,
+    discovered_at: Option<std::time::Instant>,
+    /// Ответ Autodiscover был (а не ошибка сети) — тогда не повторяем.
+    discovered_ok: bool,
+}
+
+fn mailbox_registry() -> &'static Mutex<HashMap<String, Mailboxes>> {
+    static R: OnceLock<Mutex<HashMap<String, Mailboxes>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Ящик учётной записи и подключённые вручную ящики (при входе и после изменения в настройках).
+pub fn set_mailboxes(key: &str, email: &str, manual: &[String]) {
+    let mut reg = lock(mailbox_registry());
+    let m = reg.entry(key.to_string()).or_default();
+    if !m.email.eq_ignore_ascii_case(email) {
+        m.discovered = None;
+        m.discovered_at = None;
+        m.discovered_ok = false;
+    }
+    m.email = email.trim().to_lowercase();
+    m.manual = manual.iter().map(|a| a.trim().to_lowercase()).filter(|a| valid_mailbox(a)).collect();
+}
+
+/// Найденные Autodiscover ящики — для настроек.
+pub fn discovered_mailboxes(key: &str) -> Vec<(String, String)> {
+    lock(mailbox_registry()).get(key).and_then(|m| m.discovered.clone()).unwrap_or_default()
+}
+
+/// Адрес ящика: имя@домен, без пробелов и угловых скобок.
+pub fn valid_mailbox(a: &str) -> bool {
+    let a = a.trim();
+    a.len() <= 254
+        && a.split_once('@').is_some_and(|(l, d)| !l.is_empty() && d.contains('.') && !d.starts_with('.') && !d.ends_with('.'))
+        && !a.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | '"' | ',' | ';' | '/' | '\\'))
+}
+
+/// Ящики из ответа Autodiscover (`AlternativeMailbox`): делегированные и общие
+/// (Delegate, TeamMailbox); архив (Archive) — это часть своего ящика, не подключаем.
+fn alternative_mailboxes(text: &str, own: &str) -> Vec<(String, String)> {
+    let Ok(d) = roxmltree::Document::parse(text) else { return Vec::new() };
+    let mut out: Vec<(String, String)> = Vec::new();
+    for n in d.descendants().filter(|n| n.is_element() && n.tag_name().name() == "AlternativeMailbox") {
+        let ty = text_of(n, "Type").unwrap_or_default();
+        if !matches!(ty.as_str(), "Delegate" | "TeamMailbox") {
+            continue;
+        }
+        let Some(smtp) = text_of(n, "SmtpAddress").or_else(|| text_of(n, "OwnerSmtpAddress")).map(|a| a.trim().to_lowercase()) else { continue };
+        if !valid_mailbox(&smtp) || smtp.eq_ignore_ascii_case(own) || out.iter().any(|(a, _)| *a == smtp) {
+            continue;
+        }
+        let name = text_of(n, "DisplayName").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| smtp.clone());
+        out.push((smtp, name));
+    }
+    out.truncate(MAX_MAILBOXES);
+    out
+}
+
+/// Адреса Autodiscover для домена почты (только https в самом домене).
+fn autodiscover_candidates(domain: &str) -> Vec<String> {
+    #[allow(unused_mut)]
+    let mut candidates = vec![format!("https://autodiscover.{domain}/autodiscover/autodiscover.xml"), format!("https://{domain}/autodiscover/autodiscover.xml")];
+    // E2E (отладочная сборка): тестовый сервер вместо адресов в домене почты.
+    #[cfg(debug_assertions)]
+    if let Ok(u) = std::env::var("RRCKI_E2E_AUTODISCOVER_EWS") {
+        candidates = vec![u];
+    }
+    candidates
+}
+
+fn autodiscover_request(email: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006"><Request><EMailAddress>{}</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema></Request></Autodiscover>"#,
+        xml_escape(email)
+    )
+}
+
+fn probe_session(url: Url, login: &str, password: &str) -> EwsSession {
+    EwsSession {
+        conn: None,
+        url,
+        login: login.to_string(),
+        password: password.to_string(),
+        key: String::new(),
+        auth: Auth::Unknown,
+        authed: false,
+        version: "Exchange2013_SP1",
+        folders: Vec::new(),
+        root: None,
+        map: Arc::new(Mutex::new(AccountMap::default())),
+    }
+}
+
+/// Ящики с полным доступом по Autodiscover; `None` — сервер Autodiscover не ответил.
+async fn discover_alternative(email: &str, login: &str, password: &str) -> Option<Vec<(String, String)>> {
+    let domain = email.rsplit_once('@').map(|(_, d)| d.trim().to_lowercase()).filter(|d| d.contains('.'))?;
+    let body = autodiscover_request(email);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    for c in autodiscover_candidates(&domain) {
+        let Ok(url) = Url::parse(&c) else { continue };
+        let mut s = probe_session(url, login, password);
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        if let Ok(Ok(text)) = tokio::time::timeout(left, s.post_raw(&body, crate::netio::SMALL_LIMIT)).await {
+            if ews_url_of(&text).is_some() || text.contains("AlternativeMailbox") {
+                return Some(alternative_mailboxes(&text, email));
             }
         }
-        let mut raw: Vec<(String, String, String, String, u32, u32, u32)> = Vec::new();
+    }
+    None
+}
+
+/// Строка FindFolder: (id, родитель, имя, класс, всего, непрочитанных, вложенных).
+type RawFolder = (String, String, String, String, u32, u32, u32);
+
+/// Ссылка на служебную папку — своего ящика или подключённого.
+fn distinguished(id: &str, mailbox: Option<&str>) -> String {
+    match mailbox {
+        Some(m) => format!(r#"<t:DistinguishedFolderId Id="{id}"><t:Mailbox><t:EmailAddress>{}</t:EmailAddress></t:Mailbox></t:DistinguishedFolderId>"#, xml_escape(m)),
+        None => format!(r#"<t:DistinguishedFolderId Id="{id}"/>"#),
+    }
+}
+
+const FOLDER_PROPS: &str = r#"<t:FieldURI FieldURI="folder:DisplayName"/><t:FieldURI FieldURI="folder:ParentFolderId"/><t:FieldURI FieldURI="folder:FolderClass"/><t:FieldURI FieldURI="folder:TotalCount"/><t:FieldURI FieldURI="folder:UnreadCount"/><t:FieldURI FieldURI="folder:ChildFolderCount"/><t:ExtendedFieldURI PropertyTag="0x10F4" PropertyType="Boolean"/>"#;
+
+/// Почтовая папка из ответа (скрытые и не почтовые — `None`).
+fn raw_folder(f: roxmltree::Node<'_, '_>) -> Option<RawFolder> {
+    let hidden = descendants(f, "ExtendedProperty").any(|e| text_of(e, "Value").as_deref() == Some("true"));
+    let class = text_of(f, "FolderClass").unwrap_or_default();
+    if hidden || !(class.is_empty() || class == "IPF.Note" || class.starts_with("IPF.Note.")) {
+        return None;
+    }
+    let id = child(f, "FolderId").and_then(|x| x.attribute("Id")).unwrap_or_default().to_string();
+    let parent = child(f, "ParentFolderId").and_then(|x| x.attribute("Id")).unwrap_or_default().to_string();
+    let num = |name: &str| text_of(f, name).and_then(|v| v.parse().ok()).unwrap_or(0);
+    Some((id, parent, text_of(f, "DisplayName").unwrap_or_default(), class, num("TotalCount"), num("UnreadCount"), num("ChildFolderCount")))
+}
+
+/// Пути папок от корня ящика (`prefix/…`); «Входящие» — INBOX.
+fn build_folders(raw: &[RawFolder], roles: &HashMap<String, FolderRole>, root: &str, prefix: Option<&str>) -> Vec<(Folder, EwsFolder)> {
+    let by_id: HashMap<&str, usize> = raw.iter().enumerate().map(|(i, r)| (r.0.as_str(), i)).collect();
+    let path_of = |i: usize| -> Option<String> {
+        let mut parts = Vec::new();
+        let mut cur = i;
+        for _ in 0..32 {
+            let r = &raw[cur];
+            parts.push(if roles.get(&r.0) == Some(&FolderRole::Inbox) { "INBOX".to_string() } else { segment(&r.2) });
+            if r.1 == root {
+                if let Some(p) = prefix {
+                    parts.push(p.to_string());
+                }
+                parts.reverse();
+                return Some(parts.join("/"));
+            }
+            cur = *by_id.get(r.1.as_str())?;
+        }
+        None
+    };
+    let base = prefix.map_or(0, |p| p.matches('/').count() + 1);
+    let mut out = Vec::new();
+    for (i, r) in raw.iter().enumerate() {
+        let Some(path) = path_of(i) else { continue };
+        let role = roles.get(&r.0).copied().unwrap_or(FolderRole::Other);
+        let id = utf7_imap::encode_utf7_imap(path.clone());
+        let depth = path.matches('/').count();
+        let parent = path.rsplit_once('/').map(|(p, _)| utf7_imap::encode_utf7_imap(p.to_string()));
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        out.push((
+            Folder {
+                id: id.clone(),
+                name: if role == FolderRole::Inbox { "INBOX".into() } else { name },
+                path: path.clone(),
+                parent,
+                depth,
+                role,
+                system: role != FolderRole::Other && depth == base,
+                selectable: true,
+                has_children: r.6 > 0,
+                total: r.4,
+                unseen: r.5,
+            },
+            EwsFolder { path: id, id: r.0.clone(), role },
+        ));
+    }
+    out
+}
+
+fn node_folder(path: &str, name: &str, depth: usize) -> Folder {
+    Folder {
+        id: utf7_imap::encode_utf7_imap(path.to_string()),
+        name: name.to_string(),
+        path: path.to_string(),
+        parent: path.rsplit_once('/').map(|(p, _)| utf7_imap::encode_utf7_imap(p.to_string())),
+        depth,
+        role: FolderRole::Other,
+        system: false,
+        selectable: false,
+        has_children: true,
+        total: 0,
+        unseen: 0,
+    }
+}
+
+impl EwsSession {
+    /// Все почтовые папки под корнем (FindFolder Deep, постранично).
+    async fn find_folders(&mut self, root: &str) -> Result<Vec<RawFolder>> {
+        let mut raw = Vec::new();
         let mut offset = 0;
         loop {
             let op = format!(
-                r#"<m:FindFolder Traversal="Deep"><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties><t:FieldURI FieldURI="folder:DisplayName"/><t:FieldURI FieldURI="folder:ParentFolderId"/><t:FieldURI FieldURI="folder:FolderClass"/><t:FieldURI FieldURI="folder:TotalCount"/><t:FieldURI FieldURI="folder:UnreadCount"/><t:FieldURI FieldURI="folder:ChildFolderCount"/><t:ExtendedFieldURI PropertyTag="0x10F4" PropertyType="Boolean"/></t:AdditionalProperties></m:FolderShape><m:IndexedPageFolderView MaxEntriesReturned="500" Offset="{offset}" BasePoint="Beginning"/><m:ParentFolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></m:ParentFolderIds></m:FindFolder>"#
+                r#"<m:FindFolder Traversal="Deep"><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties>{FOLDER_PROPS}</t:AdditionalProperties></m:FolderShape><m:IndexedPageFolderView MaxEntriesReturned="500" Offset="{offset}" BasePoint="Beginning"/><m:ParentFolderIds>{root}</m:ParentFolderIds></m:FindFolder>"#
             );
             let text = self.call(&op, crate::netio::API_LIMIT).await?;
             let d = doc(&text)?;
@@ -718,64 +932,107 @@ impl EwsSession {
                 return Err(e);
             }
             let folders: Vec<_> = d.descendants().filter(|n| n.is_element() && n.tag_name().name() == "Folder" && child(*n, "FolderId").is_some()).collect();
-            for f in &folders {
-                let hidden = descendants(*f, "ExtendedProperty").any(|e| text_of(e, "Value").as_deref() == Some("true"));
-                let class = text_of(*f, "FolderClass").unwrap_or_default();
-                if hidden || !(class.is_empty() || class == "IPF.Note" || class.starts_with("IPF.Note.")) {
-                    continue;
-                }
-                let id = child(*f, "FolderId").and_then(|x| x.attribute("Id")).unwrap_or_default().to_string();
-                let parent = child(*f, "ParentFolderId").and_then(|x| x.attribute("Id")).unwrap_or_default().to_string();
-                let num = |name: &str| text_of(*f, name).and_then(|v| v.parse().ok()).unwrap_or(0);
-                raw.push((id, parent, text_of(*f, "DisplayName").unwrap_or_default(), class, num("TotalCount"), num("UnreadCount"), num("ChildFolderCount")));
-            }
+            raw.extend(folders.iter().filter_map(|f| raw_folder(*f)));
             let last = descendants(d.root(), "RootFolder").next().and_then(|r| r.attribute("IncludesLastItemInRange")).is_none_or(|v| v == "true");
             offset += folders.len();
             if last || folders.is_empty() || offset > 20_000 {
                 break;
             }
         }
-        // Пути: от корня ящика; «Входящие» — INBOX.
-        let root = self.root.clone().unwrap_or_default();
-        let by_id: HashMap<&str, usize> = raw.iter().enumerate().map(|(i, r)| (r.0.as_str(), i)).collect();
-        let path_of = |i: usize| -> Option<String> {
-            let mut parts = Vec::new();
-            let mut cur = i;
-            for _ in 0..32 {
-                let r = &raw[cur];
-                parts.push(if roles.get(&r.0) == Some(&FolderRole::Inbox) { "INBOX".to_string() } else { segment(&r.2) });
-                if r.1 == root {
-                    parts.reverse();
-                    return Some(parts.join("/"));
-                }
-                cur = *by_id.get(r.1.as_str())?;
+        Ok(raw)
+    }
+
+    /// Корень ящика, служебные папки и (если они есть) сами эти папки — для подключённого
+    /// ящика, где FindFolder по всему ящику может быть запрещён.
+    async fn mailbox_roots(&mut self, mailbox: Option<&str>) -> Result<(String, HashMap<String, FolderRole>, Vec<RawFolder>)> {
+        let ids: String = std::iter::once(distinguished("msgfolderroot", mailbox)).chain(DISTINGUISHED.iter().map(|(id, _)| distinguished(id, mailbox))).collect();
+        let props = if mailbox.is_some() { format!("<t:AdditionalProperties>{FOLDER_PROPS}</t:AdditionalProperties>") } else { String::new() };
+        let text = self.call(&format!(r#"<m:GetFolder><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape>{props}</m:FolderShape><m:FolderIds>{ids}</m:FolderIds></m:GetFolder>"#), crate::netio::SMALL_LIMIT).await?;
+        let d = doc(&text)?;
+        let rs = responses(&d)?;
+        let mut it = rs.into_iter();
+        let root_resp = it.next().ok_or_else(|| AppError::Other("Сервер Exchange не ответил на запрос папок".into()))?;
+        let mut roles = HashMap::new();
+        let mut known: Vec<RawFolder> = Vec::new();
+        for (r, (_, role)) in it.zip(DISTINGUISHED.iter()) {
+            if response_error(r).is_some() {
+                continue;
             }
-            None
-        };
-        let mut out = Vec::new();
-        let mut cache = Vec::new();
-        for (i, r) in raw.iter().enumerate() {
-            let Some(path) = path_of(i) else { continue };
-            let role = roles.get(&r.0).copied().unwrap_or(FolderRole::Other);
-            let id = utf7_imap::encode_utf7_imap(path.clone());
-            let depth = path.matches('/').count();
-            let parent = path.rsplit_once('/').map(|(p, _)| utf7_imap::encode_utf7_imap(p.to_string()));
-            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-            out.push(Folder {
-                id: id.clone(),
-                name: if role == FolderRole::Inbox { "INBOX".into() } else { name },
-                path: path.clone(),
-                parent,
-                depth,
-                role,
-                system: role != FolderRole::Other && depth == 0,
-                selectable: true,
-                has_children: r.6 > 0,
-                total: r.4,
-                unseen: r.5,
-            });
-            cache.push(EwsFolder { path: id, id: r.0.clone(), role });
+            if let Some(f) = descendants(r, "Folder").next() {
+                if let Some(id) = child(f, "FolderId").and_then(|x| x.attribute("Id")) {
+                    roles.insert(id.to_string(), *role);
+                }
+                if mailbox.is_some() {
+                    known.extend(raw_folder(f));
+                }
+            } else if let Some(id) = descendants(r, "FolderId").next().and_then(|f| f.attribute("Id")) {
+                roles.insert(id.to_string(), *role);
+            }
         }
+        let root = match response_error(root_resp) {
+            None => descendants(root_resp, "FolderId").next().and_then(|f| f.attribute("Id")).unwrap_or_default().to_string(),
+            // Права только на отдельные папки (например, «Входящие») — корень ящика не виден,
+            // но его id — родитель этих папок.
+            Some(_) if mailbox.is_some() && known.iter().any(|k| !k.1.is_empty()) => known.iter().find(|k| !k.1.is_empty()).map(|k| k.1.clone()).unwrap_or_default(),
+            Some(e) => {
+                let code = text_of(root_resp, "ResponseCode").unwrap_or_default();
+                return Err(match (mailbox, code.as_str()) {
+                    (Some(m), "ErrorNonExistentMailbox" | "ErrorInvalidSmtpAddress" | "ErrorMailRecipientNotFound") => AppError::Other(format!("Ящика {m} нет на сервере Exchange")),
+                    (Some(m), "ErrorAccessDenied" | "ErrorFolderNotFound" | "ErrorItemNotFound") => AppError::Other(format!("Нет доступа к ящику {m} — попросите администратора дать вам права на него")),
+                    _ => e,
+                });
+            }
+        };
+        for k in known.iter_mut().filter(|k| k.1.is_empty()) {
+            k.1 = root.clone();
+        }
+        Ok((root, roles, known))
+    }
+
+    /// Есть ли доступ к ящику (перед тем как подключить его вручную).
+    pub async fn check_mailbox(&mut self, address: &str) -> Result<()> {
+        self.mailbox_roots(Some(address)).await.map(|_| ())
+    }
+
+    /// Подключённые ящики: найденные Autodiscover (как у Outlook) и добавленные вручную.
+    async fn mailbox_list(&mut self) -> Vec<(String, String)> {
+        let (email, manual, need) = {
+            let reg = lock(mailbox_registry());
+            match reg.get(&self.key) {
+                Some(m) => (
+                    m.email.clone(),
+                    m.manual.clone(),
+                    m.discovered.is_none() || (!m.discovered_ok && m.discovered_at.is_none_or(|t| t.elapsed() > DISCOVER_RETRY)),
+                ),
+                None => return Vec::new(),
+            }
+        };
+        if need && email.contains('@') {
+            let found = discover_alternative(&email, &self.login, &self.password).await;
+            let mut reg = lock(mailbox_registry());
+            if let Some(m) = reg.get_mut(&self.key) {
+                m.discovered_ok = found.is_some();
+                m.discovered = Some(found.unwrap_or_default());
+                m.discovered_at = Some(std::time::Instant::now());
+            }
+        }
+        let discovered = discovered_mailboxes(&self.key);
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (a, n) in discovered.into_iter().chain(manual.into_iter().map(|a| (a.clone(), a))) {
+            if !a.eq_ignore_ascii_case(&email) && !out.iter().any(|(x, _)| x.eq_ignore_ascii_case(&a)) {
+                out.push((a, n));
+            }
+        }
+        out.truncate(MAX_MAILBOXES);
+        out
+    }
+
+    /// Список почтовых папок (дерево, как у IMAP): свой ящик, затем подключённые — `shared/<адрес>/…`.
+    pub async fn list_folders(&mut self) -> Result<Vec<Folder>> {
+        let (_, roles, _) = self.mailbox_roots(None).await?;
+        let raw = self.find_folders(&distinguished("msgfolderroot", None)).await?;
+        let root = self.root.clone().unwrap_or_default();
+        let (mut out, mut cache): (Vec<Folder>, Vec<EwsFolder>) = build_folders(&raw, &roles, &root, None).into_iter().unzip();
         // Как у IMAP: служебные папки по порядку, вложенные — сразу под своей папкой.
         let rank = |r: FolderRole| match r {
             FolderRole::Inbox => 0,
@@ -786,12 +1043,51 @@ impl EwsSession {
             FolderRole::Trash => 5,
             FolderRole::Other => 6,
         };
-        let top_role: HashMap<String, FolderRole> = out.iter().filter(|f| f.depth == 0).map(|f| (f.path.clone(), f.role)).collect();
-        let key = |f: &Folder| {
-            let top = f.path.split('/').next().unwrap_or_default().to_string();
-            (rank(top_role.get(&top).copied().unwrap_or(FolderRole::Other)), f.path.to_lowercase())
+        let sort = |out: &mut Vec<Folder>, base: usize| {
+            let top_role: HashMap<String, FolderRole> = out.iter().filter(|f| f.depth == base).map(|f| (f.path.clone(), f.role)).collect();
+            out.sort_by_key(|f: &Folder| {
+                let top = f.path.split('/').take(base + 1).collect::<Vec<_>>().join("/");
+                (rank(top_role.get(&top).copied().unwrap_or(FolderRole::Other)), f.path.to_lowercase())
+            });
         };
-        out.sort_by_key(key);
+        sort(&mut out, 0);
+
+        let boxes = self.mailbox_list().await;
+        let mut shared: Vec<Folder> = Vec::new();
+        for (address, name) in boxes {
+            let prefix = format!("{SHARED_ROOT}/{}", segment(&address));
+            let (root, roles, known) = match self.mailbox_roots(Some(&address)).await {
+                Ok(r) => r,
+                Err(e) => {
+                    log::warn!("mailbox {address}: {e}");
+                    continue;
+                }
+            };
+            // Весь ящик (полный доступ) или хотя бы его служебные папки (доступ к отдельным папкам).
+            let raw = match self.find_folders(&format!(r#"<t:FolderId Id="{}"/>"#, xml_escape(&root))).await {
+                Ok(raw) if !raw.is_empty() => raw,
+                Ok(_) => known,
+                Err(e) => {
+                    log::info!("mailbox {address}: folder list unavailable ({e}), showing well-known folders");
+                    known
+                }
+            };
+            if raw.is_empty() {
+                continue;
+            }
+            let (mut folders, ews): (Vec<Folder>, Vec<EwsFolder>) = build_folders(&raw, &roles, &root, Some(&prefix)).into_iter().unzip();
+            if folders.is_empty() {
+                continue;
+            }
+            sort(&mut folders, 2);
+            shared.push(node_folder(&prefix, &name, 1));
+            shared.extend(folders);
+            cache.extend(ews);
+        }
+        if !shared.is_empty() {
+            out.push(node_folder(SHARED_ROOT, "Подключённые ящики", 0));
+            out.extend(shared);
+        }
         self.folders = cache;
         Ok(out)
     }
@@ -808,7 +1104,7 @@ impl EwsSession {
         if self.folders.is_empty() {
             self.list_folders().await?;
         }
-        Ok(self.folders.iter().find(|f| f.role == role).map(|f| f.path.clone()))
+        Ok(self.folders.iter().find(|f| f.role == role && !f.path.starts_with("shared/")).map(|f| f.path.clone()))
     }
 
     fn uid_of(&self, folder_id: &str, item: &str, received: Option<DateTime<Utc>>) -> u32 {
@@ -1878,33 +2174,12 @@ fn aqs_of(q: &crate::search::Query) -> String {
 /// https в домене почты; пароль уходит только туда.
 pub async fn autodiscover(email: &str, login: &str, password: &str) -> Result<String> {
     let domain = email.rsplit_once('@').map(|(_, d)| d.trim().to_lowercase()).filter(|d| d.contains('.')).ok_or_else(|| AppError::Other("Укажите адрес почты полностью (имя@домен)".into()))?;
-    let body = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006"><Request><EMailAddress>{}</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema></Request></Autodiscover>"#,
-        xml_escape(email)
-    );
-    #[allow(unused_mut)]
-    let mut candidates = vec![format!("https://autodiscover.{domain}/autodiscover/autodiscover.xml"), format!("https://{domain}/autodiscover/autodiscover.xml")];
-    // E2E (отладочная сборка): тестовый сервер вместо адресов в домене почты.
-    #[cfg(debug_assertions)]
-    if let Ok(u) = std::env::var("RRCKI_E2E_AUTODISCOVER_EWS") {
-        candidates = vec![u];
-    }
+    let body = autodiscover_request(email);
+    let candidates = autodiscover_candidates(&domain);
     let mut last = AppError::Other("Сервер Exchange не найден автоматически — укажите его адрес".into());
     for c in candidates {
         let Ok(url) = Url::parse(&c) else { continue };
-        let mut s = EwsSession {
-            conn: None,
-            url,
-            login: login.to_string(),
-            password: password.to_string(),
-            key: String::new(),
-            auth: Auth::Unknown,
-            authed: false,
-            version: "Exchange2013_SP1",
-            folders: Vec::new(),
-            root: None,
-            map: Arc::new(Mutex::new(AccountMap::default())),
-        };
+        let mut s = probe_session(url, login, password);
         match tokio::time::timeout(Duration::from_secs(25), s.post_raw(&body, crate::netio::SMALL_LIMIT)).await {
             Ok(Ok(text)) => {
                 if let Some(url) = ews_url_of(&text) {
@@ -2201,6 +2476,49 @@ fn ews_url_of(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alternative_mailboxes_from_autodiscover() {
+        let ad = r#"<?xml version="1.0"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"><Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"><Account><Protocol><Type>EXCH</Type><EwsUrl>https://mail.corp.ru/EWS/Exchange.asmx</EwsUrl></Protocol><AlternativeMailbox><Type>Archive</Type><DisplayName>Архив</DisplayName><SmtpAddress>archive@corp.ru</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Канцелярия</DisplayName><LegacyDN>/o=corp/ou=x</LegacyDN><Server>mbx1</Server><SmtpAddress>Office@Corp.ru</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Я</DisplayName><SmtpAddress>me@corp.ru</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>TeamMailbox</Type><OwnerSmtpAddress>team@corp.ru</OwnerSmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Дубль</DisplayName><SmtpAddress>office@corp.ru</SmtpAddress></AlternativeMailbox></Account></Response></Autodiscover>"#;
+        assert_eq!(
+            alternative_mailboxes(ad, "me@corp.ru"),
+            vec![("office@corp.ru".to_string(), "Канцелярия".to_string()), ("team@corp.ru".to_string(), "team@corp.ru".to_string())]
+        );
+        assert!(alternative_mailboxes("not xml", "me@corp.ru").is_empty());
+    }
+
+    #[test]
+    fn mailbox_addresses_are_checked() {
+        assert!(valid_mailbox("office@corp.ru"));
+        for bad in ["office", "@corp.ru", "a@corp", "a b@corp.ru", "a@corp.ru>", "a@.ru", "a@corp.ru/x", "a@co\nrp.ru"] {
+            assert!(!valid_mailbox(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn connected_mailbox_folders_go_under_shared() {
+        let raw: Vec<RawFolder> = vec![
+            ("I".into(), "R".into(), "Входящие".into(), "IPF.Note".into(), 3, 1, 1),
+            ("P".into(), "I".into(), "Заявки".into(), "IPF.Note".into(), 2, 0, 0),
+            ("T".into(), "R".into(), "Удаленные".into(), "IPF.Note".into(), 0, 0, 0),
+            ("X".into(), "Q".into(), "Чужая".into(), "IPF.Note".into(), 0, 0, 0),
+        ];
+        let roles = HashMap::from([("I".to_string(), FolderRole::Inbox), ("T".to_string(), FolderRole::Trash)]);
+        let out = build_folders(&raw, &roles, "R", Some("shared/office@corp.ru"));
+        let paths: Vec<_> = out.iter().map(|(f, _)| (f.path.as_str(), f.depth, f.system, f.parent.as_deref())).collect();
+        assert_eq!(
+            paths,
+            vec![
+                ("shared/office@corp.ru/INBOX", 2, true, Some("shared/office@corp.ru")),
+                ("shared/office@corp.ru/INBOX/Заявки", 3, false, Some("shared/office@corp.ru/INBOX")),
+                ("shared/office@corp.ru/Удаленные", 2, true, Some("shared/office@corp.ru")),
+            ]
+        );
+        assert_eq!(out[1].1.id, "P");
+        let own = build_folders(&raw, &roles, "R", None);
+        assert_eq!(own[0].0.path, "INBOX");
+        assert!(own[0].0.system && own[2].0.system && !own[1].0.system);
+    }
 
     #[test]
     fn compressed_responses_are_unpacked_with_a_size_cap() {

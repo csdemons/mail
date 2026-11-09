@@ -81,6 +81,8 @@ const COMMANDS: &[&str] = &[
         "save_attachment",
         "search_contacts",
         "send_message",
+    "mailboxes_get",
+    "mailboxes_save",
         "signatures_save",
         "signatures_get",
         "draft_recovery_get",

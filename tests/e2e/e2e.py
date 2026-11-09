@@ -3400,6 +3400,61 @@ try:
     paths = {f['path']: f for f in inv('list_folders')['ok']}
     assert paths['INBOX']['role'] == 'inbox' and paths['INBOX/Проекты']['depth'] == 1 and paths['Отправленные']['role'] == 'sent' and paths['Удаленные']['role'] == 'trash', list(paths)
     ok('Exchange folders: Inbox, subfolders and system folders by role; calendar and hidden folders not shown')
+    # Подключённые ящики, как в Outlook: о «Канцелярии» (полный доступ) сервер сообщает сам (Autodiscover);
+    # «Директор» в списке есть, но доступа нет — не показывается; архив — часть своего ящика.
+    sp = [p for p in paths if p.startswith('shared/')]
+    assert 'shared/office@exch.test/INBOX' in paths and 'shared/office@exch.test/INBOX/Заявки' in paths and 'shared/office@exch.test/Удаленные' in paths, sp
+    assert not any('boss@' in p or 'archive-ivanov' in p for p in paths), sp
+    assert paths['shared/office@exch.test/INBOX']['role'] == 'inbox' and paths['shared/office@exch.test/INBOX']['system'] and paths['shared/office@exch.test/INBOX']['unseen'] == 1
+    assert paths['shared/office@exch.test/Удаленные']['role'] == 'trash' and paths['INBOX']['role'] == 'inbox'
+    node = lambda text: [b for b in d.find_elements(By.CSS_SELECTOR, '.folder-item.folder-node') if text in b.get_attribute('textContent')]
+    W(d, 10).until(lambda d: node('Подключённые ящики'))
+    if not node('Канцелярия'):
+        node('Подключённые ящики')[0].click()
+    box = W(d, 5).until(lambda d: node('Канцелярия'))[0]
+    assert box.find_element(By.CSS_SELECTOR, '.folder-count').text == '2'  # непрочитанные в свёрнутом ящике (Входящие + Заявки)
+    d.save_screenshot(f'{OUT}/58-exchange-mailboxes.png')
+    box.click()
+    sh_inbox = W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.folder-item[data-folder-id="shared/office@exch.test/INBOX"]'))[0]
+    assert 'Входящие' in sh_inbox.get_attribute('textContent')
+    sh_inbox.click()
+    W(d, 20).until(lambda d: rowt('EWS: письмо в канцелярию') and not rowt('EWS: квартальный отчёт'))
+    rowt('EWS: письмо в канцелярию')[0].click()
+    W(d, 20).until(lambda d: 'Прошу зарегистрировать' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
+    W(d, 15).until(lambda d: ews_item('EWS: письмо в канцелярию')[0]['read'])
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Удалить письмо"]').click()
+    W(d, 15).until(lambda d: ews_item('EWS: письмо в канцелярию')[0]['folder'] == 'S-deleted')
+    ok('Exchange connected mailboxes (as in Outlook): full-access mailbox from Autodiscover under «Подключённые ящики», no-access one hidden; read and delete go to that mailbox')
+    # Ящик вручную по адресу: проверка, что он есть и доступен; права только на «Входящие» — видны они.
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    ms = wait(d, '.mailboxes-settings')
+    assert 'Канцелярия' in ms.find_element(By.CSS_SELECTOR, 'ul[aria-label="Подключены автоматически"]').get_attribute('textContent')
+    add_box = lambda a: (set_value(d, ms.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес подключаемого ящика"]'), a), [b for b in ms.find_elements(By.TAG_NAME, 'button') if 'Подключить' in b.text][0].click())
+    add_box('nobody@exch.test')
+    W(d, 20).until(lambda d: 'Ящика nobody@exch.test нет' in ms.find_element(By.CSS_SELECTOR, '.login-error').text)
+    add_box('boss@exch.test')
+    W(d, 20).until(lambda d: 'Нет доступа к ящику boss@exch.test' in ms.find_element(By.CSS_SELECTOR, '.login-error').text)
+    add_box('Kadry@exch.test')
+    W(d, 20).until(lambda d: 'kadry@exch.test' in ms.find_element(By.CSS_SELECTOR, 'ul[aria-label="Подключены вручную"]').get_attribute('textContent'))
+    acc_file = lambda: [a for a in json.load(open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/accounts.json')) if a.get('ewsUrl')][0]
+    W(d, 5).until(lambda d: acc_file().get('mailboxes') == ['kadry@exch.test'])
+    d.find_element(By.CSS_SELECTOR, '.settings-modal .compose-header button[aria-label="Закрыть"]').click()
+    W(d, 20).until(lambda d: node('kadry@exch.test'))[0].click()
+    W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.folder-item[data-folder-id="shared/kadry@exch.test/INBOX"]'))
+    paths = {f['path']: f for f in inv('list_folders')['ok']}
+    assert [p for p in paths if p.startswith('shared/kadry@exch.test/')] == ['shared/kadry@exch.test/INBOX'], list(paths)
+    d.find_element(By.CSS_SELECTOR, '.folder-item[data-folder-id="shared/kadry@exch.test/INBOX"]').click()
+    W(d, 20).until(lambda d: rowt('EWS: заявление на отпуск'))
+    # отключить — ящик пропадает из папок
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    ms = wait(d, '.mailboxes-settings')
+    ms.find_element(By.CSS_SELECTOR, 'button[aria-label="Отключить ящик kadry@exch.test"]').click()
+    W(d, 15).until(lambda d: not ms.find_elements(By.CSS_SELECTOR, 'ul[aria-label="Подключены вручную"]'))
+    d.find_element(By.CSS_SELECTOR, '.settings-modal .compose-header button[aria-label="Закрыть"]').click()
+    W(d, 20).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.folder-item[data-folder-id="shared/kadry@exch.test/INBOX"]'))
+    [f for f in d.find_elements(By.CSS_SELECTOR, '.folder-item') if f.get_attribute('data-folder-id') == 'INBOX'][0].click()
+    W(d, 20).until(lambda d: rowt('EWS: квартальный отчёт'))
+    ok('Exchange: mailbox added by address (checked: exists, access), only permitted folders shown; removing it hides the folders')
     rowt('EWS: квартальный отчёт')[0].click()
     W(d, 20).until(lambda d: 'Отчёт во вложении' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
     assert any('Отчёт Q3.xlsx' in c.get_attribute('textContent') for c in d.find_elements(By.CSS_SELECTOR, '.attachment-card'))

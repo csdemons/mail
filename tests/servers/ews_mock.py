@@ -149,7 +149,36 @@ FOLDERS = {
     'F-cal': {'name': 'Календарь', 'parent': 'F-root', 'class': 'IPF.Appointment', 'dist': 'calendar'},
     'F-contacts': {'name': 'Контакты', 'parent': 'F-root', 'class': 'IPF.Contact', 'dist': 'contacts'},
     'F-hidden': {'name': 'Sync Issues', 'parent': 'F-root', 'class': 'IPF.Note', 'dist': None, 'hidden': True},
+    # Подключённые ящики: «Канцелярия» — полный доступ (Autodiscover сообщает о нём, как Outlook-у),
+    # «Кадры» — доступ только к «Входящим» (подключают вручную).
+    'S-root': {'name': 'Top of Information Store', 'parent': None, 'class': 'IPF.Note', 'dist': 'msgfolderroot', 'mbox': 'office@exch.test'},
+    'S-inbox': {'name': 'Входящие', 'parent': 'S-root', 'class': 'IPF.Note', 'dist': 'inbox', 'mbox': 'office@exch.test'},
+    'S-sent': {'name': 'Отправленные', 'parent': 'S-root', 'class': 'IPF.Note', 'dist': 'sentitems', 'mbox': 'office@exch.test'},
+    'S-deleted': {'name': 'Удаленные', 'parent': 'S-root', 'class': 'IPF.Note', 'dist': 'deleteditems', 'mbox': 'office@exch.test'},
+    'S-req': {'name': 'Заявки', 'parent': 'S-inbox', 'class': 'IPF.Note', 'dist': None, 'mbox': 'office@exch.test'},
+    'K-root': {'name': 'Top of Information Store', 'parent': None, 'class': 'IPF.Note', 'dist': 'msgfolderroot', 'mbox': 'kadry@exch.test'},
+    'K-inbox': {'name': 'Входящие', 'parent': 'K-root', 'class': 'IPF.Note', 'dist': 'inbox', 'mbox': 'kadry@exch.test'},
+    'K-sent': {'name': 'Отправленные', 'parent': 'K-root', 'class': 'IPF.Note', 'dist': 'sentitems', 'mbox': 'kadry@exch.test'},
 }
+# Права на чужие ящики: full — весь ящик, inbox — только «Входящие», none — ящик есть, доступа нет.
+MAILBOXES = {'office@exch.test': 'full', 'kadry@exch.test': 'inbox', 'boss@exch.test': 'none'}
+
+
+def dist_folder(dist_id, mbox=None):
+    return next((k for k, v in FOLDERS.items() if v['dist'] == dist_id and v.get('mbox') == mbox), None)
+
+
+def ref_mailbox(ref):
+    m = ref.find('t:Mailbox/t:EmailAddress', NS)
+    return m.text.strip().lower() if m is not None and m.text else None
+
+
+def denied(fid):
+    """Нет прав на папку чужого ящика."""
+    mbox = FOLDERS[fid].get('mbox')
+    if not mbox: return False
+    access = MAILBOXES.get(mbox, 'none')
+    return access == 'none' or (access == 'inbox' and FOLDERS[fid]['dist'] != 'inbox')
 ITEMS = {}   # id -> {folder, mime, received, read, flag, importance, categories, verb}
 SENT = []    # отправленные через SendAndSaveCopy (MIME)
 
@@ -177,6 +206,9 @@ add_item('F-inbox', mime_of('Сидорова <sidorova@partner.ru>', ADDRESS, '
 add_item('F-inbox', mime_of('noreply@exch.test', ADDRESS, 'EWS: старое письмо', 'Совсем старое', date=T0 - 86400 * 40), T0 - 86400 * 40, read=True)
 add_item('F-proj', mime_of('Петров Пётр <petrov@exch.test>', ADDRESS, 'EWS: план проекта', 'План работ на ноябрь'), T0 - 600)
 add_item('F-sent', mime_of(ADDRESS, 'petrov@exch.test', 'EWS: ответ по отчёту', 'Спасибо'), T0 - 300, read=True)
+add_item('S-inbox', mime_of('Петров Пётр <petrov@exch.test>', 'office@exch.test', 'EWS: письмо в канцелярию', 'Прошу зарегистрировать'), T0 - 900)
+add_item('S-req', mime_of('Сидорова <sidorova@partner.ru>', 'office@exch.test', 'EWS: заявка на пропуск', 'Пропуск на 12 ноября'), T0 - 1800)
+add_item('K-inbox', mime_of('Петров Пётр <petrov@exch.test>', 'kadry@exch.test', 'EWS: заявление на отпуск', 'Прошу предоставить отпуск'), T0 - 1200)
 
 
 def parsed(item):
@@ -236,7 +268,7 @@ def folder_ref(el):
         tag = c.tag.split('}')[1]
         if tag == 'FolderId': return c.get('Id') if c.get('Id') in FOLDERS else None
         if tag == 'DistinguishedFolderId':
-            return next((k for k, v in FOLDERS.items() if v['dist'] == c.get('Id')), None)
+            return dist_folder(c.get('Id'), ref_mailbox(c))
     return None
 
 
@@ -302,12 +334,27 @@ def handle(op, el):
         out = []
         for ref in el.find('m:FolderIds', NS):
             tag = ref.tag.split('}')[1]
-            fid = (next((k for k, v in FOLDERS.items() if v['dist'] == ref.get('Id')), None) if tag == 'DistinguishedFolderId' else (ref.get('Id') if ref.get('Id') in FOLDERS else None))
+            mbox = ref_mailbox(ref) if tag == 'DistinguishedFolderId' else None
+            if mbox and mbox != ADDRESS and mbox not in MAILBOXES:
+                out.append(resp(op, '', 'Error', 'ErrorNonExistentMailbox', f'No mailbox with such guid or SMTP address {mbox}.')); continue
+            fid = (dist_folder(ref.get('Id'), None if mbox == ADDRESS else mbox) if tag == 'DistinguishedFolderId' else (ref.get('Id') if ref.get('Id') in FOLDERS else None))
+            if fid and denied(fid):
+                out.append(resp(op, '', 'Error', 'ErrorAccessDenied', 'Access is denied. Check credentials and try again.')); continue
             out.append(resp(op, f'<m:Folders>{folder_xml(fid)}</m:Folders>') if fid else resp(op, '', 'Error', 'ErrorFolderNotFound', 'The specified folder could not be found in the store.'))
         return out
     if op == 'FindFolder':
         view = el.find('m:IndexedPageFolderView', NS); off = int(view.get('Offset', 0)); mx = int(view.get('MaxEntriesReturned', 1000))
-        allf = [k for k in FOLDERS if k != 'F-root']
+        parent = folder_ref(el.find('m:ParentFolderIds', NS))
+        if not parent: return [resp(op, '', 'Error', 'ErrorFolderNotFound', 'no folder')]
+        if denied(parent) or (FOLDERS[parent].get('mbox') and MAILBOXES.get(FOLDERS[parent]['mbox']) != 'full'):
+            return [resp(op, '', 'Error', 'ErrorAccessDenied', 'Access is denied. Check credentials and try again.')]
+        def under(k):
+            p = FOLDERS[k]['parent']
+            while p:
+                if p == parent: return True
+                p = FOLDERS[p]['parent']
+            return False
+        allf = [k for k in FOLDERS if under(k)]
         page = allf[off:off + mx]
         return [resp(op, f'<m:RootFolder IndexedPagingOffset="{off + len(page)}" TotalItemsInView="{len(allf)}" IncludesLastItemInRange="{"true" if off + len(page) >= len(allf) else "false"}"><t:Folders>{"".join(folder_xml(f) for f in page)}</t:Folders></m:RootFolder>')]
     if op == 'FindItem':
@@ -587,7 +634,7 @@ def pim(op, el):
     return None
 
 
-AUTODISCOVER = '''<?xml version="1.0" encoding="utf-8"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"><Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"><User><DisplayName>Иванов</DisplayName></User><Account><AccountType>email</AccountType><Action>settings</Action><Protocol><Type>EXCH</Type><EwsUrl>https://localhost:{port}/EWS/Exchange.asmx</EwsUrl></Protocol></Account></Response></Autodiscover>'''
+AUTODISCOVER = '''<?xml version="1.0" encoding="utf-8"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"><Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"><User><DisplayName>Иванов</DisplayName></User><Account><AccountType>email</AccountType><Action>settings</Action><Protocol><Type>EXCH</Type><EwsUrl>https://localhost:{port}/EWS/Exchange.asmx</EwsUrl></Protocol><AlternativeMailbox><Type>Archive</Type><DisplayName>Архив</DisplayName><SmtpAddress>archive-ivanov@exch.test</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Канцелярия</DisplayName><LegacyDN>/o=CORP/ou=Exchange/cn=Recipients/cn=office</LegacyDN><Server>mbx01</Server><SmtpAddress>office@exch.test</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Директор</DisplayName><SmtpAddress>boss@exch.test</SmtpAddress></AlternativeMailbox></Account></Response></Autodiscover>'''
 
 
 class H(BaseHTTPRequestHandler):

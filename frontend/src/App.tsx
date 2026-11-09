@@ -38,7 +38,7 @@ import { fileToBase64, printMessage, snoozePresets, snoozedUntil } from './mailT
 import { categoriesOf, dueLabel, dueOf, duePresets, threadKeys, userCategories, withDue } from './mailExtras'
 import ScheduledMail from './ScheduledMail'
 import { useOutbox } from './sending'
-import { CategoriesSettings, DesktopSettings, OfflineSettings, SendingSettings, SignaturesSettings } from './MailSettings'
+import { CategoriesSettings, DesktopSettings, MailboxesSettings, OfflineSettings, SendingSettings, SignaturesSettings } from './MailSettings'
 import { signatureById } from './drafting'
 import { TransferSettings } from './Transfer'
 import { AccountMenu, NO_FILTERS, UNIFIED_ROLES, UnifiedColumn, useAccounts } from './Accounts'
@@ -484,6 +484,19 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       return true
     })
   }, [folders, expanded])
+
+  // Непрочитанные под свёрнутым узлом (например, в подключённом ящике) — видно и без раскрытия.
+  const nodeUnseen = useMemo(() => {
+    const byId = new Map(folders.map((f) => [f.id, f]))
+    const out = new Map<string, number>()
+    for (const f of folders) {
+      if (!f.selectable || !f.unseen) continue
+      for (let p = f.parent; p; p = byId.get(p)?.parent ?? null) {
+        if (byId.get(p)?.selectable === false) out.set(p, (out.get(p) ?? 0) + f.unseen)
+      }
+    }
+    return out
+  }, [folders])
 
   function toggleExpanded(id: string) {
     setExpanded((prev) => {
@@ -1629,6 +1642,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
                 <button key={f.id} className="folder-item folder-node" style={indent} title={f.path} onClick={() => f.hasChildren && toggleExpanded(f.id)}>
                   {toggle}
                   <Icon size={17} /><span>{folderLabel(f)}</span>
+                  {!isOpen && (nodeUnseen.get(f.id) ?? 0) > 0 && <b className="folder-count muted" title="Непрочитанных в свёрнутых папках">{nodeUnseen.get(f.id)}</b>}
                 </button>
               )
             })}
@@ -2004,6 +2018,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
             {serversChanged && <label className="login-field"><span>Пароль почты — для смены адресов серверов</span><input type="password" aria-label="Пароль для подтверждения" autoComplete="current-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} /></label>}
             <div className="settings-actions"><button className="primary-button" disabled={profileBusy || (serversChanged && !confirmPassword)} onClick={() => void saveProfile()}>Сохранить</button></div>
           </div>
+          {account.exchange && <MailboxesSettings onChanged={() => void loadFolders()} onNotice={setNotice} />}
           {ncStatus && <div className="settings-section"><strong>Nextcloud (Deck, Talk)</strong><NcConnect status={ncStatus} onChange={setNcStatus} compact /></div>}
           <div className="settings-section notify-settings">
             <strong>Уведомления</strong>

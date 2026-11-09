@@ -70,6 +70,9 @@ pub struct Settings {
     /// Адрес почты, если логин — не адрес (Exchange: `DOMAIN\user`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub address: String,
+    /// Exchange: подключённые вручную ящики (общие, делегированные) — адреса.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mailboxes: Vec<String>,
 }
 
 pub const DEFAULT_NEXTCLOUD_URL: &str = "https://next.nrcki.ru/";

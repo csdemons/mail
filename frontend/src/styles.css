@@ -59,6 +59,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .folder-item.selected { background: #2474ed; color: white; }
 .folder-item span { flex: 1; min-width: 0; }
 .folder-count { font-size: 11px; font-weight: 600; }
+.folder-count.muted { opacity: 0.7; font-weight: 500; }
 .muted-count { color: var(--muted); }
 .folder-item.selected .folder-count { color: white; }
 .sidebar-section { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 8px; }
@@ -1601,3 +1602,10 @@ html[data-density="compact"] .message-group { padding: 4px 10px 3px; }
 .tpl-search { width: 100%; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; }
 .tpl-var { display: inline-block; margin: 2px 3px 0 0; padding: 0 5px; border-radius: 5px; background: var(--hover); font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: inherit; }
 .compose-body mark { background: #fde68a; color: inherit; border-radius: 3px; padding: 0 2px; }
+
+/* Подключённые ящики Exchange */
+.mailbox-list { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.mailbox-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.mailbox-list li small { color: var(--muted); margin-left: 6px; }
+.mailbox-add { display: flex; gap: 8px; align-items: center; }
+.mailbox-add input { flex: 1; min-width: 0; }

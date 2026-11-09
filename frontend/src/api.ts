@@ -2,7 +2,7 @@ import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, NcSearch, PickedFile, SignatureSet, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
+  MessageSummary, NcSearch, PickedFile, SignatureSet, MailboxSet, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
 export interface LoginParams {
@@ -273,6 +273,8 @@ export const api = {
   draftRecoverySet: (data: string | null) => invoke<void>('draft_recovery_set', { data }),
   draftRecoveryGet: () => invoke<string | null>('draft_recovery_get'),
   signaturesGet: () => invoke<SignatureSet>('signatures_get'),
+  mailboxesGet: () => invoke<MailboxSet>('mailboxes_get'),
+  mailboxesSave: (list: string[]) => invoke<void>('mailboxes_save', { list }),
   signaturesSave: (set: SignatureSet) => invoke<string | null>('signatures_save', { set }),
   ncAvatar: (kind: 'user' | 'room', id: string) => invoke<string | null>('nc_avatar', { kind, id }),
   messageHtmlRemote: (folder: string, uid: number) => invoke<string>('message_html_remote', { folder, uid }),

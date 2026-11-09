@@ -683,3 +683,9 @@ export interface NcSearch {
   chat: ChatHit[]
   errors: string[]
 }
+
+/** Подключённые ящики Exchange. */
+export interface MailboxSet {
+  manual: string[]
+  discovered: { address: string; name: string }[]
+}

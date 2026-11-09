@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mailboxes-save"
+description = "Enables the mailboxes_save command without any pre-configured scope."
+commands.allow = ["mailboxes_save"]
+
+[[permission]]
+identifier = "deny-mailboxes-save"
+description = "Denies the mailboxes_save command without any pre-configured scope."
+commands.deny = ["mailboxes_save"]

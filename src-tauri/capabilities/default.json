@@ -86,6 +86,8 @@
     "allow-save-attachment",
     "allow-search-contacts",
     "allow-send-message",
+    "allow-mailboxes-get",
+    "allow-mailboxes-save",
     "allow-signatures-save",
     "allow-signatures-get",
     "allow-draft-recovery-get",

@@ -809,6 +809,72 @@ pub async fn signatures_save(app: AppHandle, state: State<'_, AppState>, set: Si
     Ok(synced.err().map(|e| format!("Подписи сохранены в программе, но подпись в веб-почте не обновилась: {e}")))
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundMailbox {
+    address: String,
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailboxSet {
+    /// Подключённые вручную.
+    manual: Vec<String>,
+    /// Найденные Autodiscover — подключаются сами, как в Outlook.
+    discovered: Vec<FoundMailbox>,
+}
+
+/// Подключённые ящики Exchange (общие, делегированные).
+#[tauri::command]
+pub async fn mailboxes_get(state: State<'_, AppState>) -> Result<MailboxSet> {
+    let ctx = state.ctx().await?;
+    let p = ctx.profile().await;
+    let discovered = crate::ews::discovered_mailboxes(&settings::account_key(&p)).into_iter().map(|(address, name)| FoundMailbox { address, name }).collect();
+    Ok(MailboxSet { manual: p.mailboxes.clone(), discovered })
+}
+
+/// Сохранить список ящиков, подключённых вручную; новые адреса сначала проверяются
+/// (есть ли такой ящик и доступ к нему).
+#[tauri::command]
+pub async fn mailboxes_save(app: AppHandle, state: State<'_, AppState>, list: Vec<String>) -> Result<()> {
+    let ctx = state.ctx().await?;
+    if !exchange(&ctx) {
+        return Err(AppError::Other("Подключать ящики можно только для учётной записи Exchange".into()));
+    }
+    let own = ctx.profile().await.email().to_lowercase();
+    let mut clean: Vec<String> = Vec::new();
+    for a in list {
+        let a = a.trim().trim_start_matches("mailto:").to_lowercase();
+        if a.is_empty() || clean.contains(&a) {
+            continue;
+        }
+        if !crate::ews::valid_mailbox(&a) {
+            return Err(AppError::Other(format!("«{a}» — не адрес почты")));
+        }
+        if a == own {
+            return Err(AppError::Other("Это ваш собственный ящик — он уже подключён".into()));
+        }
+        clean.push(a);
+    }
+    if clean.len() > crate::ews::MAX_MAILBOXES {
+        return Err(AppError::Other(format!("Не больше {} ящиков", crate::ews::MAX_MAILBOXES)));
+    }
+    let before = ctx.profile().await.mailboxes;
+    for a in clean.iter().filter(|a| !before.contains(a)) {
+        let a = a.clone();
+        with_ctx!(once ctx, c => async { ews_of(c)?.check_mailbox(&a).await })?;
+    }
+    let p = {
+        let mut p = ctx.profile.lock().await;
+        p.mailboxes = clean;
+        settings::save(&app, &p)?;
+        p.clone()
+    };
+    crate::ews::set_mailboxes(&settings::account_key(&p), &p.email(), &p.mailboxes);
+    Ok(())
+}
+
 fn html_to_text(html: &str) -> String {
     if !html.contains('<') {
         return html.trim().to_string();
@@ -936,6 +1002,7 @@ pub async fn login(
         categories: mine.and_then(|p| p.categories.clone()),
         ews_url: exchange.clone().unwrap_or_default(),
         address: if exchange.is_some() { address.clone() } else { String::new() },
+        mailboxes: mine.map(|p| p.mailboxes.clone()).unwrap_or_default(),
     };
 
     let creds = creds_of(&s, password.clone());
@@ -5430,6 +5497,9 @@ fn exchange_host(url: &str) -> String {
 }
 
 fn creds_of(s: &Settings, password: String) -> Credentials {
+    if s.is_exchange() {
+        crate::ews::set_mailboxes(&settings::account_key(s), &s.email(), &s.mailboxes);
+    }
     Credentials { host: s.host.clone(), port: s.port, username: s.username.clone(), password, ews: s.is_exchange().then(|| s.ews_url.clone()) }
 }
 
@@ -5508,6 +5578,7 @@ pub async fn account_add(
         categories: None,
         ews_url: exchange.clone().unwrap_or_default(),
         address: if exchange.is_some() { address.clone() } else { String::new() },
+        mailboxes: Vec::new(),
     };
     let creds = creds_of(&s, password.clone());
     let conn = imap::connect(&creds).await?;
@@ -5776,6 +5847,8 @@ macro_rules! app_commands {
             crate::commands::update_profile,
             crate::commands::pick_attachments,
             crate::commands::send_message,
+        crate::commands::mailboxes_get,
+        crate::commands::mailboxes_save,
             crate::commands::signatures_save,
             crate::commands::signatures_get,
             crate::commands::draft_recovery_get,
