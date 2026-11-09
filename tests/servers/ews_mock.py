@@ -162,6 +162,8 @@ FOLDERS = {
 }
 # Права на чужие ящики: full — весь ящик, inbox — только «Входящие», none — ящик есть, доступа нет.
 MAILBOXES = {'office@exch.test': 'full', 'kadry@exch.test': 'inbox', 'boss@exch.test': 'none'}
+# Право «Отправить как» — только на «Канцелярию».
+SEND_AS = {'office@exch.test'}
 
 
 def dist_folder(dist_id, mbox=None):
@@ -419,7 +421,10 @@ def handle(op, el):
             raw = base64.b64decode(msg.findtext('t:MimeContent', '', NS))
             read = msg.find('.//t:ExtendedProperty', NS) is not None
             if disp == 'SendAndSaveCopy':
-                SENT.append(raw); add_item('F-sent', raw, now(), True)
+                frm = (email.utils.parseaddr(email.message_from_bytes(raw).get('From', ''))[1] or ADDRESS).lower()
+                if frm != ADDRESS and frm not in SEND_AS:
+                    out.append(resp(op, '', 'Error', 'ErrorSendAsDenied', 'The user account which was used to submit this request does not have the right to send mail on behalf of the specified sending account.')); continue
+                SENT.append(raw); add_item(target if target != 'F-drafts' else 'F-sent', raw, now(), True)
             else:
                 add_item(target, raw, now(), read)
             out.append(resp(op, '<m:Items/>'))

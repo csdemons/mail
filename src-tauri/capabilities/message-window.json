@@ -16,6 +16,7 @@
     "allow-list-folders",
     "allow-send-message",
     "allow-draft-save",
+    "allow-send-identities",
     "allow-draft-discard",
     "allow-pick-attachments",
     "allow-forget-attachment",

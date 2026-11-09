@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-picked-preview"
+description = "Enables the picked_preview command without any pre-configured scope."
+commands.allow = ["picked_preview"]
+
+[[permission]]
+identifier = "deny-picked-preview"
+description = "Denies the picked_preview command without any pre-configured scope."
+commands.deny = ["picked_preview"]

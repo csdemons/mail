@@ -2,7 +2,7 @@ import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
   SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
-  MessageSummary, NcSearch, PickedFile, SignatureSet, MailboxSet, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
+  MessageSummary, NcSearch, PickedFile, SignatureSet, MailboxSet, Identity, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
 export interface LoginParams {
@@ -79,8 +79,9 @@ export const api = {
   sendMessage: (m: {
     to: string; cc: string; subject: string; body: string; html: string | null
     inReplyTo: string | null; references: string | null; attachments: string[]
-    readReceipt?: boolean; delaySecs?: number; sendAt?: string | null
+    readReceipt?: boolean; delaySecs?: number; sendAt?: string | null; from?: string | null
   }) => invoke<SendTicket>('send_message', { ...m }),
+  sendIdentities: () => invoke<Identity[]>('send_identities'),
   sendWait: (id: number) => invoke<SendResult>('send_wait', { id }),
   sendCancel: (id: number) => invoke<boolean>('send_cancel', { id }),
   sendNow: (id: number) => invoke<void>('send_now', { id }),
@@ -94,6 +95,8 @@ export const api = {
   exchangeDiagnose: (p: { url: string; address: string; username: string; password: string }) => invoke<string>('exchange_diagnose', p),
   discoverServers: (email: string) => invoke<{ imapHost: string; imapPort: number; smtpHost: string; smtpPort: number; username: string; source: string; note: string | null }>('discover_servers', { email }),
   attachData: (name: string, data: string) => invoke<PickedFile>('attach_data', { name, data }),
+  clipboardPasteFiles: () => invoke<PickedFile[]>('clipboard_paste_files'),
+  pickedPreview: (id: string) => invoke<string | null>('picked_preview', { id }),
   forwardAttachments: (folder: string, uid: number) => invoke<PickedFile[]>('forward_attachments', { folder, uid }),
   attachmentDragOut: (folder: string, uid: number, index: number) => invoke<void>('attachment_drag_out', { folder, uid, index }),
   /** Открыть вложение программой компьютера (копия во временном каталоге); возвращает путь копии. */
@@ -266,7 +269,7 @@ export const api = {
   ncCreateDocument: (dir: string, name: string, kind: 'docx' | 'xlsx' | 'pptx') => invoke<EditResult>('nc_create_document', { dir, name, kind }),
   ncEditAttachment: (folder: string, uid: number, index: number, dir: string) => invoke<EditResult>('nc_edit_attachment', { folder, uid, index, dir }),
   getPolicy: () => invoke<UiPolicy>('get_policy'),
-  draftSave: (d: { key: string; to: string; cc: string; subject: string; body: string; html: string | null; inReplyTo: string | null; references: string | null; attachments: string[]; readReceipt: boolean; replaceFolder: string | null; replaceUid: number | null }) =>
+  draftSave: (d: { key: string; to: string; cc: string; subject: string; body: string; html: string | null; inReplyTo: string | null; references: string | null; attachments: string[]; readReceipt: boolean; replaceFolder: string | null; replaceUid: number | null; from?: string | null }) =>
     invoke<string>('draft_save', d),
   draftDiscard: (key: string, replace: { folder: string; uid: number } | null = null) =>
     invoke<void>('draft_discard', { key, replaceFolder: replace?.folder ?? null, replaceUid: replace?.uid ?? null }),

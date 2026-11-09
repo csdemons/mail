@@ -1466,9 +1466,23 @@ impl EwsSession {
     }
 
     /// Отправить письмо (MIME) через Exchange с копией в «Отправленные».
+    /// От имени подключённого ящика (From — его адрес) Exchange сам проверяет право «Отправить как»
+    /// или «Отправить от имени»; копия — в «Отправленные» того ящика, если она видна, иначе в свои.
     pub async fn send(&mut self, raw: &[u8]) -> Result<()> {
+        let own = lock(mailbox_registry()).get(&self.key).map(|m| m.email.clone()).unwrap_or_default();
+        let from = crate::imap::from_address(raw).filter(|f| !own.is_empty() && !f.eq_ignore_ascii_case(&own));
+        if from.is_some() && self.folders.is_empty() {
+            let _ = self.list_folders().await;
+        }
+        let saved = from
+            .as_ref()
+            .and_then(|f| {
+                let prefix = format!("{SHARED_ROOT}/{}/", segment(f));
+                self.folders.iter().find(|x| x.role == FolderRole::Sent && utf7_imap::decode_utf7_imap(x.path.clone()).starts_with(&prefix))
+            })
+            .map_or_else(|| distinguished("sentitems", None), |x| format!(r#"<t:FolderId Id="{}"/>"#, xml_escape(&x.id)));
         let op = format!(
-            r#"<m:CreateItem MessageDisposition="SendAndSaveCopy"><m:SavedItemFolderId><t:DistinguishedFolderId Id="sentitems"/></m:SavedItemFolderId><m:Items><t:Message><t:MimeContent CharacterSet="UTF-8">{}</t:MimeContent></t:Message></m:Items></m:CreateItem>"#,
+            r#"<m:CreateItem MessageDisposition="SendAndSaveCopy"><m:SavedItemFolderId>{saved}</m:SavedItemFolderId><m:Items><t:Message><t:MimeContent CharacterSet="UTF-8">{}</t:MimeContent></t:Message></m:Items></m:CreateItem>"#,
             base64::engine::general_purpose::STANDARD.encode(raw)
         );
         // Запрос ушёл, а ответа нет — сервер мог уже отправить письмо.
@@ -1479,7 +1493,13 @@ impl EwsSession {
             Err(e) => return Err(AppError::DeliveryUnknown(e.to_string())),
         };
         let d = doc(&text)?;
-        first_error(&responses(&d)?).map_or(Ok(()), Err)
+        let rs = responses(&d)?;
+        if let (Some(f), Some(r)) = (&from, rs.first()) {
+            if matches!(text_of(*r, "ResponseCode").as_deref(), Some("ErrorSendAsDenied" | "ErrorAccessDenied")) {
+                return Err(AppError::Other(format!("Нет права отправлять письма от имени {f} — попросите администратора выдать право «Отправить как» или «Отправить от имени» для этого ящика")));
+            }
+        }
+        first_error(&rs).map_or(Ok(()), Err)
     }
 
     pub async fn create_folder(&mut self, name: &str) -> Result<()> {

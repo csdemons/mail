@@ -650,25 +650,56 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
     ]
   }
 
-  /** Ctrl+V с картинкой (снимок экрана и т. п.) — вложение к сообщению, с превью. */
-  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const images = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
-    if (images.length === 0) return
-    e.preventDefault()
-    for (const img of images) {
-      try {
-        const buf = new Uint8Array(await img.arrayBuffer())
-        let bin = ''
-        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000))
-        const ext = (img.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '')
-        const stamp = new Date().toLocaleString('ru-RU').replace(/[^\d]+/g, '-').replace(/-$/, '')
-        const name = img.name && img.name !== 'image.png' ? img.name : `Снимок ${stamp}.${ext}`
-        const picked = await api.attachData(name, btoa(bin))
-        setPreviews((p) => ({ ...p, [picked.id]: URL.createObjectURL(img) }))
-        setFiles((list) => [...list, picked])
-      } catch (err) {
-        notify(`Картинка не вставлена: ${errorText(err)}`)
+  /** Вложения, вставленные из буфера обмена: в списке файлов, картинки — с превью. */
+  async function addPasted(list: PickedFile[]) {
+    if (list.length === 0) return
+    setFiles((f) => [...f, ...list])
+    for (const p of list) {
+      if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(p.name)) {
+        const url = await api.pickedPreview(p.id).catch(() => null)
+        if (url) setPreviews((x) => ({ ...x, [p.id]: url }))
       }
+    }
+    notify(list.length === 1 ? `Вставлено: ${list[0].name}` : `Вставлено файлов: ${list.length}`)
+  }
+
+  /**
+   * Ctrl+V (и «Вставить» в меню): картинки и файлы из буфера — вложениями к сообщению.
+   * Что WebView отдаёт сам (снимок экрана в Windows) — берём из события; файлы, скопированные
+   * в проводнике, и картинки, которых WebView не видит, — из буфера обмена системы.
+   */
+  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    if (editing) return
+    const dt = e.clipboardData
+    const direct = [...dt.files]
+    const types = [...dt.types]
+    const text = dt.getData('text/plain')
+    const uris = dt.getData('text/uri-list')
+    const fileUris = /^file:\/\//im.test(uris) || /^(\/|file:\/\/)\S+$/m.test(text) && types.includes('text/uri-list')
+    if (direct.length === 0 && text && !fileUris) return // обычный текст — вставляется как есть
+    e.preventDefault()
+    const target = e.currentTarget
+    try {
+      if (direct.length > 0) {
+        const picked: PickedFile[] = []
+        for (const f of direct) {
+          const buf = new Uint8Array(await f.arrayBuffer())
+          let bin = ''
+          for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000))
+          const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '')
+          const stamp = new Date().toLocaleString('ru-RU').replace(/[^\d]+/g, '-').replace(/-$/, '')
+          const name = f.name && f.name !== 'image.png' ? f.name : `Снимок ${stamp}.${ext}`
+          picked.push(await api.attachData(name, btoa(bin)))
+        }
+        await addPasted(picked)
+        return
+      }
+      const fromOs = await api.clipboardPasteFiles()
+      if (fromOs.length > 0) { await addPasted(fromOs); return }
+      // В буфере всё-таки текст (например, путь к файлу, которого уже нет) — вставить его.
+      if (text) { target.focus(); document.execCommand('insertText', false, text) }
+    } catch (err) {
+      notify(`Не вставлено: ${errorText(err)}`)
     }
   }
 

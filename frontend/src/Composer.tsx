@@ -5,7 +5,7 @@ import { AlertTriangle, CalendarClock, Check, ChevronDown, Cloud, CloudOff, File
 import { api, errorText, formatSize, TYPING_PAUSE_MS } from './api'
 import RichEditor, { type RichEditorHandle } from './RichEditor'
 import NcFilePicker from './NcFilePicker'
-import type { Contact, Draft, MailTemplate, PickedFile, SignatureSet } from './types'
+import type { Contact, Draft, Identity, MailTemplate, PickedFile, SignatureSet } from './types'
 import { checkRecipients, fillTemplate, newDraftKey, signatureById, signatureHtml, TEMPLATE_VARS, templateValues, type ExternalCheck } from './drafting'
 import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './sending'
 import { fileToBase64 } from './mailTools'
@@ -144,6 +144,11 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   const [sigId, setSigId] = useState<string | null>(draft.signatureId ?? null)
   const [extWarn, setExtWarn] = useState<{ check: ExternalCheck; sendAt: Date | null } | null>(null)
   const [tplQuery, setTplQuery] = useState('')
+  // Отправитель: свой адрес или подключённый ящик («Отправить как» / «от имени» — права даёт сервер).
+  const [identities, setIdentities] = useState<Identity[]>([])
+  const [sender, setSender] = useState<string | null>(draft.from ?? null)
+  useEffect(() => { api.sendIdentities().then(setIdentities).catch(() => undefined) }, [])
+  const senderOf = (i: Identity) => (i.name && i.name !== i.address ? `${i.name} <${i.address}>` : i.address)
   const [to, setTo] = useState(draft.to)
   const [cc, setCc] = useState(draft.cc)
   const [showCc, setShowCc] = useState(Boolean(draft.cc))
@@ -220,7 +225,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
 
   const snapshot = (): Draft => ({
     ...draft, to, cc, subject, body: editor.current?.text() ?? draft.body, html: editor.current?.html() ?? draft.html,
-    files, readReceipt: receipt, key: key.current, replace: replace.current, signatureId: sigId,
+    files, readReceipt: receipt, key: key.current, replace: replace.current, signatureId: sigId, from: sender,
   })
   const meaningful = () => Boolean(to.trim() || subject.trim() || (editor.current?.text() ?? '').replace(/-- [\s\S]*$/, '').trim() || files.length)
 
@@ -232,7 +237,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
       await api.draftSave({
         key: key.current, to, cc, subject, body: editor.current?.text() ?? '', html: editor.current?.html() ?? null,
         inReplyTo: draft.inReplyTo, references: draft.references, attachments: files.map((f) => f.id), readReceipt: receipt,
-        replaceFolder: replace.current?.folder ?? null, replaceUid: replace.current?.uid ?? null,
+        replaceFolder: replace.current?.folder ?? null, replaceUid: replace.current?.uid ?? null, from: sender,
       })
       // Исходный черновик заменён новой версией — дальше заменяются версии по ключу.
       replace.current = null
@@ -334,12 +339,13 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
         readReceipt: receipt,
         delaySecs,
         sendAt: sendAt ? sendAt.toISOString() : null,
+        from: sender,
       })
       // Письмо ушло (или ждёт отправки) — черновики этого письма больше не нужны.
       if (everSaved.current || replace.current) void api.draftDiscard(key.current, replace.current).catch(() => undefined)
       forgetLocal()
       if (ticket.id !== null && onQueued) {
-        onQueued(ticket.id, { ...draft, to, cc, subject, body, html: html ?? undefined, files, readReceipt: receipt, key: newDraftKey(), replace: null, signatureId: sigId }, delaySecs)
+        onQueued(ticket.id, { ...draft, to, cc, subject, body, html: html ?? undefined, files, readReceipt: receipt, key: newDraftKey(), replace: null, signatureId: sigId, from: sender }, delaySecs)
       } else if (ticket.scheduledAt) {
         onSent(`Письмо будет отправлено ${formatWhen(ticket.scheduledAt)}. Оно ждёт в «Черновиках».`)
       } else {
@@ -365,7 +371,15 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
       >
         {dropping && <div className="drop-overlay"><Paperclip size={22} /> Отпустите, чтобы вложить файлы</div>}
         <div className="compose-header">
-          <div><strong>{TITLES[draft.mode]}</strong><small>От: {from}</small></div>
+          <div><strong>{TITLES[draft.mode]}</strong>
+            {identities.length > 1 ? (
+              <small className="from-pick">От:{' '}
+                <select aria-label="От кого" value={sender ?? ''} onChange={(e) => { setSender(e.target.value || null); changed.current = true }}>
+                  {identities.map((i) => <option key={i.address} value={i.own ? '' : i.address}>{i.own ? from : senderOf(i)}</option>)}
+                </select>
+              </small>
+            ) : <small>От: {from}</small>}
+          </div>
           <span className={`draft-status ${save.state}`} aria-live="polite" title={save.text ?? ''}>
             {save.state === 'saving' && <><Loader2 size={13} className="spin" /> Сохраняю черновик…</>}
             {save.state === 'saved' && save.at && <><Check size={13} /> Черновик сохранён в {save.at.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</>}

@@ -1406,11 +1406,29 @@ pub async fn summaries_of(conn: &mut Connection, folder: &str, uids: &[u32]) -> 
 
 /// Кладёт отправленное письмо в папку «Отправленные» (\\Sent или по имени).
 /// Возвращает имя папки.
+/// Адрес из заголовка From (строчными).
+pub fn from_address(raw: &[u8]) -> Option<String> {
+    let msg = mail_parser::MessageParser::default().parse_headers(raw)?;
+    msg.from()?.first()?.address().map(|a| a.trim().to_lowercase())
+}
+
 pub async fn append_sent(conn: &mut Connection, raw: &[u8]) -> Result<String> {
     if let Some(e) = conn.ews() {
         let folder = e.role_folder(FolderRole::Sent).await?.ok_or_else(|| AppError::Other("Папка «Отправленные» не найдена".into()))?;
         e.append(&folder, raw, true).await?;
         return Ok(folder);
+    }
+    // От имени общего ящика — копия в его «Отправленные», если она есть и доступна.
+    if let Some(from) = from_address(raw) {
+        if let Ok(folders) = list_folders(conn).await {
+            let prefix = format!("shared/{from}/").to_lowercase();
+            if let Some(f) = folders.iter().find(|f| f.role == FolderRole::Sent && f.path.to_lowercase().starts_with(&prefix)) {
+                conn.selected = None;
+                if conn.imap()?.append(&f.id, Some("(\\Seen)"), None, raw).await.is_ok() {
+                    return Ok(f.id.clone());
+                }
+            }
+        }
     }
     let folder = role_folder(conn, FolderRole::Sent).await?.ok_or_else(|| AppError::Other("Папка «Отправленные» не найдена".into()))?;
     conn.selected = None;

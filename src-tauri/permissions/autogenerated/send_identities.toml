@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-send-identities"
+description = "Enables the send_identities command without any pre-configured scope."
+commands.allow = ["send_identities"]
+
+[[permission]]
+identifier = "deny-send-identities"
+description = "Denies the send_identities command without any pre-configured scope."
+commands.deny = ["send_identities"]

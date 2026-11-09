@@ -780,6 +780,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       mode: 'new', to: d.to.join(', '), cc: d.cc.join(', '), subject: d.subject, body: d.bodyText, html: d.bodyHtml ?? undefined,
       inReplyTo: ids[ids.length - 1] ?? null, references: d.references, files, readReceipt: false,
       replace: { folder: d.folder, uid: d.uid }, signatureId: null,
+      from: d.fromAddress && d.fromAddress.toLowerCase() !== myAddress.toLowerCase() ? d.fromAddress.toLowerCase() : null,
     })
   }
 
@@ -1343,7 +1344,18 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     if (errors.length > 0) setNotice(`Не приложено: ${errors.join('; ')}`)
   }
 
-  function startDraft(next: Draft) {
+  /** Адрес подключённого ящика, которому принадлежит папка (`shared/<адрес>/…`), — отвечать от его имени. */
+  function mailboxOf(folder: string | null | undefined): string | null {
+    const path = folders.find((f) => f.id === folder)?.path ?? folder ?? ''
+    const m = /^shared\/([^/]+@[^/]+)(\/|$)/i.exec(path)
+    return m ? m[1].toLowerCase() : null
+  }
+  /** «Я» для «Ответить всем»: свой адрес и ящик, из которого отвечают. */
+  const meFor = (folder: string | null | undefined) => [myAddress, mailboxOf(folder)].filter(Boolean).join(',')
+
+  function startDraft(next: Draft, folder: string | null = folderId) {
+    // Письмо из подключённого ящика (или новое, пока открыт его ящик) — от имени этого ящика.
+    if (next.from === undefined) next = { ...next, from: mailboxOf(folder) }
     // Какая подпись вставлена — чтобы в окне письма можно было выбрать другую.
     setDraft(next.signatureId !== undefined ? next : { ...next, signatureId: (next.mode === 'new' ? sigs?.newId : sigs?.replyId) ?? null })
     // Контакты для подсказок адресов — один раз за сессию, ошибки не мешают письму.
@@ -1359,10 +1371,10 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       return
     }
     if (mode === 'forward') {
-      void forwardDraft(detail, myAddress, replySignature).then(({ draft, error }) => { startDraft(draft); if (error) setNotice(error) })
+      void forwardDraft(detail, myAddress, replySignature).then(({ draft, error }) => { startDraft(draft, detail.folder); if (error) setNotice(error) })
       return
     }
-    startDraft(buildDraft(mode, detail, myAddress, replySignature))
+    startDraft(buildDraft(mode, detail, meFor(detail.folder), replySignature), detail.folder)
   }
 
   function composeTo(to: string) {
@@ -1375,11 +1387,11 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       const full = detail && messageKey(detail) === messageKey(m) ? detail : await api.getMessage(m.folder, m.uid)
       if (mode === 'forward') {
         const { draft, error } = await forwardDraft(full, myAddress, replySignature)
-        startDraft(draft)
+        startDraft(draft, full.folder)
         if (error) setNotice(error)
         return
       }
-      startDraft(buildDraft(mode, full, myAddress, replySignature))
+      startDraft(buildDraft(mode, full, meFor(full.folder), replySignature), full.folder)
     } catch (error) {
       setNotice(`Не удалось открыть письмо: ${errorText(error)}`)
     }

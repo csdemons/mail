@@ -825,6 +825,59 @@ pub struct MailboxSet {
     discovered: Vec<FoundMailbox>,
 }
 
+/// От чьего имени можно отправить письмо: свой адрес и подключённые ящики.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Identity {
+    address: String,
+    name: String,
+    own: bool,
+}
+
+async fn identities(ctx: &AccountCtx) -> Vec<Identity> {
+    let p = ctx.profile().await;
+    let own = p.email().to_lowercase();
+    let mut out = vec![Identity { address: own.clone(), name: p.display_name.clone(), own: true }];
+    let mut push = |address: String, name: String| {
+        if address != own && crate::ews::valid_mailbox(&address) && !out.iter().any(|i| i.address == address) {
+            out.push(Identity { address, name, own: false });
+        }
+    };
+    if exchange(ctx) {
+        for (a, n) in crate::ews::discovered_mailboxes(&settings::account_key(&p)) {
+            push(a, n);
+        }
+        for a in &p.mailboxes {
+            push(a.clone(), a.clone());
+        }
+    } else if let Ok(folders) = with_ctx!(once ctx, c => imap::list_folders(c)) {
+        // Общие ящики IMAP (shared/<адрес>/…), если ящик назван адресом почты.
+        for f in folders.iter().filter(|f| f.depth == 1 && f.path.to_lowercase().starts_with("shared/")) {
+            let a = f.path[7..].to_lowercase();
+            push(a.clone(), a);
+        }
+    }
+    out
+}
+
+/// Отправитель письма: свой адрес или подключённый ящик («Отправить как», «Отправить от имени»).
+async fn sender(ctx: &AccountCtx, from: Option<&str>) -> Result<(Option<String>, String)> {
+    let p = ctx.profile().await;
+    let own = p.email();
+    let Some(from) = from.map(|f| f.trim().to_lowercase()).filter(|f| !f.is_empty() && !f.eq_ignore_ascii_case(&own)) else {
+        return Ok((Some(p.display_name.clone()), own));
+    };
+    let ids = identities(ctx).await;
+    let id = ids.into_iter().find(|i| i.address == from).ok_or_else(|| AppError::Other(format!("Ящик {from} не подключён — отправить от его имени нельзя")))?;
+    Ok(((id.name != id.address).then_some(id.name), id.address))
+}
+
+#[tauri::command]
+pub async fn send_identities(state: State<'_, AppState>) -> Result<Vec<Identity>> {
+    let ctx = state.ctx().await?;
+    Ok(identities(&ctx).await)
+}
+
 /// Подключённые ящики Exchange (общие, делегированные).
 #[tauri::command]
 pub async fn mailboxes_get(state: State<'_, AppState>) -> Result<MailboxSet> {
@@ -1532,7 +1585,13 @@ async fn send_as(ctx: &AccountCtx, raw: &[u8]) -> Result<()> {
         return r;
     }
     let profile = ctx.profile().await;
-    smtp::send_raw(&profile.smtp_host, profile.smtp_port, &ctx.creds.username, &ctx.creds.password, raw).await
+    let r = smtp::send_raw(&profile.smtp_host, profile.smtp_port, &ctx.creds.username, &ctx.creds.password, raw).await;
+    match (r, imap::from_address(raw)) {
+        (Err(AppError::Other(m)), Some(from)) if !from.eq_ignore_ascii_case(&profile.email()) && (m.contains("553") || m.contains("550") || m.contains("554")) => {
+            Err(AppError::Other(format!("Сервер не разрешил отправку от имени {from} — попросите администратора дать вам право отправлять письма от этого ящика ({m})")))
+        }
+        (r, _) => r,
+    }
 }
 
 /// Копия в «Отправленные» — в ящик учётной записи `ctx`: через её соединение,
@@ -1586,16 +1645,17 @@ pub async fn draft_save(
     read_receipt: Option<bool>,
     replace_folder: Option<String>,
     replace_uid: Option<u32>,
+    from: Option<String>,
 ) -> Result<String> {
     let ctx = state.ctx().await?;
     if !imap::valid_draft_key(&key) {
         return Err(AppError::Other("Некорректный ключ черновика".into()));
     }
-    let profile = ctx.profile().await;
+    let (from_name, from_address) = sender(&ctx, from.as_deref()).await?;
     let files = read_picked(&ctx, &attachments).await?;
     let message = smtp::build(smtp::Outgoing {
-        from_name: Some(profile.display_name.clone()),
-        from_address: profile.email(),
+        from_name,
+        from_address,
         to: smtp::split_addresses(&to),
         cc: smtp::split_addresses(&cc),
         subject,
@@ -1657,9 +1717,10 @@ pub async fn send_message(
     read_receipt: Option<bool>,
     delay_secs: Option<u32>,
     send_at: Option<String>,
+    from: Option<String>,
 ) -> Result<SendTicket> {
     let ctx = state.ctx().await?;
-    let profile = ctx.profile().await;
+    let (from_name, from_address) = sender(&ctx, from.as_deref()).await?;
 
     let send_at = match send_at.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(t) => {
@@ -1675,8 +1736,8 @@ pub async fn send_message(
     let files = read_picked(&ctx, &attachments).await?;
 
     let message = smtp::build(smtp::Outgoing {
-        from_name: Some(profile.display_name.clone()),
-        from_address: profile.email(),
+        from_name,
+        from_address,
         to: smtp::split_addresses(&to),
         cc: smtp::split_addresses(&cc),
         subject,
@@ -2924,6 +2985,72 @@ pub async fn attach_data(state: State<'_, AppState>, name: String, data: String)
     let id = state.next_pick.fetch_add(1, Ordering::Relaxed).to_string();
     ctx.picked.lock().await.insert(id.clone(), path);
     Ok(PickedFile { id, name: safe, size: bytes.len() as u64 })
+}
+
+/// Ctrl+V: файлы, скопированные в проводнике, или картинка из буфера обмена — вложениями
+/// (когда WebView сам их не отдаёт). Пусто — в буфере только текст.
+#[tauri::command]
+pub async fn clipboard_paste_files(state: State<'_, AppState>) -> Result<Vec<PickedFile>> {
+    let ctx = state.ctx().await?;
+    let clip = tauri::async_runtime::spawn_blocking(crate::clipboard::read).await.map_err(|e| AppError::Other(e.to_string()))??;
+    let limit = MAX_OUTGOING_MB * 1024 * 1024;
+    let mut out = Vec::new();
+    match clip {
+        crate::clipboard::Clip::Nothing => {}
+        crate::clipboard::Clip::Files(paths) => {
+            let mut picked = ctx.picked.lock().await;
+            for path in paths {
+                let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+                if size > limit {
+                    return Err(AppError::Other(format!("«{name}» больше {MAX_OUTGOING_MB} МБ — отправьте его ссылкой Nextcloud")));
+                }
+                let id = state.next_pick.fetch_add(1, Ordering::Relaxed).to_string();
+                picked.insert(id.clone(), path);
+                out.push(PickedFile { id, name, size });
+            }
+        }
+        crate::clipboard::Clip::Png(bytes) => {
+            if bytes.len() as u64 > limit {
+                return Err(AppError::Other(format!("Картинка больше {MAX_OUTGOING_MB} МБ")));
+            }
+            let name = format!("Снимок {}.png", chrono::Local::now().format("%d-%m-%Y %H-%M-%S"));
+            let dir = crate::updater::private_dir("drop")?;
+            let path = dir.join(&name);
+            {
+                use std::io::Write as _;
+                let mut f = crate::updater::create_new_file(&path)?;
+                f.write_all(&bytes)?;
+            }
+            let id = state.next_pick.fetch_add(1, Ordering::Relaxed).to_string();
+            ctx.picked.lock().await.insert(id.clone(), path);
+            out.push(PickedFile { id, name, size: bytes.len() as u64 });
+        }
+    }
+    Ok(out)
+}
+
+/// Превью вставленной картинки (data: URL) — только файлов, выбранных в этом сеансе.
+#[tauri::command]
+pub async fn picked_preview(state: State<'_, AppState>, id: String) -> Result<Option<String>> {
+    let ctx = state.ctx().await?;
+    let Some(path) = ctx.picked.lock().await.get(&id).cloned() else { return Ok(None) };
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        _ => return Ok(None),
+    };
+    let meta = tokio::fs::metadata(&path).await?;
+    if meta.len() > 10 * 1024 * 1024 {
+        return Ok(None);
+    }
+    use base64::Engine as _;
+    let data = tokio::fs::read(&path).await?;
+    Ok(Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(data))))
 }
 
 /// Пересылка: вложения исходного письма становятся вложениями нового — как
@@ -5848,6 +5975,9 @@ macro_rules! app_commands {
             crate::commands::pick_attachments,
             crate::commands::send_message,
         crate::commands::mailboxes_get,
+        crate::commands::send_identities,
+        crate::commands::clipboard_paste_files,
+        crate::commands::picked_preview,
         crate::commands::mailboxes_save,
             crate::commands::signatures_save,
             crate::commands::signatures_get,

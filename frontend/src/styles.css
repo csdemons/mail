@@ -1609,3 +1609,7 @@ html[data-density="compact"] .message-group { padding: 4px 10px 3px; }
 .mailbox-list li small { color: var(--muted); margin-left: 6px; }
 .mailbox-add { display: flex; gap: 8px; align-items: center; }
 .mailbox-add input { flex: 1; min-width: 0; }
+
+/* «От кого» в окне письма */
+.from-pick { display: inline-flex; align-items: center; gap: 4px; }
+.from-pick select { font: inherit; font-size: 11px; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 1px 4px; max-width: 340px; }

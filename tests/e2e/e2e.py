@@ -1,5 +1,5 @@
 import base64
-import faulthandler, json, imaplib, ssl, subprocess, sys, time, os, glob, email, email.utils
+import faulthandler, json, imaplib, ssl, subprocess, sys, time, os, glob, email, email.utils, shutil, urllib.parse
 from email.header import decode_header, make_header
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -1128,6 +1128,41 @@ try:
     W(d, 20).until(lambda d: any(k.startswith('/Talk/Снимок ') and k.endswith('.png') for k in nc_mock('GET', '/test/state')['files']))
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-pending'))
     ok('chat: image pasted from clipboard is previewed and sent')
+
+    # Файл, скопированный в файловом менеджере, и картинка, которых WebView в событии не отдаёт, —
+    # из буфера обмена системы (X11: text/uri-list, image/png).
+    if shutil.which('xclip'):
+        import subprocess
+        def clip(target, data):
+            p = subprocess.Popen(['xclip', '-selection', 'clipboard', '-t', target, '-i'], stdin=subprocess.PIPE)
+            p.communicate(data); time.sleep(0.5)
+        def paste_empty(types=(), text=''):
+            d.execute_script("""
+              const ev = new Event('paste', { bubbles: true, cancelable: true });
+              Object.defineProperty(ev, 'clipboardData', { value: { files: [], items: [], types: arguments[0], getData: (t) => t === 'text/plain' ? arguments[1] : (t === 'text/uri-list' ? arguments[1] : '') } });
+              document.querySelector('.talk-compose textarea').dispatchEvent(ev);
+            """, list(types), text)
+        doc_path = f'{OUT}/Служебная записка.txt'
+        open(doc_path, 'w').write('Прошу согласовать')
+        clip('text/uri-list', ('file://' + urllib.parse.quote(doc_path) + '\r\n').encode())
+        paste_empty(['text/uri-list', 'text/plain'], 'file://' + doc_path)
+        W(d, 10).until(lambda d: 'Служебная записка.txt' in d.find_element(By.CSS_SELECTOR, '.talk-compose .talk-pending').get_attribute('textContent'))
+        assert d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == ''  # путь не вставлен текстом
+        d.find_element(By.CSS_SELECTOR, '.talk-compose button[type=submit]').click()
+        W(d, 20).until(lambda d: '/Talk/Служебная записка.txt' in nc_mock('GET', '/test/state')['files'])
+        W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-pending'))
+        png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=')
+        clip('image/png', png)
+        paste_empty()
+        W(d, 10).until(lambda d: d.execute_script("const i = document.querySelector('.talk-compose .talk-pending .talk-paste-preview'); return i && i.complete && i.naturalWidth === 2"))
+        d.find_element(By.CSS_SELECTOR, '.talk-compose button[type=submit]').click()
+        W(d, 20).until(lambda d: len([k for k in nc_mock('GET', '/test/state')['files'] if k.startswith('/Talk/Снимок ') and k.endswith('.png')]) >= 2)
+        # обычный текст по-прежнему вставляется как текст
+        clip('text/plain', 'просто текст'.encode())
+        paste_empty(['text/plain'], 'просто текст')
+        time.sleep(1)
+        assert not d.find_elements(By.CSS_SELECTOR, '.talk-pending')
+        ok('chat: Ctrl+V of a file copied in the file manager and of an image from the system clipboard attaches them; text paste unchanged')
 
     # Отправка восстановленного черновика очищает поле — и после возврата в раздел тоже.
     box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea'); box.send_keys('Отправлю после возврата')
@@ -3422,6 +3457,19 @@ try:
     rowt('EWS: письмо в канцелярию')[0].click()
     W(d, 20).until(lambda d: 'Прошу зарегистрировать' in d.find_element(By.CSS_SELECTOR, '.reader-content').text)
     W(d, 15).until(lambda d: ews_item('EWS: письмо в канцелярию')[0]['read'])
+    # Ответ из подключённого ящика — от его имени («Отправить как»), копия — в его «Отправленные».
+    [b for b in d.find_elements(By.CSS_SELECTOR, 'button[aria-label="Ответить"]') if b.is_displayed()][0].click()
+    wait(d, '.compose-modal')
+    pick = W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.compose-modal select[aria-label="От кого"]'))[0]
+    assert Select(pick).first_selected_option.get_attribute('value') == 'office@exch.test', Select(pick).first_selected_option.text
+    assert 'Канцелярия <office@exch.test>' in [o.text for o in Select(pick).options], [o.text for o in Select(pick).options]
+    d.execute_script("arguments[0].focus(); document.execCommand('insertText', false, arguments[1])", d.find_element(By.CSS_SELECTOR, '.compose-body'), 'Зарегистрировано')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    W(d, 30).until(lambda d: any('Re: EWS: письмо в канцелярию' in m for m in ews_state()['sent']))
+    sent = [m for m in ews_state()['sent'] if 'Re: EWS: письмо в канцелярию' in m][0]
+    assert 'office@exch.test' in sent.split('\n')[0] and 'ivanov@' not in sent.split('\n')[0], sent[:300]
+    W(d, 10).until(lambda d: ews_item('Re: EWS: письмо в канцелярию') and ews_item('Re: EWS: письмо в канцелярию')[0]['folder'] == 'S-sent')
+    ok('Exchange: reply from a connected mailbox goes out as that mailbox (Send As), copy in its «Отправленные»')
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Удалить письмо"]').click()
     W(d, 15).until(lambda d: ews_item('EWS: письмо в канцелярию')[0]['folder'] == 'S-deleted')
     ok('Exchange connected mailboxes (as in Outlook): full-access mailbox from Autodiscover under «Подключённые ящики», no-access one hidden; read and delete go to that mailbox')
@@ -3445,6 +3493,22 @@ try:
     assert [p for p in paths if p.startswith('shared/kadry@exch.test/')] == ['shared/kadry@exch.test/INBOX'], list(paths)
     d.find_element(By.CSS_SELECTOR, '.folder-item[data-folder-id="shared/kadry@exch.test/INBOX"]').click()
     W(d, 20).until(lambda d: rowt('EWS: заявление на отпуск'))
+    # Новое письмо, пока открыт ящик «Кадры», — от его имени; права «Отправить как» нет — понятная ошибка.
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    wait(d, '.compose-modal')
+    pick = Select(W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.compose-modal select[aria-label="От кого"]'))[0])
+    W(d, 10).until(lambda d: pick.first_selected_option.get_attribute('value') == 'kadry@exch.test')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'petrov@exch.test')
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'), 'E2E от имени кадров')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    W(d, 30).until(lambda d: 'Нет права отправлять письма от имени kadry@exch.test' in d.find_element(By.CSS_SELECTOR, '.compose-modal').text)
+    assert not any('E2E от имени кадров' in m for m in ews_state()['sent'])
+    # от своего имени — уходит
+    pick.select_by_value('')
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    W(d, 30).until(lambda d: any('E2E от имени кадров' in m for m in ews_state()['sent']))
+    assert 'ivanov@exch.test' in [m for m in ews_state()['sent'] if 'E2E от имени кадров' in m][0].split('\n')[0]
+    ok('Exchange: new mail while a connected mailbox is open defaults to it; no Send As right — clear error, own address still works')
     # отключить — ящик пропадает из папок
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     ms = wait(d, '.mailboxes-settings')

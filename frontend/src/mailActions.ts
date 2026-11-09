@@ -56,8 +56,8 @@ export function buildDraft(mode: 'reply' | 'replyAll' | 'forward', m: MessageDet
   let to = primary
   let cc = ''
   if (mode === 'replyAll') {
-    const self = me.trim().toLowerCase()
-    const seen = new Set([self, ...primary.split(',').map(addressOf)])
+    // `me` — свой адрес и (через запятую) адрес подключённого ящика, из которого отвечают.
+    const seen = new Set([...me.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean), ...primary.split(',').map(addressOf)])
     const pick = (list: string[]) => list.filter((e) => {
       const a = addressOf(e)
       if (!a || seen.has(a)) return false

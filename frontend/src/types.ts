@@ -254,7 +254,12 @@ export interface Draft {
   replace?: { folder: string; uid: number } | null
   /** Выбранная подпись (id) или null — без подписи. */
   signatureId?: string | null
+  /** Отправитель — подключённый ящик (адрес); не задан — свой адрес. */
+  from?: string | null
 }
+
+/** От чьего имени можно отправить: свой адрес и подключённые ящики. */
+export interface Identity { address: string; name: string; own: boolean }
 
 export interface Signature { id: string; name: string; text: string }
 export interface SignatureSet { items: Signature[]; newId: string | null; replyId: string | null }

@@ -16,6 +16,7 @@ mod rules;
 mod counterparty;
 mod offline;
 mod dragout;
+mod clipboard;
 mod ews;
 mod ntlm;
 mod totp;
