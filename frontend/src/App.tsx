@@ -298,6 +298,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const [eventFocus, setEventFocus] = useState<{ e: CalEvent; n: number } | null>(null)
   const [chatUnread, setChatUnread] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [composeMin, setComposeMin] = useState(false)
   // Подписи: для новых писем и для ответов/пересылки — свои (Настройки → Подписи).
   const [sigs, setSigs] = useState<SignatureSet | null>(null)
   const signature = signatureById(sigs?.items ?? [], sigs?.newId)?.text ?? ''
@@ -369,6 +370,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     }).catch(() => undefined)
   }, [])
   composingRef.current = draft !== null
+  const draftRef = useRef<Draft | null>(null)
+  draftRef.current = draft
   const [contacts, setContacts] = useState<Contact[]>([])
   const contactsRequested = useRef(false)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -1258,7 +1261,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   // Del — удалить, Shift+Del — безвозвратно; Ctrl+A — отметить все.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (module !== 'mail' || draft || showSettings || showFilters || movePicker || confirmDelete) return
+      if (module !== 'mail' || (draft && !composeMin) || showSettings || showFilters || movePicker || confirmDelete) return
       if (document.querySelector('.viewer-backdrop')) return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
@@ -1354,6 +1357,8 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const meFor = (folder: string | null | undefined) => [myAddress, mailboxOf(folder)].filter(Boolean).join(',')
 
   function startDraft(next: Draft, folder: string | null = folderId) {
+    // Свёрнутое письмо не теряем: сначала его нужно дописать или закрыть.
+    if (draftRef.current) { setComposeMin(false); setNotice('Уже открыто письмо — допишите или закройте его, затем начните новое.'); return }
     // Письмо из подключённого ящика (или новое, пока открыт его ящик) — от имени этого ящика.
     if (next.from === undefined) next = { ...next, from: mailboxOf(folder) }
     // Какая подпись вставлена — чтобы в окне письма можно было выбрать другую.
@@ -1950,15 +1955,19 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           signatures={sigs}
           recovery
           recipientPolicy={recipientPolicy}
-          onClose={() => { setDraft(null); if (folders.find((f) => f.id === folderId)?.role === 'drafts') void loadFirstPage(folderId, true) }}
+          minimized={composeMin}
+          onMinimize={setComposeMin}
+          onClose={() => { setDraft(null); setComposeMin(false); if (folders.find((f) => f.id === folderId)?.role === 'drafts') void loadFirstPage(folderId, true) }}
           onSent={(text) => {
             setDraft(null)
+            setComposeMin(false)
             setNotice(text)
             loadScheduled()
             if ((draft.mode === 'reply' || draft.mode === 'replyAll') && detail) patchMessage(messageKey(detail), { answered: true })
           }}
           onQueued={(id, snapshot, delay) => {
             setDraft(null)
+            setComposeMin(false)
             outbox.queued(id, snapshot, delay)
             if ((draft.mode === 'reply' || draft.mode === 'replyAll') && detail) patchMessage(messageKey(detail), { answered: true })
           }}

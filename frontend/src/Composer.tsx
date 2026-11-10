@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { DateTimeField } from './DateField'
-import { AlertTriangle, CalendarClock, Check, ChevronDown, Cloud, CloudOff, FileText, Loader2, MailCheck, Paperclip, PenLine, Send, Trash2, X } from 'lucide-react'
+import { AlertTriangle, CalendarClock, Check, ChevronDown, Cloud, CloudOff, FileText, Loader2, MailCheck, Maximize2, Minus, Paperclip, PenLine, Send, Trash2, X } from 'lucide-react'
 
 import { api, errorText, formatSize, TYPING_PAUSE_MS } from './api'
 import RichEditor, { type RichEditorHandle } from './RichEditor'
@@ -26,6 +26,9 @@ interface Props {
   recovery?: boolean
   /** Проверка адресатов перед отправкой (политика администратора). */
   recipientPolicy?: { internalDomains: string[]; mode: 'smart' | 'always' | 'off' }
+  /** Окно письма свёрнуто в полоску внизу — можно работать с почтой, письмо не теряется. */
+  minimized?: boolean
+  onMinimize?: (min: boolean) => void
 }
 
 /** Автосохранение в «Черновики» — не чаще раза в полминуты, пока письмо меняется. */
@@ -132,7 +135,32 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
   )
 }
 
-export default function Composer({ from, draft, contacts, ncConnected, onClose, onSent, onQueued, signatures, recovery = false, recipientPolicy }: Props) {
+export default function Composer({ from, draft, contacts, ncConnected, onClose, onSent, onQueued, signatures, recovery = false, recipientPolicy, minimized = false, onMinimize }: Props) {
+  // --- окно письма можно перетаскивать за заголовок (двойной щелчок — на место)
+  const [pos, setPos] = useState({ x: 0, y: 0 })
+  const formRef = useRef<HTMLFormElement>(null)
+  function startMove(e: React.MouseEvent<HTMLDivElement>) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button, select, input, a, label')) return
+    const form = formRef.current
+    if (!form) return
+    e.preventDefault()
+    const rect = form.getBoundingClientRect()
+    const start = { mx: e.clientX, my: e.clientY, ...pos }
+    // окно не уезжает за край: заголовок всегда виден
+    const keep = 120
+    const lim = {
+      minX: start.x - (rect.left + rect.width - keep), maxX: start.x + (window.innerWidth - rect.left - keep),
+      minY: start.y - rect.top, maxY: start.y + (window.innerHeight - rect.top - 60),
+    }
+    const move = (ev: MouseEvent) => setPos({
+      x: Math.min(lim.maxX, Math.max(lim.minX, start.x + ev.clientX - start.mx)),
+      y: Math.min(lim.maxY, Math.max(lim.minY, start.y + ev.clientY - start.my)),
+    })
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); document.body.classList.remove('moving-window') }
+    document.body.classList.add('moving-window')
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
   const [ncPicker, setNcPicker] = useState(false)
   // --- черновик: ключ версий, состояние сохранения, «изменено после открытия/сохранения»
   const key = useRef(draft.key ?? newDraftKey())
@@ -289,6 +317,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   // Esc — то же, что «Закрыть».
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (minimized) return
       if (e.key === 'Escape' && !e.defaultPrevented && !askClose && !extWarn && !tplOpen && !schedOpen && !ncPicker) { e.preventDefault(); requestClose() }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); openTemplates() }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); void saveDraft() }
@@ -361,16 +390,28 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0)
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose() }}>
+    <div className={`modal-backdrop compose-backdrop ${minimized ? 'minimized' : ''}`} onMouseDown={(e) => { if (e.target === e.currentTarget && !minimized) requestClose() }}>
+      {minimized && (
+        <div className="compose-mini" role="region" aria-label="Свёрнутое письмо">
+          <button type="button" className="compose-mini-title" onClick={() => onMinimize?.(false)} title="Развернуть письмо">
+            <PenLine size={15} /><span>{subject.trim() || TITLES[draft.mode]}</span>
+          </button>
+          <button type="button" className="icon-button soft" aria-label="Развернуть" title="Развернуть" onClick={() => onMinimize?.(false)}><Maximize2 size={15} /></button>
+          <button type="button" className="icon-button soft" aria-label="Закрыть письмо" title="Закрыть" onClick={() => { onMinimize?.(false); requestClose() }}><X size={15} /></button>
+        </div>
+      )}
       <form
+        ref={formRef}
         className={`compose-modal ${dropping ? 'dropping' : ''}`}
+        style={pos.x || pos.y ? { transform: `translate(${pos.x}px, ${pos.y}px)` } : undefined}
+        hidden={minimized}
         onSubmit={submit}
         onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDropping(true) } }}
         onDragLeave={(e) => { if (e.currentTarget === e.target) setDropping(false) }}
         onDrop={(e) => { if (e.dataTransfer.files.length > 0) { e.preventDefault(); e.stopPropagation(); void dropFiles(e.dataTransfer.files) } }}
       >
         {dropping && <div className="drop-overlay"><Paperclip size={22} /> Отпустите, чтобы вложить файлы</div>}
-        <div className="compose-header">
+        <div className="compose-header movable" onMouseDown={startMove} onDoubleClick={(e) => { if (!(e.target as HTMLElement).closest('button, select, input')) setPos({ x: 0, y: 0 }) }} title="Перетащите, чтобы подвинуть окно; двойной щелчок — на место">
           <div><strong>{TITLES[draft.mode]}</strong>
             {identities.length > 1 ? (
               <small className="from-pick">От:{' '}
@@ -386,6 +427,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
             {save.state === 'local' && <><CloudOff size={13} /> Сохранено только на этом компьютере</>}
             {save.state === 'error' && <><AlertTriangle size={13} /> Черновик не сохранён</>}
           </span>
+          {onMinimize && <button type="button" className="icon-button" disabled={busy} onClick={() => onMinimize(true)} aria-label="Свернуть" title="Свернуть — письмо останется внизу окна"><Minus size={18} /></button>}
           <button type="button" className="icon-button" disabled={busy} onClick={requestClose} aria-label="Закрыть"><X size={18} /></button>
         </div>
         <RecipientField label="Кому" value={to} onChange={setTo} contacts={contacts} autoFocus={draft.mode !== 'reply' && draft.mode !== 'replyAll'} />

@@ -2906,6 +2906,34 @@ try:
     assert '\\Seen' not in fl and 'atomsnooze-' not in fl, fl
     ok('snooze: moved to Snoozed, returned to Inbox as unread on time')
 
+    # Окно письма двигается за заголовок и сворачивается в полоску — можно работать с почтой.
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    cm = wait(d, '.compose-modal')
+    set_value(d, cm.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'), 'E2E окно письма')
+    d.execute_script("arguments[0].focus(); document.execCommand('insertText', false, 'Текст, который не должен пропасть')", cm.find_element(By.CSS_SELECTOR, '.compose-body'))
+    head = cm.find_element(By.CSS_SELECTOR, '.compose-header')
+    x0, y0 = cm.rect['x'], cm.rect['y']
+    ActionChains(d).move_to_element_with_offset(head, -head.size['width'] // 2 + 60, 0).click_and_hold().move_by_offset(-150, -40).move_by_offset(-50, -20).release().perform()
+    W(d, 5).until(lambda d: abs(cm.rect['x'] - (x0 - 200)) < 3 and cm.rect['y'] < y0 - 20)
+    assert d.find_elements(By.CSS_SELECTOR, '.compose-modal'), 'перетаскивание не закрыло окно'
+    ActionChains(d).move_to_element_with_offset(head, -head.size['width'] // 2 + 60, 0).double_click().perform()
+    W(d, 5).until(lambda d: abs(cm.rect['x'] - x0) < 3 and abs(cm.rect['y'] - y0) < 3)
+    cm.find_element(By.CSS_SELECTOR, 'button[aria-label="Свернуть"]').click()
+    mini = wait(d, '.compose-mini')
+    W(d, 5).until(lambda d: 'E2E окно письма' in mini.get_attribute('textContent') and d.execute_script("return getComputedStyle(arguments[0]).display", cm) == 'none')
+    first = d.find_elements(By.CSS_SELECTOR, '.message-row')[0]
+    first.click()  # список писем доступен, пока письмо свёрнуто
+    W(d, 15).until(lambda d: [h for h in d.find_elements(By.CSS_SELECTOR, '.reader-content h1') if h.get_attribute('textContent').strip()])
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()  # новое письмо не затирает свёрнутое
+    W(d, 5).until(lambda d: d.execute_script("return getComputedStyle(arguments[0]).display", cm) != 'none' and not d.find_elements(By.CSS_SELECTOR, '.compose-mini'))
+    assert 'Уже открыто письмо' in d.find_element(By.TAG_NAME, 'body').text
+    assert cm.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]').get_attribute('value') == 'E2E окно письма'
+    assert 'Текст, который не должен пропасть' in cm.find_element(By.CSS_SELECTOR, '.compose-body').text
+    cm.find_element(By.CSS_SELECTOR, 'button[aria-label="Свернуть"]').click()
+    wait(d, '.compose-mini .compose-mini-title').click()
+    W(d, 5).until(lambda d: d.execute_script("return getComputedStyle(arguments[0]).display", cm) != 'none')
+    close_composer(d)
+    ok('composer: window moved by its title bar (double-click returns it), minimized to a bar while mail stays usable; new mail does not replace it')
     # 0.40. Автосохранение черновика: версии заменяются, «Продолжить» из «Черновиков», вопрос при закрытии.
     drafts_id = [f['id'] for f in inv('list_folders')['ok'] if f.get('role') == 'drafts'][0]
     def drafts_with(subj):

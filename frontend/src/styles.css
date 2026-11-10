@@ -1613,3 +1613,14 @@ html[data-density="compact"] .message-group { padding: 4px 10px 3px; }
 /* «От кого» в окне письма */
 .from-pick { display: inline-flex; align-items: center; gap: 4px; }
 .from-pick select { font: inherit; font-size: 11px; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 1px 4px; max-width: 340px; }
+
+/* Окно письма: перетаскивание за заголовок и «Свернуть» */
+.compose-header.movable { cursor: move; user-select: none; }
+.compose-header.movable select, .compose-header.movable button { cursor: pointer; }
+body.moving-window, body.moving-window * { cursor: move !important; user-select: none !important; }
+.compose-backdrop.minimized { background: transparent; pointer-events: none; }
+.compose-backdrop.minimized .compose-modal { display: none; }
+.compose-mini { position: fixed; right: 18px; bottom: 14px; pointer-events: auto; display: flex; align-items: center; gap: 4px; max-width: min(380px, calc(100vw - 36px)); padding: 6px 6px 6px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 34px #0003; }
+.compose-mini-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; background: none; border: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; padding: 4px 2px; text-align: left; }
+.compose-mini-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-dark .compose-mini { background: #252f40; border-color: #41506a; }
