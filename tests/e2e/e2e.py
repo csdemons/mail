@@ -124,6 +124,39 @@ def login(d, password):
     clear(dav); dav.send_keys('https://localhost:5232/')
     d.find_element(By.CSS_SELECTOR, '.login-submit').click()
 
+
+def scan_pdf():
+    """PDF-«скан»: картинка в JPEG 2000 (так сохраняют многие МФУ)."""
+    from PIL import Image, ImageDraw
+    import io
+    im = Image.new('L', (400, 300), 255); dr = ImageDraw.Draw(im); dr.rectangle([40, 40, 360, 120], fill=0); dr.rectangle([40, 160, 260, 200], fill=0)
+    b = io.BytesIO(); im.save(b, 'JPEG2000'); j = b.getvalue()
+    stream = b'q 300 0 0 225 0 0 cm /Im1 Do Q'
+    objs = [b'<< /Type /Catalog /Pages 2 0 R >>', b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+            b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 225] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> >> >>',
+            b'<< /Length %d >>\nstream\n' % len(stream) + stream + b'\nendstream',
+            b'<< /Type /XObject /Subtype /Image /Width 400 /Height 300 /Filter /JPXDecode /Length %d >>\nstream\n' % len(j) + j + b'\nendstream']
+    out = b'%PDF-1.5\n'; offs = []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out)); out += b'%d 0 obj\n' % i + o + b'\nendobj\n'
+    x = len(out)
+    out += b'xref\n0 %d\n0000000000 65535 f \n' % (len(objs) + 1) + b''.join(b'%010d 00000 n \n' % o for o in offs)
+    return out + b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % (len(objs) + 1, x)
+
+
+def cid_pdf():
+    """PDF со шрифтом, не встроенным в документ (CID, нужна карта кодировки)."""
+    import io
+    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    pdfmetrics.registerFont(UnicodeCIDFont('HeiseiMin-W3'))
+    b = io.BytesIO(); c = canvas.Canvas(b, pagesize=(300, 200)); c.setFont('HeiseiMin-W3', 40); c.drawString(20, 100, '日本語テキスト'); c.save()
+    return b.getvalue()
+
+
+PDF_DARK = "const c = document.querySelector('.pdf-page'); if (!c) return -1; const x = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < x.length; i += 4) if (x[i] < 100 && x[i + 3] > 0) n++; return n"
+
 d = session()
 try:
     # 1. неверный пароль
@@ -1144,13 +1177,22 @@ try:
             """, list(types), text)
         doc_path = f'{OUT}/Служебная записка.txt'
         open(doc_path, 'w').write('Прошу согласовать')
-        clip('text/uri-list', ('file://' + urllib.parse.quote(doc_path) + '\r\n').encode())
+        scan_path = f'{OUT}/Скан приказа.pdf'
+        open(scan_path, 'wb').write(scan_pdf())
+        clip('text/uri-list', ''.join('file://' + urllib.parse.quote(p) + '\r\n' for p in (doc_path, scan_path)).encode())
         paste_empty(['text/uri-list', 'text/plain'], 'file://' + doc_path)
-        W(d, 10).until(lambda d: 'Служебная записка.txt' in d.find_element(By.CSS_SELECTOR, '.talk-compose .talk-pending').get_attribute('textContent'))
+        W(d, 10).until(lambda d: 'Служебная записка.txt' in d.find_element(By.CSS_SELECTOR, '.talk-compose .talk-pending').get_attribute('textContent') and 'Скан приказа.pdf' in d.find_element(By.CSS_SELECTOR, '.talk-compose .talk-pending').get_attribute('textContent'))
         assert d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == ''  # путь не вставлен текстом
         d.find_element(By.CSS_SELECTOR, '.talk-compose button[type=submit]').click()
-        W(d, 20).until(lambda d: '/Talk/Служебная записка.txt' in nc_mock('GET', '/test/state')['files'])
+        W(d, 20).until(lambda d: '/Talk/Служебная записка.txt' in nc_mock('GET', '/test/state')['files'] and '/Talk/Скан приказа.pdf' in nc_mock('GET', '/test/state')['files'])
         W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-pending'))
+        # PDF из чата открывается в просмотре, а не белым листом (скан в JPEG 2000).
+        chip = W(d, 20).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-messages button.talk-file, button.talk-file') if 'Скан приказа.pdf' in b.get_attribute('textContent')])[-1]
+        chip.click()
+        W(d, 30).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop') and d.execute_script(PDF_DARK) > 1000)
+        d.save_screenshot(f'{OUT}/talk-pdf.png')
+        d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+        W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.viewer-backdrop'))
         png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=')
         clip('image/png', png)
         paste_empty()
@@ -1563,6 +1605,8 @@ try:
     msg = EmailMessage(); msg['From'] = 'Фотограф <photo@inst.test>'; msg['To'] = 'test@corp.test'; msg['Subject'] = 'E2E preview'; msg.set_content('Смотрите вложения.')
     msg.add_attachment(png(120, 80, (220, 40, 40)), maintype='image', subtype='png', filename='снимок.png')
     msg.add_attachment(pdf(), maintype='application', subtype='pdf', filename='схема.pdf')
+    msg.add_attachment(scan_pdf(), maintype='application', subtype='pdf', filename='скан.pdf')
+    msg.add_attachment(cid_pdf(), maintype='application', subtype='pdf', filename='без шрифтов.pdf')
     msg.add_attachment('Отчёт в кодировке 1251\nстрока 2'.encode('cp1251'), maintype='application', subtype='octet-stream', filename='отчёт.txt')
     msg.add_attachment(b'PK fake smeta', maintype='application', subtype='vnd.openxmlformats-officedocument.wordprocessingml.document', filename='Смета.docx')
     M = imap(); M.append('INBOX', None, imaplib.Time2Internaldate(time.time()), msg.as_bytes()); M.logout()
@@ -1585,6 +1629,13 @@ try:
     assert blue[2] > 200 and blue[0] < 60, blue
     d.save_screenshot(f'{OUT}/23-viewer-pdf.png')
     ok('viewer: PDF rendered by pdf.js')
+    # Скан (JPEG 2000) и документ без встроенных шрифтов — не белый лист.
+    for pos in ['3 из 5', '4 из 5']:
+        d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ARROW_RIGHT)
+        W(d, 10).until(lambda d: pos in d.find_element(By.CSS_SELECTOR, '.viewer-backdrop').text)
+        W(d, 30).until(lambda d: d.execute_script(PDF_DARK) > 1000)
+    d.save_screenshot(f'{OUT}/23b-viewer-pdf-scan.png')
+    ok('viewer: scanned PDF (JPEG 2000) and PDF without embedded fonts are drawn, not a blank page')
     d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ARROW_RIGHT)
     W(d, 10).until(lambda d: 'Отчёт в кодировке 1251' in d.find_element(By.CSS_SELECTOR, '.viewer-text').get_attribute('textContent'))
     ok('viewer: text file, cp1251 decoded')

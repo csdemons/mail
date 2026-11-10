@@ -309,7 +309,17 @@ function PdfView({ data }: { data: string }) {
         const worker = (await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url')).default
         pdfjs.GlobalWorkerOptions.workerSrc = worker
         // pdf.js 6: шрифты не компилируются в JS (eval не используется), XFA выключен.
-        const task = pdfjs.getDocument({ data: bytesOf(data), enableXfa: false })
+        // Карты CID-шрифтов, стандартные шрифты, декодеры сканов (JPEG 2000, JBIG2) и профили
+        // цвета — из самой программы (public/pdfjs); без них сканы и документы без встроенных
+        // шрифтов открывались белым листом.
+        const base = new URL('pdfjs/', document.baseURI).href
+        const task = pdfjs.getDocument({
+          data: bytesOf(data), enableXfa: false,
+          cMapUrl: `${base}cmaps/`, cMapPacked: true,
+          standardFontDataUrl: `${base}standard_fonts/`,
+          wasmUrl: `${base}wasm/`,
+          iccUrl: `${base}iccs/`,
+        })
         const doc = await task.promise
         if (cancelled) return
         setState({ pages: doc.numPages, error: '' })

@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "node scripts/pdfjs-assets.mjs && vite",
+    "build": "node scripts/pdfjs-assets.mjs && tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty",
-    "build:legacy": "tsc -b && vite build --mode legacy"
+    "build:legacy": "node scripts/pdfjs-assets.mjs && tsc -b && vite build --mode legacy"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
