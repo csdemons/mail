@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-free-busy"
+description = "Enables the nc_free_busy command without any pre-configured scope."
+commands.allow = ["nc_free_busy"]
+
+[[permission]]
+identifier = "deny-nc-free-busy"
+description = "Denies the nc_free_busy command without any pre-configured scope."
+commands.deny = ["nc_free_busy"]

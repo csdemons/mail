@@ -359,6 +359,9 @@ export interface TalkRoom {
   canDelete: boolean
   /** Исчезающие сообщения: через сколько секунд; 0 — выключено. */
   messageExpiration: number
+  /** Последнее закреплённое сообщение (0 — нет) и скрытое мной. */
+  lastPinnedId: number
+  hiddenPinnedId: number
 }
 
 export interface TalkSearchHit {
@@ -401,6 +404,10 @@ export interface TalkMessage {
   voice: boolean
   /** Исчезнет в это время (unix, с); 0 — нет. */
   expires: number
+  /** Закреплено: кем и до какого времени (unix, с; 0 — бессрочно). */
+  pinned: boolean
+  pinnedBy: string
+  pinnedUntil: number
 }
 
 export interface TalkReaction {
@@ -694,3 +701,12 @@ export interface MailboxSet {
   manual: string[]
   discovered: { address: string; name: string }[]
 }
+
+/** Профиль сотрудника в Nextcloud (поля, которые он открыл) и статус. */
+export interface NcProfile {
+  id: string; name: string; email: string; phone: string; organisation: string; role: string
+  headline: string; address: string; status: string; statusMessage: string
+}
+
+/** Занятый интервал (unix, с). */
+export interface BusySlot { start: number; end: number; kind: string }

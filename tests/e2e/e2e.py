@@ -1326,6 +1326,79 @@ try:
     W(d, 20).until(lambda d: any('обновление в среду' in m.get_attribute('textContent') for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg')))
     ok('chat: restored draft is cleared after sending and does not come back')
 
+    # Двойной Enter, пока сервер отвечает, — одно сообщение, а не два.
+    nc_mock('POST', '/test/set?slow_send=1.2')
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
+    box.send_keys('Один раз, а не два')
+    box.send_keys(Keys.ENTER); box.send_keys(Keys.ENTER); box.send_keys(Keys.ENTER)
+    W(d, 15).until(lambda d: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'Один раз, а не два' in m.get_attribute('textContent')])
+    time.sleep(2.5)
+    nc_mock('POST', '/test/set?slow_send=0')
+    assert len([m for m in nc_mock('GET', '/test/state')['messages']['abc123'] if m.get('raw') == 'Один раз, а не два']) == 1
+    ok('chat: pressing Enter several times while sending sends the message once')
+
+    # Закрепить сообщение на 7 дней — полоска вверху беседы; переход к сообщению; открепить.
+    ctx(talk_msg('Один раз, а не два')); ctx_pick('Закрепить…')
+    pd = wait(d, 'form[aria-label="Закрепить сообщение"]')
+    [l for l in pd.find_elements(By.TAG_NAME, 'label') if 'На 7 дней' in l.text][0].click()
+    [b for b in pd.find_elements(By.TAG_NAME, 'button') if b.text == 'Закрепить'][0].click()
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['pins'])
+    pin_rec = nc_mock('GET', '/test/state')['pins'][-1]
+    assert abs(pin_rec['until'] - (time.time() + 7 * 86400)) < 120, pin_rec
+    bar = W(d, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-pinned'))[0]
+    assert 'Один раз, а не два' in bar.text and 'до ' in bar.text, bar.text
+    bar.find_element(By.CSS_SELECTOR, '.talk-pinned-text').click()
+    W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-msg.flash'))
+    # навсегда — тоже можно; открепить из меню сообщения
+    ctx(talk_msg('Один раз, а не два')); ctx_pick('Открепить')
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['unpins'] and not d.find_elements(By.CSS_SELECTOR, '.talk-pinned'))
+    ok('chat: pin a message for 7 days (bar on top, jump to it), unpin')
+
+    # Напоминание о сообщении: «Через час»; потом убрать.
+    ctx(talk_msg('Один раз, а не два')); ctx_pick('Напомнить…')
+    rd = wait(d, '[aria-label="Напомнить о сообщении"]')
+    [b for b in rd.find_elements(By.TAG_NAME, 'button') if b.text.startswith('Через час')][0].click()
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['reminders'])
+    when = list(nc_mock('GET', '/test/state')['reminders'].values())[0]
+    assert abs(when - (time.time() + 3600)) < 120, when
+    ctx(talk_msg('Один раз, а не два')); ctx_pick('Напомнить…')
+    rd = wait(d, '[aria-label="Напомнить о сообщении"]')
+    W(d, 10).until(lambda d: 'Сейчас:' in rd.text)
+    [b for b in rd.find_elements(By.TAG_NAME, 'button') if b.text == 'Убрать напоминание'][0].click()
+    W(d, 15).until(lambda d: not nc_mock('GET', '/test/state')['reminders'])
+    ok('chat: remind me about a message (in 1 hour), see and remove the reminder')
+
+    # Сотрудник: профиль, доступность по календарю, письмо, личный чат — из меню автора.
+    author = [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-msg button.talk-author') if 'Иванов Иван' in b.get_attribute('textContent')][-1]
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'})", author); time.sleep(0.6); d.execute_script("arguments[0].click()", author)
+    menu_items = lambda: [b.text for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item')]
+    W(d, 5).until(lambda d: {'Чат с пользователем', 'Профиль', 'Доступность (календарь)', 'Написать письмо'} <= set(menu_items()))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text == 'Доступность (календарь)'][0].click()
+    pf = wait(d, '.talk-profile')
+    W(d, 15).until(lambda d: 'ivanov@inst.test' in pf.text and 'Ведущий инженер' in pf.text and 'НИЦ КИ, УИТ' in pf.text and 'отошёл' in pf.text)
+    W(d, 20).until(lambda d: pf.find_elements(By.CSS_SELECTOR, '.free-busy-slot'))
+    assert len(pf.find_elements(By.CSS_SELECTOR, '.free-busy-slot')) == 2 and pf.find_elements(By.CSS_SELECTOR, '.free-busy-slot.tentative')
+    fb = nc_mock('GET', '/test/state')['freebusy'][-1]
+    assert 'ATTENDEE:mailto:ivanov@inst.test' in fb and 'ORGANIZER:mailto:' in fb and 'METHOD:REQUEST' in fb, fb
+    d.save_screenshot(f'{OUT}/talk-profile-busy.png')
+    [b for b in pf.find_elements(By.TAG_NAME, 'button') if 'Написать письмо' in b.text][0].click()
+    cm = wait(d, '.compose-modal')
+    W(d, 5).until(lambda d: 'ivanov@inst.test' in (cm.get_attribute('textContent') + ' '.join(i.get_attribute('value') or '' for i in cm.find_elements(By.CSS_SELECTOR, '.recipient-field input'))))
+    close_composer(d)
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
+    author = W(d, 15).until(lambda d: [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-msg button.talk-author') if 'Иванов Иван' in b.get_attribute('textContent')])[-1]
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'})", author); time.sleep(0.6); d.execute_script("arguments[0].click()", author)
+    W(d, 5).until(lambda d: 'Чат с пользователем' in menu_items())
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text == 'Чат с пользователем'][0].click()
+    W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'Иванов Иван')
+    # в личной беседе — кнопка профиля в шапке
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Профиль собеседника"]').click()
+    W(d, 5).until(lambda d: 'Профиль' in menu_items() and 'Чат с пользователем' not in menu_items())
+    d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+    [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if 'УИТ — общий' in r.get_attribute('textContent')][0].click()
+    W(d, 15).until(lambda d: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'Один раз, а не два' in m.get_attribute('textContent')])
+    ok('chat: colleague menu — profile with status, availability from the calendar (free/busy), write an e-mail, open a direct chat')
+
     # Участники и модерация (как в Talk).
     def members_of(tok='abc123'):
         return {m['actorId']: m['participantType'] for m in nc_mock('GET', '/test/state')['members'][tok]}

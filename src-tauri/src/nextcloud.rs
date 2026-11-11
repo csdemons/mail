@@ -713,6 +713,9 @@ pub struct TalkRoom {
     pub can_delete: bool,
     /// Исчезающие сообщения: через сколько секунд удаляются; 0 — выключено.
     pub message_expiration: i64,
+    /// Последнее закреплённое сообщение (0 — нет) и то, что я скрыл у себя.
+    pub last_pinned_id: i64,
+    pub hidden_pinned_id: i64,
 }
 
 /// Найденная карточка Deck — с доской и колонкой, чтобы открыть её на месте.
@@ -819,6 +822,10 @@ pub struct TalkMessage {
     pub voice: bool,
     /// Сообщение исчезнет в это время (unix, с); 0 — не исчезнет.
     pub expires: i64,
+    /// Закреплено: кем и до какого времени (0 — бессрочно).
+    pub pinned: bool,
+    pub pinned_by: String,
+    pub pinned_until: i64,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -893,6 +900,108 @@ pub struct TalkMention {
     pub insert: String,
     pub label: String,
     pub source: String,
+}
+
+/// Профиль сотрудника (поля, которые он открыл в профиле Nextcloud) и статус.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NcProfile {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub phone: String,
+    pub organisation: String,
+    pub role: String,
+    pub headline: String,
+    pub address: String,
+    pub status: String,
+    pub status_message: String,
+}
+
+/// Занятый интервал: начало и конец (unix, с), BUSY / BUSY-TENTATIVE / BUSY-UNAVAILABLE.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BusySlot {
+    pub start: i64,
+    pub end: i64,
+    pub kind: String,
+}
+
+/// Ответ outbox (schedule-response) → занятые интервалы; сервер не знает сотрудника — ошибка.
+pub fn parse_free_busy(xml: &str, from: i64, to: i64) -> Result<Vec<BusySlot>> {
+    let doc = roxmltree::Document::parse(xml).map_err(|_| AppError::Other("Сервер ответил о занятости непонятно".into()))?;
+    let status = doc.descendants().find(|n| n.tag_name().name() == "request-status").and_then(|n| n.text()).unwrap_or("").trim().to_string();
+    if !status.starts_with('2') {
+        return Err(AppError::Other(if status.starts_with("3.7") {
+            "Сотрудник не найден в календаре Nextcloud".into()
+        } else {
+            format!("Календарь не ответил о занятости ({status})")
+        }));
+    }
+    let data = doc.descendants().find(|n| n.tag_name().name() == "calendar-data").and_then(|n| n.text()).unwrap_or("");
+    let unfolded = data.replace("\r\n ", "").replace("\n ", "").replace("\r\n\t", "").replace("\n\t", "");
+    let ts = |v: &str| chrono::NaiveDateTime::parse_from_str(v.trim().trim_end_matches('Z'), "%Y%m%dT%H%M%S").ok().map(|d| d.and_utc().timestamp());
+    let mut out = Vec::new();
+    for line in unfolded.lines() {
+        let Some(rest) = line.trim_end_matches('\r').strip_prefix("FREEBUSY") else { continue };
+        let Some((params, periods)) = rest.split_once(':') else { continue };
+        let kind = params.split(';').find_map(|p| p.strip_prefix("FBTYPE=")).unwrap_or("BUSY").to_uppercase();
+        if kind == "FREE" {
+            continue;
+        }
+        for period in periods.split(',') {
+            let Some((a, b)) = period.split_once('/') else { continue };
+            let Some(start) = ts(a) else { continue };
+            let end = if let Some(dur) = b.strip_prefix('P').or_else(|| b.strip_prefix("+P")) {
+                start + iso_duration(dur)
+            } else if let Some(e) = ts(b) {
+                e
+            } else {
+                continue;
+            };
+            if end > start && end > from && start < to {
+                out.push(BusySlot { start: start.max(from), end: end.min(to), kind: kind.clone() });
+            }
+        }
+    }
+    out.sort_by_key(|b| b.start);
+    Ok(out)
+}
+
+/// «T1H30M», «1D», «2W» (без «P») → секунды.
+fn iso_duration(d: &str) -> i64 {
+    let (mut total, mut num) = (0i64, 0i64);
+    for c in d.chars() {
+        match c {
+            '0'..='9' => num = num * 10 + i64::from(c as u8 - b'0'),
+            'W' => { total += num * 7 * 86400; num = 0 }
+            'D' => { total += num * 86400; num = 0 }
+            'H' => { total += num * 3600; num = 0 }
+            'M' => { total += num * 60; num = 0 }
+            'S' => { total += num; num = 0 }
+            _ => {}
+        }
+    }
+    total
+}
+
+#[cfg(test)]
+mod free_busy_tests {
+    use super::*;
+
+    #[test]
+    fn busy_periods_are_parsed_and_clipped() {
+        let xml = "<?xml version=\"1.0\"?><cal:schedule-response xmlns:d=\"DAV:\" xmlns:cal=\"urn:ietf:params:xml:ns:caldav\"><cal:response><cal:recipient><d:href>mailto:a@b.ru</d:href></cal:recipient><cal:request-status>2.0;Success</cal:request-status><cal:calendar-data>BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nBEGIN:VFREEBUSY\r\nFREEBUSY:20261112T090000Z/20261112T100000Z,20261112T130000Z/PT1H30M\r\nFREEBUSY;FBTYPE=BUSY-TENTATIVE:20261113T07\r\n 0000Z/20261113T080000Z\r\nFREEBUSY;FBTYPE=FREE:20261113T090000Z/20261113T100000Z\r\nEND:VFREEBUSY\r\nEND:VCALENDAR\r\n</cal:calendar-data></cal:response></cal:schedule-response>";
+        let from = chrono::NaiveDate::from_ymd_opt(2026, 11, 12).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        let slots = parse_free_busy(xml, from, from + 7 * 86400).unwrap();
+        assert_eq!(slots.len(), 3, "{slots:?}");
+        assert_eq!(slots[0].end - slots[0].start, 3600);
+        assert_eq!(slots[1].end - slots[1].start, 5400);
+        assert_eq!(slots[2].kind, "BUSY-TENTATIVE");
+        assert_eq!(slots[2].start, from + 86400 + 7 * 3600);
+        let unknown = xml.replace("2.0;Success", "3.7;Invalid calendar user");
+        assert!(parse_free_busy(&unknown, from, from + 86400).unwrap_err().to_string().contains("не найден"));
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1019,6 +1128,9 @@ pub fn parse_message(v: &Value, me: &str) -> TalkMessage {
         poll: poll_ref(v),
         voice: v["messageType"].as_str() == Some("voice-message"),
         expires: int(&v["expirationTimestamp"]),
+        pinned: v["metaData"]["pinnedAt"].is_number(),
+        pinned_by: text(&v["metaData"]["pinnedActorDisplayName"]),
+        pinned_until: int(&v["metaData"]["pinnedUntil"]),
     }
 }
 
@@ -1114,6 +1226,8 @@ impl Nc {
             can_leave: r["canLeaveConversation"].as_bool().unwrap_or(true),
             can_delete: r["canDeleteConversation"].as_bool().unwrap_or(false),
             message_expiration: int(&r["messageExpiration"]),
+            last_pinned_id: int(&r["lastPinnedId"]),
+            hidden_pinned_id: int(&r["hiddenPinnedId"]),
         }).filter(|r| r.kind != 4).collect()).unwrap_or_default();
         // Как в Talk: избранные сверху, внутри — по последней активности.
         rooms.sort_by_key(|r| (std::cmp::Reverse(r.favorite), std::cmp::Reverse(r.last_activity)));
@@ -1304,7 +1418,7 @@ impl Nc {
 
     /// Медиа и файлы беседы (как вкладка «Общие элементы» в Talk): media, file, audio, voice, other…
     pub async fn talk_shared(&self, token: &str, kind: &str, before: Option<i64>) -> Result<Vec<TalkMessage>> {
-        let kind = match kind { "media" | "file" | "audio" | "voice" | "other" | "location" | "deckcard" | "poll" | "recording" => kind, _ => "media" };
+        let kind = match kind { "media" | "file" | "audio" | "voice" | "other" | "location" | "deckcard" | "poll" | "recording" | "pinned" => kind, _ => "media" };
         let mut q = vec![("objectType", kind.to_string()), ("limit", "100".to_string())];
         if let Some(b) = before { q.push(("lastKnownMessageId", b.to_string())); }
         let (_, _, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}/share", seg(token)), &q, None, "Медиа беседы").await?;
@@ -1312,6 +1426,97 @@ impl Nc {
         let mut out: Vec<TalkMessage> = items.into_iter().map(|m| parse_message(m, &self.me)).filter(|m| !m.deleted).collect();
         out.sort_by_key(|m| std::cmp::Reverse(m.id));
         Ok(out)
+    }
+
+    /// Закрепить сообщение (модератор; в личной беседе — оба): до `until` (unix, с), 0 — бессрочно.
+    pub async fn talk_pin(&self, token: &str, id: i64, until: i64) -> Result<()> {
+        let path = format!("{TALK_CHAT}{}/{id}/pin", seg(token));
+        self.ocs(Method::POST, &path, &[], Some(json!({ "pinUntil": until.max(0) })), "Закрепление сообщения").await.map_err(|e| match e {
+            AppError::Other(m) if m.contains("HTTP 400") => AppError::Other("Не удалось закрепить: срок уже прошёл или это служебное сообщение".into()),
+            AppError::Other(m) if m.contains("нет прав") => AppError::Other("Закреплять сообщения могут модераторы беседы".into()),
+            AppError::Other(m) if m.contains("не найдено") => AppError::Other("Сервер Talk не умеет закреплять сообщения (нужен Talk 23 / Nextcloud 33 или новее)".into()),
+            e => e,
+        })?;
+        Ok(())
+    }
+
+    /// Открепить у всех (модератор) или скрыть закреплённое только у себя.
+    pub async fn talk_unpin(&self, token: &str, id: i64, only_me: bool) -> Result<()> {
+        let path = format!("{TALK_CHAT}{}/{id}/pin{}", seg(token), if only_me { "/self" } else { "" });
+        self.ocs(Method::DELETE, &path, &[], None, "Открепление сообщения").await?;
+        Ok(())
+    }
+
+    /// Напоминание о сообщении: когда (unix, с) или None — нет.
+    pub async fn talk_reminder(&self, token: &str, id: i64) -> Result<Option<i64>> {
+        let path = format!("{TALK_CHAT}{}/{id}/reminder", seg(token));
+        match self.ocs(Method::GET, &path, &[], None, "Напоминание").await {
+            Ok((_, _, d)) => Ok(Some(int(&d["timestamp"])).filter(|t| *t > 0)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Напомнить о сообщении в это время (уведомление придёт от Talk) или убрать напоминание.
+    pub async fn talk_set_reminder(&self, token: &str, id: i64, at: Option<i64>) -> Result<()> {
+        let path = format!("{TALK_CHAT}{}/{id}/reminder", seg(token));
+        match at {
+            Some(t) => { self.ocs(Method::POST, &path, &[], Some(json!({ "timestamp": t })), "Напоминание").await?; }
+            None => { self.ocs(Method::DELETE, &path, &[], None, "Напоминание").await?; }
+        }
+        Ok(())
+    }
+
+    /// Профиль сотрудника (то, что он открыл в профиле Nextcloud) и статус.
+    pub async fn user_profile(&self, user: &str) -> Result<NcProfile> {
+        let (_, _, d) = self.ocs(Method::GET, &format!("ocs/v2.php/profile/{}", seg(user)), &[], None, "Профиль").await?;
+        let mut p = NcProfile {
+            id: user.to_string(),
+            name: [text(&d["displayname"]), text(&d["displayName"])].into_iter().find(|x| !x.is_empty()).unwrap_or_else(|| user.to_string()),
+            email: text(&d["email"]),
+            phone: text(&d["phone"]),
+            organisation: text(&d["organisation"]),
+            role: text(&d["role"]),
+            headline: text(&d["headline"]),
+            address: text(&d["address"]),
+            status: String::new(),
+            status_message: String::new(),
+        };
+        if let Ok((_, _, st)) = self.ocs(Method::GET, &format!("ocs/v2.php/apps/user_status/api/v1/statuses/{}", seg(user)), &[], None, "Статус").await {
+            p.status = text(&st["status"]);
+            p.status_message = [text(&st["icon"]), text(&st["message"])].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
+        }
+        Ok(p)
+    }
+
+    /// Занятость сотрудника по календарю Nextcloud (запрос free/busy, RFC 6638):
+    /// занятые интервалы в unix-секундах.
+    pub async fn free_busy(&self, email: &str, from: i64, to: i64) -> Result<Vec<BusySlot>> {
+        let email = email.trim();
+        if !email.contains('@') || email.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ':' | ';' | ',')) {
+            return Err(AppError::Other("У сотрудника не указан адрес почты — занятость не узнать".into()));
+        }
+        let (_, _, me) = self.ocs(Method::GET, "ocs/v1.php/cloud/user", &[("format", "json".into())], None, "Профиль Nextcloud").await?;
+        let my_email = text(&me["email"]);
+        if my_email.is_empty() {
+            return Err(AppError::Other("В вашем профиле Nextcloud не указан адрес почты — без него сервер не отвечает о занятости".into()));
+        }
+        let fmt = |t: i64| chrono::DateTime::from_timestamp(t, 0).unwrap_or_default().format("%Y%m%dT%H%M%SZ").to_string();
+        let body = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Atom Workspace//RU\r\nMETHOD:REQUEST\r\nBEGIN:VFREEBUSY\r\nUID:{}\r\nDTSTAMP:{}\r\nDTSTART:{}\r\nDTEND:{}\r\nORGANIZER:mailto:{}\r\nATTENDEE:mailto:{}\r\nEND:VFREEBUSY\r\nEND:VCALENDAR\r\n",
+            crate::dav::new_uid(),
+            fmt(chrono::Utc::now().timestamp()),
+            fmt(from),
+            fmt(to),
+            my_email,
+            email
+        );
+        let url = self.creds.base.join(&format!("remote.php/dav/calendars/{}/outbox/", seg(&self.me))).map_err(|e| AppError::Other(e.to_string()))?;
+        let resp = self.dav(Method::POST, url).header("Content-Type", "text/calendar; charset=utf-8").body(body).send().await.map_err(net_error)?;
+        if !resp.status().is_success() {
+            return Err(status_error(resp.status(), "Занятость"));
+        }
+        let xml = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
+        parse_free_busy(&xml, from, to)
     }
 
     /// Предпросмотр ссылки через сервис ссылок Nextcloud (сервер сам загружает страницу;

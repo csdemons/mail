@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3, Bell, BellOff, Check, Images, Wallpaper as WallpaperIcon, Timer, Loader2, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
-  MoreHorizontal, Paperclip, Pencil, Phone, RefreshCw, Search, Send, Settings2, Smile, SmilePlus, Star, Trash2, Users, X,
+  AlarmClock, EyeOff, MoreHorizontal, Paperclip, Pin, PinOff, UserRound, Pencil, Phone, RefreshCw, Search, Send, Settings2, Smile, SmilePlus, Star, Trash2, Users, X,
 } from 'lucide-react'
 
 import { api, errorText, formatSize, onSessionReset, TYPING_PAUSE_MS } from './api'
@@ -18,6 +18,7 @@ import { ForwardDialog, RoomPeople, RoomSettings } from './TalkRoomPanel'
 import WallpaperDialog from './WallpaperDialog'
 import { useDarkTheme, useWallpaperVersion, wallpaperFor, wallpaperStyle } from './wallpaper'
 import { firstUrl, LinkCard, MediaPanel, PollCard, PollDialog, VoicePlayer, VoiceRecorder } from './TalkExtras'
+import { PinDialog, personMenu, ProfileDialog, ReminderDialog, type PersonActions } from './TalkPeople'
 
 /** Файл чата открывается во встроенном просмотрщике (фото, PDF, текст), если известен его путь. */
 function viewable(f: TalkFile): boolean {
@@ -111,7 +112,7 @@ onSessionReset(() => { drafts.clear(); lastRoom = null })
 /** Последний выполненный переход из общего поиска. */
 let talkFocusSeen = 0
 
-export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: number) => void; onNotice?: (t: string) => void; focus?: { token: string; messageId: number | null; n: number } | null }) {
+export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnread: (n: number) => void; onNotice?: (t: string) => void; focus?: { token: string; messageId: number | null; n: number } | null; onWrite?: (address: string) => void }) {
   const [rooms, setRooms] = useState<TalkRoom[] | null>(null)
   /** Беседа, история которой уже загружена (для перехода к сообщению из поиска). */
   const historyFor = useRef<string | null>(null)
@@ -124,6 +125,12 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
   const [editing, setEditing] = useState<TalkMessage | null>(null)
   const [query, setQuery] = useState('')
   const [sending, setSending] = useState(false)
+  // Отправка уже идёт: повторный Enter (пока сервер отвечает) не отправляет сообщение второй раз.
+  const sendingRef = useRef(false)
+  const [pinFor, setPinFor] = useState<TalkMessage | null>(null)
+  const [remindFor, setRemindFor] = useState<TalkMessage | null>(null)
+  const [profileFor, setProfileFor] = useState<{ id: string; name: string; busy: boolean } | null>(null)
+  const [pinned, setPinned] = useState<TalkMessage[]>([])
   const [files, setFiles] = useState<PickedFile[]>([])
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [reactFor, setReactFor] = useState<number | null>(null)
@@ -383,7 +390,8 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
   }
 
   async function send() {
-    if (!token || (!draft.trim() && files.length === 0)) return
+    if (!token || (!draft.trim() && files.length === 0) || sendingRef.current) return
+    sendingRef.current = true
     setSending(true)
     setError('')
     setEmojiOpen(false)
@@ -428,6 +436,7 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
     } catch (e) {
       setError(errorText(e))
     } finally {
+      sendingRef.current = false
       setSending(false)
     }
   }
@@ -558,8 +567,9 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
 
   /** Готовая запись с микрофона — голосовым сообщением (как в Talk). */
   async function sendVoice(blob: Blob, ext: string) {
-    if (!token) return
+    if (!token || sendingRef.current) return
     const room = token
+    sendingRef.current = true
     setSending(true)
     try {
       const buf = new Uint8Array(await blob.arrayBuffer())
@@ -573,6 +583,7 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
     } catch (e) {
       notify(`Голосовое не отправлено: ${errorText(e)}`)
     } finally {
+      sendingRef.current = false
       setSending(false)
     }
   }
@@ -590,6 +601,46 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
     navigator.clipboard.writeText(text).then(() => notify(what)).catch((e) => notify(`Не удалось скопировать: ${errorText(e)}`))
   }
 
+  // --- сотрудник: личный чат, профиль, доступность, письмо
+  const person: PersonActions = {
+    chat: (userId) => {
+      api.talkCreate([userId], null).then(async (t) => { await loadRooms(); setToken(t); setProfileFor(null) }).catch((e) => notify(`Не удалось открыть чат: ${errorText(e)}`))
+    },
+    profile: (id, name, busy = false) => setProfileFor({ id, name, busy }),
+    write: (userId) => {
+      api.ncUserProfile(userId).then((p) => {
+        if (p.email && onWrite) onWrite(p.name && p.name !== p.email ? `${p.name} <${p.email}>` : p.email)
+        else notify('В профиле сотрудника не открыт адрес почты')
+      }).catch((e) => notify(`Не удалось узнать адрес: ${errorText(e)}`))
+    },
+  }
+
+  // --- закреплённые сообщения беседы (полоска вверху, как в Talk)
+  const roomNow = rooms?.find((r) => r.token === token)
+  const pinKey = roomNow ? `${roomNow.token}:${roomNow.lastPinnedId}` : ''
+  useEffect(() => {
+    if (!roomNow || !roomNow.lastPinnedId) { setPinned([]); return }
+    let alive = true
+    api.talkShared(roomNow.token, 'pinned').then((l) => { if (alive) setPinned(l) }).catch(() => { if (alive) setPinned([]) })
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinKey])
+
+  async function pin(m: TalkMessage, until: number) {
+    if (!token) return
+    await api.talkPin(token, m.id, until)
+    notify(until ? `Сообщение закреплено до ${new Date(until * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}.` : 'Сообщение закреплено.')
+    await loadRooms()
+  }
+  async function unpin(m: TalkMessage, onlyMe: boolean) {
+    if (!token) return
+    try {
+      await api.talkUnpin(token, m.id, onlyMe)
+      notify(onlyMe ? 'Закреплённое скрыто у вас.' : 'Сообщение откреплено.')
+      await loadRooms()
+    } catch (e) { notify(`Не удалось: ${errorText(e)}`) }
+  }
+
   /** Меню сообщения (правая кнопка мыши или «⋯»). */
   function messageMenu(m: TalkMessage, r: TalkRoom): MenuItem[] {
     if (m.system) return []
@@ -604,6 +655,18 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
     if (m.text && !m.deleted) items.push({ label: 'Копировать текст', icon: <Copy size={15} />, onClick: () => copyText(m.text) })
     if (!m.deleted) items.push({ label: 'Переслать…', icon: <Forward size={15} />, onClick: () => setForwarding(m) })
     if (canWrite) items.push({ label: 'Создать карточку Deck…', icon: <KanbanSquare size={15} />, onClick: () => setCardFrom(m) })
+    if (!m.deleted) {
+      items.push({ separator: true })
+      // Закреплено ли — по списку закреплённых беседы (в ленте метка обновляется не сразу).
+      const isPinned = pinned.some((p) => p.id === m.id)
+      if (r.moderator && !isPinned) items.push({ label: 'Закрепить…', icon: <Pin size={15} />, onClick: () => setPinFor(m) })
+      if (r.moderator && isPinned) items.push({ label: 'Открепить', icon: <PinOff size={15} />, onClick: () => void unpin(m, false) })
+      items.push({ label: 'Напомнить…', icon: <AlarmClock size={15} />, onClick: () => setRemindFor(m) })
+    }
+    if (!m.own && m.authorId && !m.system) {
+      items.push({ separator: true })
+      items.push(...personMenu(m.authorId, m.author, person, { inDirect: r.kind === 1 }))
+    }
     const f = m.files[0]
     if (f && !m.deleted) {
       items.push({ separator: true })
@@ -808,6 +871,7 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
                 onContextMenu={(e) => openContextMenu(e, [{ label: 'Звонок в окне программы', icon: <Phone size={15} />, onClick: () => void startCall(room) }, { label: 'Звонок в браузере', icon: <ExternalLink size={15} />, onClick: () => void startCall(room, true) }])}><Phone size={15} /> Звонок</button>
               <button className={`icon-button soft talk-media-toggle ${showMedia ? 'active' : ''}`} aria-pressed={showMedia} aria-label="Медиа и файлы" title="Медиа и файлы беседы" onClick={() => { setShowMedia(!showMedia); setShowPeople(false) }}><Images size={17} /></button>
               <button className={`icon-button soft talk-search-toggle ${searchOpen ? 'active' : ''}`} aria-pressed={searchOpen} aria-label="Поиск по сообщениям" title="Поиск по сообщениям (Ctrl+F)" onClick={() => setSearchOpen(!searchOpen)}><Search size={17} /></button>
+              {room.kind === 1 && room.peer && <button className="icon-button soft talk-profile-toggle" aria-label="Профиль собеседника" title="Профиль, доступность, письмо" onClick={(e) => openContextMenu(e, personMenu(room.peer as string, room.name, person, { inDirect: true }))}><UserRound size={17} /></button>}
               <button className={`icon-button soft talk-people-toggle ${showPeople ? 'active' : ''}`} aria-pressed={showPeople} aria-label="Участники" title="Участники беседы" onClick={() => { setShowPeople(!showPeople); setShowMedia(false) }}><Users size={17} /></button>
               <button className="icon-button soft" aria-label="Меню беседы" title="Ещё" onClick={(e) => openContextMenu(e, roomMenu(room))}><MoreHorizontal size={17} /></button>
             </div>
@@ -832,6 +896,20 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
               </div>
             )}
             {error && <div className="inline-warning" role="alert">Talk: {error}</div>}
+            {pinned.length > 0 && room.lastPinnedId > 0 && room.hiddenPinnedId !== room.lastPinnedId && (
+              <div className="talk-pinned" role="region" aria-label="Закреплённое сообщение">
+                <Pin size={15} />
+                <button type="button" className="talk-pinned-text" title="Перейти к сообщению" onClick={() => void jumpTo(pinned[0].id)}>
+                  <b>{pinned[0].author}</b> {pinned[0].text || pinned[0].files[0]?.name}
+                  {pinned[0].pinnedUntil > 0 && <small> · до {new Date(pinned[0].pinnedUntil * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small>}
+                </button>
+                {pinned.length > 1 && <button type="button" className="text-button" onClick={(e) => openContextMenu(e, pinned.map((m) => ({ label: `${m.author}: ${(m.text || m.files[0]?.name || '').slice(0, 60)}`, icon: <Pin size={15} />, onClick: () => void jumpTo(m.id) })))}>ещё {pinned.length - 1}</button>}
+                <button type="button" className="icon-button soft" aria-label="Скрыть закреплённое" title="Скрыть"
+                  onClick={(e) => room.moderator
+                    ? openContextMenu(e, [{ label: 'Скрыть у себя', icon: <EyeOff size={15} />, onClick: () => void unpin(pinned[0], true) }, { label: 'Открепить для всех', icon: <PinOff size={15} />, onClick: () => void unpin(pinned[0], false) }])
+                    : void unpin(pinned[0], true)}><X size={15} /></button>
+              </div>
+            )}
             <div className="talk-messages" ref={listRef}
               onScroll={(e) => { const el = e.currentTarget; stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
               {loading && messages.length === 0 && <SkeletonChat />}
@@ -841,9 +919,9 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
               ) : (
                 <div key={m.id} className={`talk-msg ${m.own ? 'own' : ''} ${m.deleted ? 'deleted' : ''} ${flash === m.id ? 'flash' : ''}`} data-id={m.id}
                   onContextMenu={(e) => { const items = messageMenu(m, room); if (items.length) openContextMenu(e, items) }}>
-                  {!m.own && <Avatar id={m.authorId} name={m.author} />}
+                  {!m.own && <span className="talk-author-avatar" role="button" tabIndex={-1} title={m.author} onClick={(e) => m.authorId && openContextMenu(e, personMenu(m.authorId, m.author, person, { inDirect: room.kind === 1 }))}><Avatar id={m.authorId} name={m.author} /></span>}
                   <div className="talk-bubble">
-                    {!m.own && <div className="talk-author">{m.author}</div>}
+                    {!m.own && <button type="button" className="talk-author" onClick={(e) => m.authorId && openContextMenu(e, personMenu(m.authorId, m.author, person, { inDirect: room.kind === 1 }))}>{m.author}</button>}
                     {m.parentText && !m.deleted && <div className="talk-quote"><b>{m.parentAuthor}</b> {m.parentText}</div>}
                     {m.text && (m.deleted ? <div className="talk-text talk-deleted">{m.text}</div> : <TalkText text={m.text} />)}
                     {m.poll && !m.deleted && <PollCard token={room.token} id={m.poll.id} question={m.poll.question} notify={notify} />}
@@ -978,7 +1056,11 @@ export default function TalkView({ onUnread, onNotice, focus }: { onUnread: (n: 
           onSave={(i) => { const f = mediaView.files[i]; if (f) void saveFile(f) }} />
       )}
       {room && showPeople && <Splitter id="talk-people" side="next" min={220} max={520} label="Ширина списка участников" />}
-      {room && showPeople && <RoomPeople room={room} notify={notify} onClose={() => setShowPeople(false)} onRoomChanged={() => void loadRooms()} onSettings={() => setSettingsFor(room)} />}
+      {room && showPeople && <RoomPeople room={room} notify={notify} person={person} onClose={() => setShowPeople(false)} onRoomChanged={() => void loadRooms()} onSettings={() => setSettingsFor(room)} />}
+      {pinFor && <PinDialog message={pinFor} onPin={(u) => pin(pinFor, u)} onClose={() => setPinFor(null)} />}
+      {remindFor && token && <ReminderDialog token={token} message={remindFor} notify={notify} onClose={() => setRemindFor(null)} />}
+      {profileFor && <ProfileDialog userId={profileFor.id} name={profileFor.name} showBusy={profileFor.busy} onChat={() => person.chat(profileFor.id)}
+        onWrite={(email, name) => { setProfileFor(null); onWrite?.(name && name !== email ? `${name} <${email}>` : email) }} onClose={() => setProfileFor(null)} />}
 
       {settingsFor && <RoomSettings room={rooms?.find((r) => r.token === settingsFor.token) ?? settingsFor} notify={notify} onClose={() => setSettingsFor(null)} onChanged={() => void loadRooms()} onGone={() => roomGone(settingsFor)} />}
       {forwarding && rooms && <ForwardDialog rooms={rooms} message={forwarding} notify={notify} onClose={() => setForwarding(null)} />}

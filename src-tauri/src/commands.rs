@@ -4717,6 +4717,46 @@ pub async fn deck_attachments(state: State<'_, AppState>, board_id: i64, stack_i
 }
 
 #[tauri::command]
+pub async fn talk_pin(state: State<'_, AppState>, token: String, message_id: i64, until: i64) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_pin(&token, message_id, until).await
+}
+
+#[tauri::command]
+pub async fn talk_unpin(state: State<'_, AppState>, token: String, message_id: i64, only_me: bool) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_unpin(&token, message_id, only_me).await
+}
+
+#[tauri::command]
+pub async fn talk_reminder(state: State<'_, AppState>, token: String, message_id: i64) -> Result<Option<i64>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_reminder(&token, message_id).await
+}
+
+#[tauri::command]
+pub async fn talk_set_reminder(state: State<'_, AppState>, token: String, message_id: i64, at: Option<i64>) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_set_reminder(&token, message_id, at).await
+}
+
+#[tauri::command]
+pub async fn nc_user_profile(state: State<'_, AppState>, user: String) -> Result<nextcloud::NcProfile> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.user_profile(&user).await
+}
+
+/// Занятость сотрудника (по календарю Nextcloud) на период, не длиннее 31 дня.
+#[tauri::command]
+pub async fn nc_free_busy(state: State<'_, AppState>, email: String, from: i64, to: i64) -> Result<Vec<nextcloud::BusySlot>> {
+    if to <= from || to - from > 31 * 86400 {
+        return Err(AppError::Other("Неверный период".into()));
+    }
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.free_busy(&email, from, to).await
+}
+
+#[tauri::command]
 pub async fn deck_create_board(state: State<'_, AppState>, title: String, color: String, stacks: Vec<String>) -> Result<nextcloud::DeckBoard> {
     let ctx = state.ctx().await?;
     nc(&ctx).await?.deck_create_board(&title, &color, &stacks).await
@@ -5983,6 +6023,12 @@ macro_rules! app_commands {
         crate::commands::mailboxes_get,
         crate::commands::send_identities,
         crate::commands::deck_create_board,
+        crate::commands::talk_pin,
+        crate::commands::talk_unpin,
+        crate::commands::talk_reminder,
+        crate::commands::talk_set_reminder,
+        crate::commands::nc_user_profile,
+        crate::commands::nc_free_busy,
         crate::commands::clipboard_paste_files,
         crate::commands::picked_preview,
         crate::commands::mailboxes_save,

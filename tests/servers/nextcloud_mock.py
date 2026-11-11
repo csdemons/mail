@@ -8,6 +8,8 @@ python3 tests/servers/nextcloud_mock.py <cert> <key> [port=8443]
   GET  /test/state                         — состояние для проверок
 """
 import json, ssl, sys, threading, time, base64, itertools
+import re as _re_mod, urllib.parse
+_re_fb = _re_mod.compile(r"ATTENDEE[^:]*:mailto:([^\r\n]+)")
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
 
@@ -157,7 +159,13 @@ def room_view(r):
                 notificationLevel=r.get('notify', 0), canLeaveConversation=True, messageExpiration=r.get('expiration', 0),
                 canDeleteConversation=bool(me and me['participantType'] in (1, 2) and r['type'] != 1),
                 lastCommonReadMessage=state['peer_read'].get(r['token'], 0),
-                lastActivity=last['timestamp'] if last else 0, lastMessage=last or [])
+                lastActivity=last['timestamp'] if last else 0, lastMessage=last or [],
+                lastPinnedId=max([m['id'] for m in state['messages'][r['token']] if pin_active(m)] or [0]), hiddenPinnedId=state.get('pin_hidden', {}).get(r['token'], 0))
+
+
+def pin_active(m):
+    md = m.get('metaData') or {}
+    return 'pinnedAt' in md and (not md.get('pinnedUntil') or md['pinnedUntil'] > time.time())
 
 
 class H(BaseHTTPRequestHandler):
@@ -300,8 +308,12 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares', 'boards')} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares', 'boards')} | {k: state.get(k, d) for k, d in (('pins', []), ('unpins', []), ('reminders', {}), ('freebusy', []), ('pin_hidden', {}))} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
+        if method == 'POST' and p == '/test/set':
+            for k in ('slow_send',):
+                if k in q: state[k] = q[k]
+            return self.send(200, {})
         if method == 'POST' and p == '/test/inject':
             with lock:
                 if q.get('read') == '1' and state['messages'][q['token']]:
@@ -350,6 +362,29 @@ class H(BaseHTTPRequestHandler):
             tok = f'tok{next(ids)}'
             state['direct'][tok] = path
             return self.ocs({'url': f'{base}/index.php/apps/eurooffice/direct/{tok}'})
+        if method == 'GET' and p.startswith('/ocs/v2.php/profile/'):
+            uid = urllib.parse.unquote(p.rsplit('/', 1)[1])
+            u = next((x for x in USERS if x['id'] == uid), None)
+            if not u: return self.send(404)
+            extra = {'ivanov': {'email': 'ivanov@inst.test', 'phone': '+7 495 000-00-01', 'organisation': 'НИЦ КИ, УИТ', 'role': 'Ведущий инженер'}}.get(uid, {})
+            return self.ocs({'userId': uid, 'displayname': u['label'], 'address': None, 'headline': None, **extra})
+        if method == 'GET' and p.startswith('/ocs/v2.php/apps/user_status/api/v1/statuses/'):
+            return self.ocs({'userId': p.rsplit('/', 1)[1], 'status': 'away', 'icon': '🌴', 'message': 'В отпуске до пятницы'})
+        if method == 'POST' and p == f'/remote.php/dav/calendars/{UID}/outbox/':
+            n = int(self.headers.get('Content-Length', 0)); req = self.rfile.read(n).decode()
+            state.setdefault('freebusy', []).append(req)
+            att = _re_fb.search(req)
+            who = att.group(1) if att else ''
+            import datetime as _dt
+            day = _dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            while day.weekday() >= 5: day += _dt.timedelta(days=1)
+            def z(h, m=0): return (day + _dt.timedelta(hours=h, minutes=m)).astimezone(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+            if who == 'ivanov@inst.test':
+                status, data = '2.0;Success', f'BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nBEGIN:VFREEBUSY\r\nFREEBUSY:{z(10)}/{z(11, 30)}\r\nFREEBUSY;FBTYPE=BUSY-TENTATIVE:{z(14)}/PT1H\r\nEND:VFREEBUSY\r\nEND:VCALENDAR\r\n'
+            else:
+                status, data = '3.7;Invalid calendar user', ''
+            body = f'<?xml version="1.0"?><cal:schedule-response xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav"><cal:response><cal:recipient><d:href>mailto:{who}</d:href></cal:recipient><cal:request-status>{status}</cal:request-status><cal:calendar-data>{data}</cal:calendar-data></cal:response></cal:schedule-response>'.encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/xml; charset=utf-8'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
         if method == 'GET' and p == '/ocs/v1.php/cloud/user':
             return self.ocs({'id': UID, 'displayname': 'Тестовый Пользователь', 'email': LOGIN})
         if method == 'DELETE' and p == '/ocs/v2.php/core/apppassword':
@@ -703,8 +738,35 @@ class H(BaseHTTPRequestHandler):
                 if m.get('messageType') == 'voice-message': return 'voice'
                 mt = f.get('mimetype', '')
                 return 'media' if mt.startswith(('image/', 'video/')) else 'audio' if mt.startswith('audio/') else 'file'
+            if kind == 'pinned':
+                return self.ocs({str(m['id']): m for m in state['messages'].get(tok, []) if pin_active(m)})
             items = {str(m['id']): m for m in state['messages'].get(tok, []) if kind_of(m) == kind}
             return self.ocs(items)
+        # Закрепление (Talk 23) и напоминания о сообщениях.
+        import re as _re2
+        mm = _re2.match(r'^/ocs/v2\.php/apps/spreed/api/v1/chat/([a-z0-9]+)/(\d+)/(pin|pin/self|reminder)$', p)
+        if mm and mm.group(1) in state['messages']:
+            tok, mid, what = mm.group(1), int(mm.group(2)), mm.group(3)
+            msg = next((m for m in state['messages'][tok] if m['id'] == mid), None)
+            if msg is None: return self.send(404)
+            if what == 'pin' and method == 'POST':
+                until = int(self.body().get('pinUntil', 0))
+                if until and until < time.time(): return self.send(400, {'ocs': {'meta': {'status': 'failure', 'statuscode': 400}, 'data': {'error': 'until'}}})
+                msg['metaData'] = {'pinnedActorType': 'users', 'pinnedActorId': UID, 'pinnedActorDisplayName': 'Тестовый Пользователь', 'pinnedAt': int(time.time()), **({'pinnedUntil': until} if until else {})}
+                state.setdefault('pins', []).append({'token': tok, 'id': mid, 'until': until})
+                return self.ocs(msg)
+            if what == 'pin' and method == 'DELETE':
+                msg.pop('metaData', None); state.setdefault('unpins', []).append({'token': tok, 'id': mid}); return self.ocs(msg)
+            if what == 'pin/self' and method == 'DELETE':
+                state.setdefault('pin_hidden', {})[tok] = mid; return self.ocs(None)
+            rem = state.setdefault('reminders', {})
+            key = f'{tok}:{mid}'
+            if method == 'POST':
+                rem[key] = int(self.body()['timestamp']); return self.ocs({'userId': UID, 'token': tok, 'messageId': mid, 'timestamp': rem[key]}, 201)
+            if method == 'GET':
+                return self.ocs({'userId': UID, 'token': tok, 'messageId': mid, 'timestamp': rem[key]}) if key in rem else self.send(404, {'ocs': {'meta': {'status': 'failure', 'statuscode': 404}, 'data': []}})
+            if method == 'DELETE':
+                rem.pop(key, None); return self.ocs(None)
         RM = '/ocs/v2.php/apps/spreed/api/v4/room/'
         if p.startswith(RM) and p[len(RM):].split('/')[0] in [x['token'] for x in state['rooms']]:
             tok, *rest = p[len(RM):].split('/')
@@ -808,6 +870,7 @@ class H(BaseHTTPRequestHandler):
                 return self.send(404)
             if method == 'POST':
                 b = self.body()
+                if state.get('slow_send'): time.sleep(float(state['slow_send']))
                 with lock:
                     import re as _re
                     text, params = b['message'], {}

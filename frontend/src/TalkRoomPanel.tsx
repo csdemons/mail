@@ -5,6 +5,7 @@ import Avatar from './Avatar'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import { SkeletonRows } from './Skeleton'
 import type { NcUser, TalkMessage, TalkParticipant, TalkRoom } from './types'
+import { personMenu, type PersonActions } from './TalkPeople'
 
 export function roleLabel(role: number): string {
   switch (role) {
@@ -19,9 +20,11 @@ export function roleLabel(role: number): string {
 const STATUS: Record<string, string> = { online: 'в сети', away: 'отошёл', dnd: 'не беспокоить', busy: 'занят', offline: 'не в сети' }
 
 /** Боковая панель «Участники» — как в Talk: роли, статус, управление для модератора. */
-export function RoomPeople({ room, notify, onClose, onRoomChanged, onSettings }: {
+export function RoomPeople({ room, notify, person, onClose, onRoomChanged, onSettings }: {
   room: TalkRoom
   notify: (t: string) => void
+  /** Действия с сотрудником: личный чат, профиль, доступность, письмо. */
+  person?: PersonActions
   onClose: () => void
   onRoomChanged: () => void
   onSettings: () => void
@@ -58,9 +61,12 @@ export function RoomPeople({ room, notify, onClose, onRoomChanged, onSettings }:
   }
 
   function menuFor(p: TalkParticipant): MenuItem[] {
-    if (!room.moderator || p.me || p.role === 1) return []
+    const about: MenuItem[] = person && p.actorType === 'users' && !p.me ? personMenu(p.actorId, p.name, person, { inDirect: room.kind === 1 }) : []
+    if (!room.moderator || p.me || p.role === 1) return about
     const isMod = p.role === 2 || p.role === 6
     return [
+      ...about,
+      ...(about.length ? [{ separator: true }] : []),
       isMod
         ? { label: 'Снять права модератора', icon: <ShieldOff size={15} />, onClick: () => void act('demote', { attendeeId: p.attendeeId }, `${p.name} больше не модератор`) }
         : { label: 'Назначить модератором', icon: <Shield size={15} />, onClick: () => void act('promote', { attendeeId: p.attendeeId }, `${p.name} — модератор`) },

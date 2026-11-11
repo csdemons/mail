@@ -1650,3 +1650,48 @@ html[data-accent] .theme-dark, html[data-accent].theme-dark { --blue: var(--acce
 .accent-color.selected { border-color: var(--text, #202939); box-shadow: 0 0 0 2px var(--surface) inset; }
 .accent-colors input[type=color] { width: 30px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer; }
 .compose-sample { border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; margin: 0; }
+
+/* Чат: автор — кнопка (меню о сотруднике) */
+button.talk-author { background: none; border: 0; padding: 0; font-family: inherit; cursor: pointer; text-align: left; }
+button.talk-author:hover { text-decoration: underline; }
+.talk-author-avatar { cursor: pointer; display: inline-flex; align-self: flex-start; }
+
+/* Закреплённое сообщение — полоска вверху беседы */
+.talk-pinned { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid var(--line); background: var(--accent-soft, #eaf2ff); position: relative; z-index: 1; }
+.theme-dark .talk-pinned { background: #22324a; }
+.talk-pinned > svg { flex: 0 0 auto; color: var(--blue); }
+.talk-pinned-text { flex: 1; min-width: 0; text-align: left; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 0; }
+.talk-pinned-text small { color: var(--muted); }
+
+/* Закрепить / Напомнить / Профиль */
+.talk-small-dialog { max-width: 460px; }
+.talk-small-quote { margin: 4px 18px; padding: 6px 10px; border-left: 3px solid var(--line); color: var(--muted); font-size: 13px; max-height: 80px; overflow: hidden; }
+.talk-small-options { display: flex; flex-direction: column; gap: 6px; padding: 6px 18px; font-size: 14px; }
+.talk-small-presets { display: flex; flex-direction: column; gap: 6px; padding: 6px 18px; }
+.talk-small-presets .secondary-button { justify-content: space-between; display: flex; }
+.talk-small-presets small { color: var(--muted); font-weight: 400; }
+.talk-small-custom { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.secondary-button.danger { color: #c92a2a; }
+.talk-profile { max-width: 620px; width: min(620px, calc(100vw - 32px)); padding-bottom: 14px; }
+.talk-profile-head { display: flex; align-items: center; gap: 12px; }
+.talk-profile-head .avatar { width: 44px; height: 44px; }
+.talk-profile-loading { padding: 8px 18px; }
+.talk-profile-fields { margin: 6px 18px; display: grid; gap: 6px; }
+.talk-profile-fields div { display: grid; grid-template-columns: 110px 1fr; gap: 10px; font-size: 14px; }
+.talk-profile-fields dt { color: var(--muted); }
+.talk-profile-fields dd { margin: 0; overflow-wrap: anywhere; }
+.talk-profile-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 8px 18px; }
+.talk-profile-actions .secondary-button.active { border-color: var(--blue); color: var(--blue); }
+.free-busy { padding: 6px 18px; display: flex; flex-direction: column; gap: 8px; }
+.free-busy-grid { display: flex; flex-direction: column; gap: 6px; }
+.free-busy-hours { position: relative; height: 14px; margin-left: 96px; font-size: 10px; color: var(--muted); }
+.free-busy-hours span { position: absolute; transform: translateX(-50%); }
+.free-busy-row { display: flex; align-items: center; gap: 8px; }
+.free-busy-day { width: 88px; flex: 0 0 88px; font-size: 12px; color: var(--muted); }
+.free-busy-track { position: relative; flex: 1; height: 18px; border-radius: 5px; background: #e6f4ea; border: 1px solid var(--line); overflow: hidden; }
+.theme-dark .free-busy-track { background: #1f3a2a; }
+.free-busy-slot { position: absolute; top: 0; bottom: 0; background: #e03131; opacity: 0.85; }
+.free-busy-slot.tentative { background: repeating-linear-gradient(45deg, #e03131 0 4px, #f8b4b4 4px 8px); }
+.compose-header .talk-profile-head { display: flex; flex-direction: row; align-items: center; gap: 12px; }
+.compose-header .talk-profile-head > div { display: flex; flex-direction: column; gap: 2px; }
+.compose-header .talk-profile-head > div strong { font-size: 16px; }

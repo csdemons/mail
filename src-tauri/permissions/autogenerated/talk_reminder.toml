@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-reminder"
+description = "Enables the talk_reminder command without any pre-configured scope."
+commands.allow = ["talk_reminder"]
+
+[[permission]]
+identifier = "deny-talk-reminder"
+description = "Denies the talk_reminder command without any pre-configured scope."
+commands.deny = ["talk_reminder"]

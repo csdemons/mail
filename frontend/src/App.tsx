@@ -1585,7 +1585,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
           <div className="module-view nc-gate"><NcConnect status={ncStatus} onChange={setNcStatus} /></div>
         )}
         {module === 'deck' && ncStatus?.connected && <DeckView onNotice={setNotice} focus={deckFocus} onOpenMail={openMailById} onOpenFolder={(path) => openFound({ kind: 'file', f: { path, name: '', isDir: true, size: 0, modified: '', mime: '', fileId: null, shared: false, favorite: false, canWrite: true } })} onOpenOrg={openHistory} />}
-        {module === 'chat' && ncStatus?.connected && <TalkView onUnread={setChatUnread} onNotice={setNotice} focus={talkFocus} />}
+        {module === 'chat' && ncStatus?.connected && <TalkView onUnread={setChatUnread} onNotice={setNotice} focus={talkFocus} onWrite={(address) => composeTo(address)} />}
         {module === 'files' && ncStatus?.connected && <FilesView onNotice={setNotice} onSendLinks={sendLinks} focus={filesFocus} />}
         {module === 'contacts' && (
           <ContactsView
