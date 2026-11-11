@@ -360,6 +360,13 @@ class H(BaseHTTPRequestHandler):
         D = '/index.php/apps/deck/api/v1.0/boards'
         if p == D and method == 'GET':
             return self.send(200, state['boards'])
+        if p == D and method == 'POST':
+            b = self.body()
+            nb = {'id': next(ids), 'title': b['title'], 'color': b.get('color', '0082c9'), 'archived': False, 'deletedAt': 0,
+                  'owner': {'uid': UID, 'displayname': 'Тестовый Пользователь'},
+                  'permissions': {'PERMISSION_READ': True, 'PERMISSION_EDIT': True, 'PERMISSION_MANAGE': True, 'PERMISSION_SHARE': True}}
+            state['boards'].append(nb); state['stacks'][nb['id']] = []
+            return self.send(200, nb)
         # Комментарии (OCS) и вложения (API 1.1)
         CM = '/ocs/v2.php/apps/deck/api/v1.0/cards/'
         if p.startswith(CM) and '/comments' in p:
@@ -482,8 +489,14 @@ class H(BaseHTTPRequestHandler):
                 if len(parts) == 6 and parts[5] == 'reorder' and method == 'PUT':
                     b = self.body()
                     # Как в Nextcloud: параметры пути важнее тела запроса.
-                    card.update(stackId=stack, order=int(b['order']))
-                    return self.send(200, [card])
+                    # Как в Nextcloud (CardService::reorder): карточка встаёт на место `order`
+                    # среди карточек колонки, остальные нумеруются заново.
+                    order = int(b['order'])
+                    card.update(stackId=stack)
+                    others = sorted([c for c in state['cards'] if c['stackId'] == stack and c is not card], key=lambda c: c['order'])
+                    others.insert(min(order, len(others)), card)
+                    for i, c in enumerate(others): c['order'] = i
+                    return self.send(200, others)
                 if len(parts) == 5 and method == 'DELETE':
                     state['cards'].remove(card)
                     return self.send(200, card)

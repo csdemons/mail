@@ -652,6 +652,22 @@ impl Nc {
             .unwrap_or_default())
     }
 
+    /// Новая доска; `stacks` — колонки, которые сразу создать (по порядку).
+    pub async fn deck_create_board(&self, title: &str, color: &str, stacks: &[String]) -> Result<DeckBoard> {
+        let title: String = title.trim().chars().take(100).collect();
+        if title.is_empty() { return Err(AppError::Other("Укажите название доски".into())); }
+        let color = color.trim().trim_start_matches('#');
+        let color = if color.len() == 6 && color.chars().all(|c| c.is_ascii_hexdigit()) { color.to_lowercase() } else { "0082c9".into() };
+        let (_, _, v) = self.call(Method::POST, &format!("{DECK}boards"), &[], Some(json!({ "title": title, "color": color })), "Новая доска").await?;
+        let board = parse_board(&v);
+        if board.id == 0 { return Err(AppError::Other("Nextcloud не вернул новую доску".into())); }
+        for (i, st) in stacks.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).take(20).enumerate() {
+            let st: String = st.chars().take(100).collect();
+            self.call(Method::POST, &format!("{DECK}boards/{}/stacks", board.id), &[], Some(json!({ "title": st, "order": i })), "Новая колонка").await?;
+        }
+        Ok(board)
+    }
+
     pub async fn deck_create_stack(&self, board: i64, title: &str) -> Result<()> {
         let title = title.trim();
         if title.is_empty() { return Err(AppError::Other("Укажите название колонки".into())); }

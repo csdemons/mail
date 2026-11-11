@@ -1624,3 +1624,15 @@ body.moving-window, body.moving-window * { cursor: move !important; user-select:
 .compose-mini-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; background: none; border: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; padding: 4px 2px; text-align: left; }
 .compose-mini-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .theme-dark .compose-mini { background: #252f40; border-color: #41506a; }
+
+/* Deck: новая доска и ввод названия; место, куда встанет карточка */
+.deck-ask { padding-bottom: 4px; }
+.deck-ask-field { display: flex; flex-direction: column; gap: 4px; padding: 4px 18px; font-size: 12px; color: var(--muted); }
+.deck-ask-field input { font-size: 14px; }
+.deck-ask-check { display: flex; align-items: center; gap: 8px; padding: 4px 18px; font-size: 13px; }
+.board-colors { display: flex; gap: 8px; padding: 6px 18px; }
+.board-color { width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.board-color.selected { border-color: var(--text); box-shadow: 0 0 0 2px var(--surface) inset; }
+.sidebar-heading .icon-button { margin-left: auto; }
+.deck-card.drop-before { box-shadow: 0 -3px 0 0 var(--blue); }
+.deck-column.drop-end .deck-cards::after { content: ''; display: block; height: 3px; border-radius: 2px; background: var(--blue); margin: 2px 4px; }

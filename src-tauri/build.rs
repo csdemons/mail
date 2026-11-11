@@ -83,6 +83,7 @@ const COMMANDS: &[&str] = &[
         "send_message",
     "mailboxes_get",
     "send_identities",
+    "deck_create_board",
     "clipboard_paste_files",
     "picked_preview",
     "mailboxes_save",

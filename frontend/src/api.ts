@@ -181,6 +181,7 @@ export const api = {
   deckDeleteCard: (boardId: number, stackId: number, cardId: number) =>
     invoke<void>('deck_delete_card', { boardId, stackId, cardId }),
   deckCreateStack: (boardId: number, title: string) => invoke<void>('deck_create_stack', { boardId, title }),
+  deckCreateBoard: (title: string, color: string, stacks: string[]) => invoke<DeckBoard>('deck_create_board', { title, color, stacks }),
   deckAttachmentAdd: (boardId: number, stackId: number, cardId: number, attachment: string) =>
     invoke<void>('deck_attachment_add', { boardId, stackId, cardId, attachment }),
   deckAttachmentDelete: (boardId: number, stackId: number, cardId: number, attachmentId: number, kind: string) =>

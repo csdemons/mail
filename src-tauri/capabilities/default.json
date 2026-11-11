@@ -88,6 +88,7 @@
     "allow-send-message",
     "allow-mailboxes-get",
     "allow-send-identities",
+    "allow-deck-create-board",
     "allow-clipboard-paste-files",
     "allow-picked-preview",
     "allow-mailboxes-save",

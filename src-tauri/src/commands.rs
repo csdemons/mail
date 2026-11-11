@@ -4717,6 +4717,12 @@ pub async fn deck_attachments(state: State<'_, AppState>, board_id: i64, stack_i
 }
 
 #[tauri::command]
+pub async fn deck_create_board(state: State<'_, AppState>, title: String, color: String, stacks: Vec<String>) -> Result<nextcloud::DeckBoard> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.deck_create_board(&title, &color, &stacks).await
+}
+
+#[tauri::command]
 pub async fn deck_create_stack(state: State<'_, AppState>, board_id: i64, title: String) -> Result<()> {
     let ctx = state.ctx().await?;
     nc(&ctx).await?.deck_create_stack(board_id, &title).await
@@ -5976,6 +5982,7 @@ macro_rules! app_commands {
             crate::commands::send_message,
         crate::commands::mailboxes_get,
         crate::commands::send_identities,
+        crate::commands::deck_create_board,
         crate::commands::clipboard_paste_files,
         crate::commands::picked_preview,
         crate::commands::mailboxes_save,

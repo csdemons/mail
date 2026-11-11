@@ -11,6 +11,9 @@ import { SkeletonRows } from './Skeleton'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import { blockedBy, boardLinks, joinLinks, nestInColumn, projectOf, related, splitLinks, wouldCycle, type BoardLinks, type CardLinks } from './deckLinks'
 
+/** Цвета новой доски (как в Deck). */
+const BOARD_COLORS = ['0082c9', '31cc7c', 'e9322d', 'f1db50', 'a463bf', 'ff7f0e', '7f8c8d']
+
 /** Ручные группы досок (id доски → название группы; '' — «без группы») и свёрнутые группы. */
 const GROUPS_KEY = 'atom.deck.groups'
 const FOLDED_KEY = 'atom.deck.folded'
@@ -126,6 +129,9 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
   // (Windows) и WebKitGTK (Linux) внутри окна Tauri срабатывает ненадёжно.
   const [dragging, setDragging] = useState<DeckCard | null>(null)
   const [dropStack, setDropStack] = useState<number | null>(null)
+  // Куда встанет карточка: перед этой карточкой (null — в конец колонки).
+  const [dropBefore, setDropBefore] = useState<number | null>(null)
+  const dropBeforeRef = useRef<number | null>(null)
   const [ghost, setGhost] = useState<{ x: number; y: number; w: number; html: string } | null>(null)
   const drag = useRef<{ card: DeckCard; el: HTMLElement; x0: number; y0: number; dx: number; dy: number; active: boolean } | null>(null)
   const dropRef = useRef<number | null>(null)
@@ -140,13 +146,35 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
     })
   }
   const scaleIdx = DECK_SCALES.indexOf(view.scale)
-  const moveRef = useRef<(card: DeckCard, stack: number) => Promise<void>>(async () => {})
+  const moveRef = useRef<(card: DeckCard, stack: number, before?: number | null) => Promise<void>>(async () => {})
 
   const [filter, setFilter] = useState<CardFilter>(() => loadFilter(boardId))
   const [details, setDetails] = useState<DeckBoardDetails | null>(null)
   const [me, setMe] = useState('')
   const [ncUrl, setNcUrl] = useState('')
   useEffect(() => { api.ncStatus().then((s) => { setMe(s.uid || s.login); setNcUrl(s.url) }).catch(() => undefined) }, [])
+
+  // Ввод названия (вместо window.prompt: в WebView2 он показывает чужое системное окно, а
+  // где-то не работает вовсе).
+  const [ask, setAsk] = useState<{ title: string; label: string; value: string; resolve: (v: string | null) => void } | null>(null)
+  const askText = (title: string, label: string, value = '') => new Promise<string | null>((resolve) => setAsk({ title, label, value, resolve }))
+  const [newBoard, setNewBoard] = useState<{ title: string; color: string; columns: boolean; busy: boolean } | null>(null)
+
+  async function createBoard() {
+    if (!newBoard || !newBoard.title.trim()) return
+    setNewBoard({ ...newBoard, busy: true })
+    try {
+      const b = await api.deckCreateBoard(newBoard.title.trim(), newBoard.color, newBoard.columns ? ['К выполнению', 'В работе', 'Готово'] : [])
+      const list = await api.deckBoards()
+      setBoards(list)
+      setBoardId(b.id)
+      setNewBoard(null)
+      onNotice(`Доска «${b.title}» создана.`)
+    } catch (e) {
+      onNotice(`Не удалось создать доску: ${errorText(e)}`)
+      setNewBoard((x) => (x ? { ...x, busy: false } : x))
+    }
+  }
 
   const board = boards?.find((b) => b.id === boardId) ?? null
   const editable = Boolean(board?.canEdit)
@@ -245,7 +273,7 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
 
   async function addStack() {
     if (!board) return
-    const title = window.prompt('Название колонки')
+    const title = await askText('Новая колонка', 'Название колонки')
     if (!title?.trim()) return
     try {
       await api.deckCreateStack(board.id, title)
@@ -255,17 +283,23 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
     }
   }
 
-  async function move(card: DeckCard, targetStack: number) {
-    if (!board || card.stackId === targetStack) return
+  /** Перенести карточку в колонку — перед карточкой `before` (null — в конец); и внутри колонки. */
+  async function move(card: DeckCard, targetStack: number, before: number | null = null) {
+    if (!board) return
+    const target = stacks.find((s) => s.id === targetStack)
+    if (!target) return
+    const rest = target.cards.filter((c) => c.id !== card.id)
+    const pos = before === null ? -1 : rest.findIndex((c) => c.id === before)
+    const index = pos < 0 ? rest.length : pos
+    if (card.stackId === targetStack && target.cards.findIndex((c) => c.id === card.id) === index) return
     // Оптимистично переносим, при ошибке перечитываем доску.
-    setStacks((list) => list.map((s) => ({
-      ...s,
-      cards: s.id === targetStack ? [...s.cards.filter((c) => c.id !== card.id), { ...card, stackId: targetStack }]
-        : s.cards.filter((c) => c.id !== card.id),
-    })))
+    setStacks((list) => list.map((s) => {
+      const cards = s.cards.filter((c) => c.id !== card.id)
+      if (s.id === targetStack) cards.splice(index, 0, { ...card, stackId: targetStack })
+      return { ...s, cards }
+    }))
     try {
-      const target = stacks.find((s) => s.id === targetStack)
-      await api.deckMoveCard(board.id, card.stackId, card.id, targetStack, target?.cards.length ?? 0)
+      await api.deckMoveCard(board.id, card.stackId, card.id, targetStack, index)
       await loadStacks(board.id)
     } catch (e) {
       onNotice(`Не удалось перенести: ${errorText(e)}`)
@@ -279,6 +313,17 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
     function stackAt(x: number, y: number): number | null {
       const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-stack]')
       return el ? Number(el.dataset.stack) : null
+    }
+    /** Карточка колонки, перед которой окажется перетаскиваемая (по середине карточек). */
+    function cardBefore(stack: number, y: number, dragged: number): number | null {
+      const col = document.querySelector<HTMLElement>(`[data-stack="${stack}"]`)
+      for (const el of col?.querySelectorAll<HTMLElement>('.deck-card[data-card]') ?? []) {
+        const id = Number(el.dataset.card)
+        if (id === dragged) continue
+        const r = el.getBoundingClientRect()
+        if (y < r.top + r.height / 2) return id
+      }
+      return null
     }
     function onMove(e: PointerEvent) {
       const d = drag.current
@@ -295,6 +340,9 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
       const target = stackAt(e.clientX, e.clientY)
       dropRef.current = target
       setDropStack(target)
+      const before = target === null ? null : cardBefore(target, e.clientY, d.card.id)
+      dropBeforeRef.current = before
+      setDropBefore(before)
       // Автопрокрутка колонок у краёв.
       const box = columnsRef.current?.getBoundingClientRect()
       if (box && columnsRef.current) {
@@ -310,15 +358,22 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
       setTimeout(() => { suppressClick.current = false }, 0)
       document.body.classList.remove('deck-dragging')
       const target = dropRef.current
+      const before = dropBeforeRef.current
       dropRef.current = null
+      dropBeforeRef.current = null
       setGhost(null)
       setDragging(null)
       setDropStack(null)
-      if (commit && target !== null) void moveRef.current(d.card, target)
+      setDropBefore(null)
+      if (commit && target !== null) void moveRef.current(d.card, target, before)
     }
     const up = (e: PointerEvent) => {
-      // Колонку определяем и по точке отпускания — последнего pointermove могло не быть.
-      if (drag.current?.active) dropRef.current = stackAt(e.clientX, e.clientY) ?? dropRef.current
+      // Колонку и место определяем и по точке отпускания — последнего pointermove могло не быть.
+      const d = drag.current
+      if (d?.active) {
+        const at = stackAt(e.clientX, e.clientY)
+        if (at !== null) { dropRef.current = at; dropBeforeRef.current = cardBefore(at, e.clientY, d.card.id) }
+      }
       finish(true)
     }
     const cancel = () => finish(false)
@@ -379,7 +434,7 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
     const others = grouped.named.map(([g]) => g).filter((g) => g !== current)
     return [
       ...others.slice(0, 8).map((g): MenuItem => ({ label: `В группу «${g}»`, icon: <FolderInput size={15} />, onClick: () => setGroup(b, g) })),
-      { label: 'В новую группу…', icon: <FolderInput size={15} />, onClick: () => { const g = window.prompt('Название группы (проекта)', projectOf(b.title) ?? '')?.trim(); if (g) setGroup(b, g) } },
+      { label: 'В новую группу…', icon: <FolderInput size={15} />, onClick: () => { void askText('Новая группа', 'Название группы (проекта)', projectOf(b.title) ?? '').then((g) => { if (g?.trim()) setGroup(b, g.trim()) }) } },
       ...(current ? [{ label: 'Убрать из группы', icon: <FolderMinus size={15} />, onClick: () => setGroup(b, '') }] : []),
       ...(manualGroups[String(b.id)] !== undefined ? [{ label: 'Группа по названию (как было)', icon: <ListTree size={15} />, onClick: () => setGroup(b, null) }] : []),
       { separator: true },
@@ -397,8 +452,48 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
 
   return (
     <div className="module-view deck-view">
+      {newBoard && (
+        <div className="modal-backdrop nested" onMouseDown={(e) => { if (e.target === e.currentTarget && !newBoard.busy) setNewBoard(null) }}>
+          <form className="settings-modal confirm-modal deck-ask" role="dialog" aria-label="Новая доска" onSubmit={(e) => { e.preventDefault(); void createBoard() }}
+            onKeyDown={(e) => { if (e.key === 'Escape' && !newBoard.busy) { e.stopPropagation(); setNewBoard(null) } }}>
+            <div className="compose-header"><div><strong>Новая доска</strong></div></div>
+            <label className="deck-ask-field">Название
+              <input autoFocus aria-label="Название доски" value={newBoard.title} maxLength={100} placeholder="Например: Проект Альфа"
+                onChange={(e) => setNewBoard({ ...newBoard, title: e.target.value })} />
+            </label>
+            <div className="board-colors" role="radiogroup" aria-label="Цвет доски">
+              {BOARD_COLORS.map((c) => (
+                <button key={c} type="button" role="radio" aria-checked={newBoard.color === c} aria-label={`Цвет #${c}`} className={`board-color ${newBoard.color === c ? 'selected' : ''}`}
+                  style={{ background: `#${c}` }} onClick={() => setNewBoard({ ...newBoard, color: c })} />
+              ))}
+            </div>
+            <label className="deck-ask-check"><input type="checkbox" checked={newBoard.columns} onChange={(e) => setNewBoard({ ...newBoard, columns: e.target.checked })} /> Сразу создать колонки «К выполнению», «В работе», «Готово»</label>
+            <div className="settings-actions">
+              <button type="button" className="secondary-button" disabled={newBoard.busy} onClick={() => setNewBoard(null)}>Отмена</button>
+              <button type="submit" className="primary-button" disabled={newBoard.busy || !newBoard.title.trim()}>{newBoard.busy ? 'Создаю…' : 'Создать доску'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+      {ask && (
+        <div className="modal-backdrop nested" onMouseDown={(e) => { if (e.target === e.currentTarget) { ask.resolve(null); setAsk(null) } }}>
+          <form className="settings-modal confirm-modal deck-ask" role="dialog" aria-label={ask.title} onSubmit={(e) => { e.preventDefault(); ask.resolve(ask.value); setAsk(null) }}
+            onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); ask.resolve(null); setAsk(null) } }}>
+            <div className="compose-header"><div><strong>{ask.title}</strong></div></div>
+            <label className="deck-ask-field">{ask.label}
+              <input autoFocus aria-label={ask.label} value={ask.value} maxLength={100} onChange={(e) => setAsk({ ...ask, value: e.target.value })} />
+            </label>
+            <div className="settings-actions">
+              <button type="button" className="secondary-button" onClick={() => { ask.resolve(null); setAsk(null) }}>Отмена</button>
+              <button type="submit" className="primary-button" disabled={!ask.value.trim()}>Готово</button>
+            </div>
+          </form>
+        </div>
+      )}
       <aside className="folder-sidebar">
-        <div className="sidebar-heading"><span>Доски</span></div>
+        <div className="sidebar-heading"><span>Доски</span>
+          <button className="icon-button soft" aria-label="Новая доска" title="Новая доска" onClick={() => setNewBoard({ title: '', color: BOARD_COLORS[0], columns: true, busy: false })}><Plus size={16} /></button>
+        </div>
         <div className="folder-list">
           {boards === null && !error && <SkeletonRows variant="folder" count={5} label="Загрузка досок…" />}
           {grouped.named.map(([g, list]) => {
@@ -469,7 +564,7 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
             <section
               key={s.id}
               data-stack={s.id}
-              className={`deck-column ${dropStack === s.id && dragging?.stackId !== s.id ? 'drop' : ''}`}
+              className={`deck-column ${dropStack === s.id && dragging ? 'drop' : ''} ${dropStack === s.id && dragging && dropBefore === null ? 'drop-end' : ''}`}
             >
               <header><strong>{s.title}</strong><span>{filtered ? `${s.cards.filter((c) => cardMatches(c, filter, me)).length}/${s.cards.length}` : s.cards.length}</span></header>
               <div className="deck-cards">
@@ -485,7 +580,7 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
                   return (
                     <button
                       key={c.id}
-                      className={`deck-card ${selected?.id === c.id ? 'selected' : ''} ${c.done ? 'done' : ''} ${dragging?.id === c.id ? 'drag-source' : ''} ${relatedIds.has(c.id) ? 'related' : ''} ${waits.length ? 'blocked' : ''} ${depth ? `sub depth-${depth}` : ''} ${l?.parent ? 'is-subtask' : ''}`}
+                      className={`deck-card ${selected?.id === c.id ? 'selected' : ''} ${c.done ? 'done' : ''} ${dragging?.id === c.id ? 'drag-source' : ''} ${relatedIds.has(c.id) ? 'related' : ''} ${waits.length ? 'blocked' : ''} ${depth ? `sub depth-${depth}` : ''} ${l?.parent ? 'is-subtask' : ''} ${dragging && dropStack === s.id && dropBefore === c.id ? 'drop-before' : ''}`}
                       data-card={c.id}
                       onMouseEnter={() => setHover(c.id)}
                       onMouseLeave={() => setHover((h) => (h === c.id ? null : h))}

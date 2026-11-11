@@ -595,6 +595,27 @@ try:
     W(d, 20).until(lambda d: 'Проверить резервные копии' in d.find_elements(By.CSS_SELECTOR, '.deck-column')[1].get_attribute('textContent'))
     assert not d.find_elements(By.CSS_SELECTOR, '.deck-panel'), 'drag must not open the card'
     ok('card dragged to «В работе» with the mouse')
+    # Место в колонке: наверх той же колонки и наверх другой (над первой карточкой).
+    def drag_card(title, onto, dy):
+        src = [c for c in d.find_elements(By.CSS_SELECTOR, '.deck-card') if title in c.get_attribute('textContent')][0]
+        ac = ActionChains(d).move_to_element(src).click_and_hold()
+        for i in range(1, 5):
+            ac = ac.move_by_offset(8, -6 * i)
+        ac = ac.move_to_element_with_offset(onto, 0, dy).pause(0.3)
+        ac.release().perform()
+    col_titles = lambda i: [c.find_element(By.CSS_SELECTOR, '.deck-card-title').get_attribute('textContent').strip() for c in d.find_elements(By.CSS_SELECTOR, '.deck-column')[i].find_elements(By.CSS_SELECTOR, '.deck-card')]
+    stack_order = lambda sid: [c['title'] for c in sorted([c for c in nc_mock('GET', '/test/state')['cards'] if c['stackId'] == sid and not c.get('archived')], key=lambda c: c['order'])]
+    assert col_titles(1)[-1] == 'Проверить резервные копии' and len(col_titles(1)) >= 2, col_titles(1)
+    top = d.find_elements(By.CSS_SELECTOR, '.deck-column')[1].find_elements(By.CSS_SELECTOR, '.deck-card')[0]
+    drag_card('Проверить резервные копии', top, -top.size['height'] // 2 + 4)
+    W(d, 20).until(lambda d: stack_order(11)[0] == 'Проверить резервные копии')
+    W(d, 20).until(lambda d: col_titles(1)[0] == 'Проверить резервные копии')
+    moved = col_titles(0)[-1]
+    top = d.find_elements(By.CSS_SELECTOR, '.deck-column')[1].find_elements(By.CSS_SELECTOR, '.deck-card')[0]
+    drag_card(moved, top, -top.size['height'] // 2 + 4)
+    W(d, 20).until(lambda d: stack_order(11)[:2] == [moved, 'Проверить резервные копии'])
+    W(d, 20).until(lambda d: col_titles(1)[:2] == [moved, 'Проверить резервные копии'] and moved not in col_titles(0))
+    ok('deck: card dropped at the very top of its own column and of another column (order kept on the server)')
     # Фильтр карточек: исполнитель, метка, сброс.
     from selenium.webdriver.support.ui import Select
     shown = lambda: sorted(c.find_element(By.CSS_SELECTOR, '.deck-card-title').get_attribute('textContent').strip() for c in d.find_elements(By.CSS_SELECTOR, '.deck-columns .deck-card'))
@@ -730,8 +751,9 @@ try:
                     raise
                 d.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
                 time.sleep(0.5)
-    d.execute_script("window.prompt = () => 'Проект Альфа'")
     dmenu('Объявления', 'В новую группу…')
+    gi = wait(d, 'form[aria-label="Новая группа"] input')
+    set_value(d, gi, 'Проект Альфа'); gi.send_keys(Keys.ENTER)
     W(d, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"]'))
     dmenu('УИТ — задачи', 'В группу «Проект Альфа»')
     W(d, 5).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.board-group[data-group="Проект Альфа"] .folder-item')) == 2)
@@ -743,6 +765,26 @@ try:
     dmenu('УИТ — задачи', 'Группа по названию (как было)')
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.board-group'))
     ok('deck: boards grouped by project via right-click menu, groups fold, back to automatic grouping')
+    # Новая доска: название, цвет, стандартные колонки — и она сразу открыта.
+    d.find_element(By.CSS_SELECTOR, '.deck-view button[aria-label="Новая доска"]').click()
+    nb = wait(d, 'form[aria-label="Новая доска"]')
+    set_value(d, nb.find_element(By.CSS_SELECTOR, 'input[aria-label="Название доски"]'), 'E2E новая доска')
+    nb.find_element(By.CSS_SELECTOR, 'button[aria-label="Цвет #31cc7c"]').click()
+    [b for b in nb.find_elements(By.TAG_NAME, 'button') if b.text == 'Создать доску'][0].click()
+    W(d, 20).until(lambda d: [b for b in nc_mock('GET', '/test/state')['boards'] if b['title'] == 'E2E новая доска'])
+    nbd = [b for b in nc_mock('GET', '/test/state')['boards'] if b['title'] == 'E2E новая доска'][0]
+    assert nbd['color'] == '31cc7c', nbd
+    assert [s['title'] for s in nc_mock('GET', '/test/state')['stacks'][str(nbd['id'])]] == ['К выполнению', 'В работе', 'Готово']
+    W(d, 20).until(lambda d: [h.text for h in d.find_elements(By.CSS_SELECTOR, '.deck-column header strong')] == ['К выполнению', 'В работе', 'Готово'])
+    assert 'E2E новая доска' in d.find_element(By.CSS_SELECTOR, '.deck-view .folder-item.selected').text
+    # Колонка — тоже своим окном ввода, а не системным prompt.
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-view button') if 'Колонка' in b.text or b.get_attribute('aria-label') == 'Новая колонка'][0].click()
+    ci = wait(d, 'form[aria-label="Новая колонка"] input')
+    set_value(d, ci, 'Проверка'); ci.send_keys(Keys.ENTER)
+    W(d, 20).until(lambda d: [h.text for h in d.find_elements(By.CSS_SELECTOR, '.deck-column header strong')][-1:] == ['Проверка'])
+    board_btn('УИТ — задачи').click()
+    W(d, 20).until(lambda d: 'Проверить резервные копии' in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('textContent'))
+    ok('deck: new board created (name, colour, default columns) and opened; new column via the app dialog')
 
     # Связи карточек: подзадача-карточка видна на доске под главной, «выполняется после» — с замком.
     board_btn('УИТ — задачи').click()
