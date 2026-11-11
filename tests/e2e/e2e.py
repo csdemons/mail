@@ -615,6 +615,9 @@ try:
     drag_card(moved, top, -top.size['height'] // 2 + 4)
     W(d, 20).until(lambda d: stack_order(11)[:2] == [moved, 'Проверить резервные копии'])
     W(d, 20).until(lambda d: col_titles(1)[:2] == [moved, 'Проверить резервные копии'] and moved not in col_titles(0))
+    # и обратно в свою колонку — дальше тесты ждут её там
+    drag_card(moved, d.find_elements(By.CSS_SELECTOR, '.deck-column')[0].find_element(By.TAG_NAME, 'header'), 0)
+    W(d, 20).until(lambda d: moved in stack_order(10) and moved in col_titles(0))
     ok('deck: card dropped at the very top of its own column and of another column (order kept on the server)')
     # Фильтр карточек: исполнитель, метка, сброс.
     from selenium.webdriver.support.ui import Select
@@ -768,22 +771,22 @@ try:
     # Новая доска: название, цвет, стандартные колонки — и она сразу открыта.
     d.find_element(By.CSS_SELECTOR, '.deck-view button[aria-label="Новая доска"]').click()
     nb = wait(d, 'form[aria-label="Новая доска"]')
-    set_value(d, nb.find_element(By.CSS_SELECTOR, 'input[aria-label="Название доски"]'), 'E2E новая доска')
+    set_value(d, nb.find_element(By.CSS_SELECTOR, 'input[aria-label="Название доски"]'), 'Хозяйственная служба')
     nb.find_element(By.CSS_SELECTOR, 'button[aria-label="Цвет #31cc7c"]').click()
     [b for b in nb.find_elements(By.TAG_NAME, 'button') if b.text == 'Создать доску'][0].click()
-    W(d, 20).until(lambda d: [b for b in nc_mock('GET', '/test/state')['boards'] if b['title'] == 'E2E новая доска'])
-    nbd = [b for b in nc_mock('GET', '/test/state')['boards'] if b['title'] == 'E2E новая доска'][0]
+    W(d, 20).until(lambda d: [b for b in nc_mock('GET', '/test/state')['boards'] if b['title'] == 'Хозяйственная служба'])
+    nbd = [b for b in nc_mock('GET', '/test/state')['boards'] if b['title'] == 'Хозяйственная служба'][0]
     assert nbd['color'] == '31cc7c', nbd
     assert [s['title'] for s in nc_mock('GET', '/test/state')['stacks'][str(nbd['id'])]] == ['К выполнению', 'В работе', 'Готово']
     W(d, 20).until(lambda d: [h.text for h in d.find_elements(By.CSS_SELECTOR, '.deck-column header strong')] == ['К выполнению', 'В работе', 'Готово'])
-    assert 'E2E новая доска' in d.find_element(By.CSS_SELECTOR, '.deck-view .folder-item.selected').text
+    W(d, 5).until(lambda d: any('Хозяйственная служба' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item.selected')))
     # Колонка — тоже своим окном ввода, а не системным prompt.
     [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-view button') if 'Колонка' in b.text or b.get_attribute('aria-label') == 'Новая колонка'][0].click()
     ci = wait(d, 'form[aria-label="Новая колонка"] input')
     set_value(d, ci, 'Проверка'); ci.send_keys(Keys.ENTER)
     W(d, 20).until(lambda d: [h.text for h in d.find_elements(By.CSS_SELECTOR, '.deck-column header strong')][-1:] == ['Проверка'])
     board_btn('УИТ — задачи').click()
-    W(d, 20).until(lambda d: 'Проверить резервные копии' in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('textContent'))
+    W(d, 20).until(lambda d: 'Обновить RuPost' in d.find_element(By.CSS_SELECTOR, '.deck-columns').get_attribute('textContent'))
     ok('deck: new board created (name, colour, default columns) and opened; new column via the app dialog')
 
     # Связи карточек: подзадача-карточка видна на доске под главной, «выполняется после» — с замком.

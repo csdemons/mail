@@ -208,18 +208,23 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, loading, stacks, focus])
 
+  // Какая доска открыта сейчас: ответ по доске, с которой уже ушли, не показываем
+  // (иначе под заголовком новой доски оказывались карточки прежней).
+  const currentBoard = useRef<number | null>(null)
+  currentBoard.current = boardId
   const loadStacks = useCallback(async (id: number, quiet = false) => {
     if (!quiet) setLoading(true)
     setError('')
     try {
       const s = await api.deckStacks(id)
+      if (currentBoard.current !== id) return
       setStacks(s)
       stacksFor.current = id
       setSelected((cur) => (cur ? s.flatMap((x) => x.cards).find((c) => c.id === cur.id) ?? null : null))
     } catch (e) {
-      setError(errorText(e))
+      if (currentBoard.current === id) setError(errorText(e))
     } finally {
-      setLoading(false)
+      if (currentBoard.current === id) setLoading(false)
     }
   }, [])
 
@@ -227,6 +232,8 @@ export default function DeckView({ onNotice, focus, onOpenMail, onOpenFolder, on
     if (boardId === null) return
     try { localStorage.setItem(LAST_BOARD_KEY, String(boardId)) } catch { /* не критично */ }
     stacksFor.current = null
+    currentBoard.current = boardId
+    setStacks([])
     setSelected(null)
     setFilter(loadFilter(boardId))
     setDetails(null)
