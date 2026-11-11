@@ -8,7 +8,9 @@ import type { MessageDetail } from './types'
  *  (без скриптов, без обращений в сеть); иначе — обычным текстом. */
 const DARK_KEY = 'rrcki-mail.mail-dark'
 
-export default function MessageBody({ detail, scale = 1, dark = false, onNotice }: {
+export default function MessageBody({ detail, scale = 1, dark = false, font = '', onNotice }: {
+  /** Шрифт текста писем (CSS font-family, из настроек «Вид»); '' — по умолчанию. Письма со своим шрифтом не меняются. */
+  font?: string
   detail: MessageDetail
   scale?: number
   /** Тёмная тема программы: письмо затемняется (картинки остаются как есть). */
@@ -69,7 +71,7 @@ export default function MessageBody({ detail, scale = 1, dark = false, onNotice 
           <button className="text-button" disabled={loadingImages} onClick={() => void showImages()}>{loadingImages ? 'Загрузка…' : 'Показать картинки'}</button>
         </>}
     </div>}
-    <HtmlFrame html={html} scale={scale} dark={dark && darkBody} onHover={setHover} onLink={openChecked} />
+    <HtmlFrame html={html} scale={scale} dark={dark && darkBody} font={font} onHover={setHover} onLink={openChecked} />
     {hover && <div className="link-status" title={hover}>{hover}</div>}
     {suspicious && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setSuspicious(null) }}>
       <div className="settings-modal confirm-modal" role="alertdialog" aria-label="Подозрительная ссылка">
@@ -111,7 +113,7 @@ const FRAME_SANDBOX = /Windows/.test(navigator.userAgent) && /Chrome\//.test(nav
 
 const FRAME_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; script-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; connect-src 'none'"
 
-function HtmlFrame({ html, scale, dark, onHover, onLink }: { html: string; scale: number; dark: boolean; onHover: (href: string) => void; onLink: (href: string, text: string) => void }) {
+function HtmlFrame({ html, scale, dark, font, onHover, onLink }: { html: string; scale: number; dark: boolean; font: string; onHover: (href: string) => void; onLink: (href: string, text: string) => void }) {
   const frame = useRef<HTMLIFrameElement>(null)
   // Обработчики — через ref: иначе каждое наведение мыши перезапускало бы подписки рамки.
   const cb = useRef({ onHover, onLink })
@@ -125,7 +127,7 @@ function HtmlFrame({ html, scale, dark, onHover, onLink }: { html: string; scale
   // обработчики программы в такой рамке не срабатывают — там песочницы нет, а защиту
   // дают очистка HTML и CSP рамки и окна (их проверяет E2E с набором XSS-приёмов).
   // В WebView2 (Windows) песочница проверена: щелчки и наведение работают.
-  const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}"><style>${FRAME_CSS}${dark ? FRAME_DARK_CSS : ''} html { zoom: ${scale}; }</style></head><body>${html}</body></html>`
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}"><style>${FRAME_CSS}${dark ? FRAME_DARK_CSS : ''} html { zoom: ${scale}; }${font && /^[\p{L}\p{N} .,"'-]+$/u.test(font) ? ` body { font-family: ${font}; }` : ''}</style></head><body>${html}</body></html>`
 
   useEffect(() => {
     const el = frame.current
@@ -167,7 +169,7 @@ function HtmlFrame({ html, scale, dark, onHover, onLink }: { html: string; scale
     const ready = el.contentDocument
     if (ready?.readyState === 'complete' && ready.body && ready.body.childNodes.length > 0) onLoad()
     return () => { el.removeEventListener('load', onLoad); observer?.disconnect() }
-  }, [html, scale, dark])
+  }, [html, scale, dark, font])
 
   return (
     <iframe

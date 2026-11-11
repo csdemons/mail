@@ -6,6 +6,7 @@ import { api, errorText, formatSize, TYPING_PAUSE_MS } from './api'
 import RichEditor, { type RichEditorHandle } from './RichEditor'
 import NcFilePicker from './NcFilePicker'
 import type { Contact, Draft, Identity, MailTemplate, PickedFile, SignatureSet } from './types'
+import { composeWrap } from './appearance'
 import { checkRecipients, fillTemplate, newDraftKey, signatureById, signatureHtml, TEMPLATE_VARS, templateValues, type ExternalCheck } from './drafting'
 import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './sending'
 import { fileToBase64 } from './mailTools'
@@ -361,7 +362,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
       const body = editor.current?.text() ?? ''
       const delaySecs = onQueued && !sendAt ? loadSendPrefs().undoSecs : 0
       const ticket = await api.sendMessage({
-        to, cc, subject, body, html,
+        to, cc, subject, body, html: html ? composeWrap(html) : html,
         inReplyTo: draft.inReplyTo,
         references: draft.references,
         attachments: files.map((f) => f.id),

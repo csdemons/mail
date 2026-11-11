@@ -51,7 +51,7 @@ import type { NotifyPrefs } from './notifications'
 import { SkeletonReader, SkeletonRows } from './Skeleton'
 import Splitter from './Splitter'
 import AppearanceSettings from './AppearanceSettings'
-import { useAppearance, zoomStep } from './appearance'
+import { fontStack, setAppearance, useAppearance, zoomStep } from './appearance'
 
 const ROLE_LABELS: Partial<Record<FolderRole, string>> = {
   inbox: 'Входящие',
@@ -194,13 +194,18 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   }
 
   const appearance = useAppearance()
-  const [dark, setDark] = useState(() => {
-    try {
-      const saved = localStorage.getItem('rrcki-mail.theme')
-      if (saved) return saved === 'dark'
-    } catch { /* нет хранилища */ }
-    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
-  })
+  // Тема — из настроек «Вид» (светлая, тёмная, как в системе); кнопка в шапке переключает явно.
+  const systemDark = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  const [sysDark, setSysDark] = useState(systemDark)
+  useEffect(() => {
+    const m = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!m) return
+    const on = () => setSysDark(m.matches)
+    m.addEventListener?.('change', on)
+    return () => m.removeEventListener?.('change', on)
+  }, [])
+  const dark = appearance.theme === 'system' ? sysDark : appearance.theme === 'dark'
+  const setDark = (v: boolean) => setAppearance({ theme: v ? 'dark' : 'light' })
   // Тема запоминается — окна писем открываются в той же теме. Класс темы — и на
   // всей странице: то, что выводится поверх окна программы, тоже меняет цвета.
   useEffect(() => {
@@ -1928,7 +1933,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
               onEdit={ncStatus?.connected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(detail.folder, detail.uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined}
             />}
             <MdnBar detail={detail} me={myAddress} onNotice={setNotice} onDone={() => { setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] }); patchMessage(messageKey(detail), { keywords: [...detail.keywords, '$MDNSent'] }) }} />
-            <MessageBody detail={detail} scale={appearance.text / 14} dark={dark} onNotice={setNotice} />
+            <MessageBody detail={detail} scale={appearance.text / 14} dark={dark} font={appearance.readFont ? fontStack(appearance.readFont) : ''} onNotice={setNotice} />
             <div className="reader-actions">
               <button className="primary-button" onClick={() => openComposer('reply')}><Reply size={16} /> Ответить</button>
               <button className="secondary-button" onClick={() => openComposer('replyAll')}><ReplyAll size={16} /> Ответить всем</button>

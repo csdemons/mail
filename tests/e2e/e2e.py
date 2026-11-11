@@ -735,6 +735,57 @@ try:
     d.find_element(By.CSS_SELECTOR, '.settings-modal .compose-header button[aria-label="Закрыть"]').click()
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.appearance-settings'))
     ok('appearance: zoom with Ctrl +/0 and in settings, chat/mail text size')
+    # Тема, цвет, шрифты интерфейса, писем и новых писем; «Вернуть как было».
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    sec = wait(d, '.appearance-settings')
+    css = lambda js: d.execute_script(js)
+    [b for b in sec.find_elements(By.CSS_SELECTOR, '[aria-label="Тема"] button') if b.text == 'Тёмная'][0].click()
+    W(d, 5).until(lambda d: css("return document.documentElement.classList.contains('theme-dark')"))
+    [b for b in sec.find_elements(By.CSS_SELECTOR, '[aria-label="Тема"] button') if b.text == 'Светлая'][0].click()
+    W(d, 5).until(lambda d: not css("return document.documentElement.classList.contains('theme-dark')"))
+    sec.find_element(By.CSS_SELECTOR, 'button[aria-label="Цвет #2f9e44"]').click()
+    W(d, 5).until(lambda d: css("return getComputedStyle(document.querySelector('.folder-item.selected, .module.active')).getPropertyValue('--blue').trim()") == '#2f9e44')
+    assert css("return getComputedStyle(document.querySelector('.primary-button')).backgroundColor") in ('rgb(47, 158, 68)',), css("return getComputedStyle(document.querySelector('.primary-button')).backgroundColor")
+    Select(sec.find_element(By.CSS_SELECTOR, 'select[aria-label="Шрифт интерфейса"]')).select_by_visible_text('DejaVu Sans')
+    W(d, 5).until(lambda d: css("return getComputedStyle(document.body).fontFamily").startswith('"DejaVu Sans"'))
+    # свой шрифт по названию; опасные символы не проходят в CSS
+    Select(sec.find_element(By.CSS_SELECTOR, 'select[aria-label="Шрифт писем и сообщений"]')).select_by_visible_text('Другой…')
+    fi = sec.find_element(By.CSS_SELECTOR, 'input[aria-label="Шрифт писем и сообщений: название"]')
+    set_value(d, fi, 'Bad"; } body { color: red'); fi.send_keys(Keys.ENTER)
+    W(d, 5).until(lambda d: appearance().get('readFont') == '')
+    set_value(d, fi, 'DejaVu Serif'); fi.send_keys(Keys.ENTER)
+    W(d, 5).until(lambda d: appearance().get('readFont') == 'DejaVu Serif')
+    assert css("return getComputedStyle(document.querySelector('.appearance-sample')).fontFamily").startswith('"DejaVu Serif"')
+    Select(sec.find_element(By.CSS_SELECTOR, 'select[aria-label="Шрифт новых писем"]')).select_by_visible_text('DejaVu Sans')
+    Select(sec.find_element(By.CSS_SELECTOR, 'select[aria-label="Размер шрифта новых писем"]')).select_by_value('16')
+    W(d, 5).until(lambda d: appearance().get('composeFont') == 'DejaVu Sans' and appearance().get('composeSize') == 16)
+    d.save_screenshot(f'{OUT}/24c-appearance-custom.png')
+    d.find_element(By.CSS_SELECTOR, '.settings-modal .compose-header button[aria-label="Закрыть"]').click()
+    # новое письмо: шрифт в редакторе и у получателя
+    d.find_element(By.CSS_SELECTOR, '.compose-top').click()
+    cm = wait(d, '.compose-modal')
+    assert css("return getComputedStyle(document.querySelector('.rt-content')).fontFamily").startswith('"DejaVu Sans"')
+    set_value(d, d.find_element(By.CSS_SELECTOR, '.recipient-field input'), 'ivanov@inst.test')
+    set_value(d, d.find_element(By.CSS_SELECTOR, 'input[placeholder="Тема письма"]'), 'E2E font mail')
+    d.execute_script("arguments[0].focus(); document.execCommand('insertText', false, 'Текст своим шрифтом')", d.find_element(By.CSS_SELECTOR, '.compose-body'))
+    d.find_element(By.CSS_SELECTOR, '.compose-modal button[type=submit]').click()
+    def sent_font():
+        M = imap(); M.select('Sent'); typ, ids = M.search(None, 'SUBJECT', '"E2E font mail"')
+        raw = M.fetch(ids[0].split()[-1], '(RFC822)')[1][0][1] if ids[0] else b''
+        M.logout()
+        if not raw: return ''
+        m = email.message_from_bytes(raw)
+        return next((p.get_payload(decode=True).decode() for p in m.walk() if p.get_content_type() == 'text/html'), '')
+    W(d, 30).until(lambda d: 'Текст своим шрифтом' in sent_font())
+    assert "font-family: 'DejaVu Sans', Arial" in sent_font() and 'font-size: 16px' in sent_font(), sent_font()[:400]
+    d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
+    sec = wait(d, '.appearance-settings')
+    [b for b in sec.find_elements(By.TAG_NAME, 'button') if 'Вернуть как было' in b.text][0].click()
+    W(d, 5).until(lambda d: appearance().get('uiFont') == '' and appearance().get('accent') == '' and appearance().get('composeFont') == '' and appearance().get('theme') == 'system')
+    W(d, 5).until(lambda d: not css("return document.documentElement.dataset.accent"))
+    d.find_element(By.CSS_SELECTOR, '.settings-modal .compose-header button[aria-label="Закрыть"]').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.appearance-settings'))
+    ok('appearance: theme (light/dark/system), accent colour, interface/reading fonts (unsafe names rejected), font of new mail reaches the recipient; reset')
 
     # Группы досок (по проекту): вручную через меню правой кнопки; запоминается.
     board_btn = lambda title: [b for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item') if title in b.get_attribute('textContent')][0]

@@ -7,6 +7,7 @@ import { api, editNotice, errorText, formatFullDate, NC_MAIL_DIR } from './api'
 import { AttachmentList } from './AttachmentViewer'
 import Composer from './Composer'
 import MessageBody from './MessageBody'
+import { fontStack, getAppearance } from './appearance'
 import AddressLine from './AddressLine'
 import MdnBar from './MdnBar'
 import { useOutbox } from './sending'
@@ -195,7 +196,7 @@ export default function MessageWindow({ folder, uid }: { folder: string; uid: nu
         </div>
         {detail.attachments.length > 0 && <AttachmentList folder={folder} uid={uid} attachments={detail.attachments} onSave={(i) => void saveAttachment(i)} onNotice={setNotice} onEdit={ncConnected ? (i, name) => { setNotice(`Открываю «${name}»…`); api.ncEditAttachment(folder, uid, i, NC_MAIL_DIR).then((r) => setNotice(editNotice(r, name))).catch((e) => setNotice(`Не удалось открыть в редакторе: ${errorText(e)}`)) } : undefined} />}
         <MdnBar detail={detail} me={me} onNotice={setNotice} onDone={() => setDetail((d) => d && { ...d, keywords: [...d.keywords, '$MDNSent'] })} />
-        <MessageBody detail={detail} scale={font / 15} dark={dark} onNotice={setNotice} />
+        <MessageBody detail={detail} scale={font / 15} dark={dark} font={getAppearance().readFont ? fontStack(getAppearance().readFont) : ''} onNotice={setNotice} />
       </div> : <div className="empty-reader">
         {error ? <><strong>Не удалось открыть письмо</strong><span>{error}</span></> : <SkeletonReader />}
       </div>}
