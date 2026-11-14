@@ -10,6 +10,7 @@ import { CHECK_UPDATE_EVENT } from './UpdateNotice'
 import About from './About'
 import type { Account, NcStatus, SignatureSet, Category, Folder, MessageSummary } from './types'
 
+/** Окно «Учётная запись»: подключение, уведомления, вид, подписи, отправка, перенос, защита, диагностика. */
 export interface SettingsDialogProps {
   setShowSettings: React.Dispatch<React.SetStateAction<boolean>>
   myAddress: string

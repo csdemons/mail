@@ -11,6 +11,7 @@ import { fontStack, type Appearance } from './appearance'
 import { SkeletonReader } from './Skeleton'
 import type { MessageSummary, Folder, MessageDetail, NcStatus } from './types'
 
+/** Область чтения: панель действий, заголовок, адреса, вложения и текст открытого письма. */
 export interface ReaderPaneProps {
   setReaderOpen: React.Dispatch<React.SetStateAction<boolean>>
   selected: MessageSummary | undefined

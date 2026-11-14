@@ -834,7 +834,8 @@ try:
     W(d, 20).until(lambda d: [b for b in nc_mock('GET', '/test/state')['boards'] if b['title'] == 'Хозяйственная служба'])
     nbd = [b for b in nc_mock('GET', '/test/state')['boards'] if b['title'] == 'Хозяйственная служба'][0]
     assert nbd['color'] == '31cc7c', nbd
-    assert [s['title'] for s in nc_mock('GET', '/test/state')['stacks'][str(nbd['id'])]] == ['К выполнению', 'В работе', 'Готово']
+    # Колонки создаются после доски, по одной — ждём все три.
+    W(d, 20).until(lambda d: [s['title'] for s in nc_mock('GET', '/test/state')['stacks'].get(str(nbd['id']), [])] == ['К выполнению', 'В работе', 'Готово'])
     W(d, 20).until(lambda d: [h.text for h in d.find_elements(By.CSS_SELECTOR, '.deck-column header strong')] == ['К выполнению', 'В работе', 'Готово'])
     W(d, 5).until(lambda d: any('Хозяйственная служба' in b.get_attribute('textContent') for b in d.find_elements(By.CSS_SELECTOR, '.deck-view .folder-item.selected')))
     # Колонка — тоже своим окном ввода, а не системным prompt.

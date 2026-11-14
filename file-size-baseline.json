@@ -1,0 +1,7 @@
+{
+  "frontend/src/App.tsx": 1133,
+  "src-tauri/src/dav.rs": 1651,
+  "src-tauri/src/ews.rs": 2636,
+  "src-tauri/src/imap.rs": 2524,
+  "src-tauri/src/nextcloud.rs": 2381
+}

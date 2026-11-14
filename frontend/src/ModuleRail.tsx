@@ -1,6 +1,7 @@
 import { Mail, CalendarDays, ContactRound, Handshake, FileText, MessageCircle, Cloud } from 'lucide-react'
 import type { ModuleName } from './viewContext'
 
+/** Панель разделов слева: почта, календарь, контакты, контрагенты, задачи, чат, файлы. */
 export interface ModuleRailProps {
   module: ModuleName
   setModule: React.Dispatch<React.SetStateAction<ModuleName>>

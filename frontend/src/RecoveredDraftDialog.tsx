@@ -2,6 +2,7 @@ import { api } from './api'
 import { Trash2 } from 'lucide-react'
 import type { Draft } from './types'
 
+/** Предложение продолжить письмо, не сохранённое при сбое или закрытии программы. */
 export interface RecoveredDraftDialogProps {
   setRecovered: React.Dispatch<React.SetStateAction<(Draft & { savedAt?: string | undefined; lostFiles?: string[] | undefined; }) | null>>
   recovered: Draft & { savedAt?: string | undefined; lostFiles?: string[] | undefined; }

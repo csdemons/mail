@@ -3,6 +3,7 @@ import { Users, ChevronDown, SquarePen, Search, Sun, Moon, Settings } from 'luci
 import { AccountMenu } from './Accounts'
 import type { AccountEntry, Account, MessageSummary } from './types'
 
+/** Шапка окна: логотип, учётные записи, «Новое сообщение», общий поиск, тема и настройки. */
 export interface TopBarProps {
   showAccountMenu: boolean
   acc: { accounts: AccountEntry[]; unread: Record<string, number | null>; multi: boolean; reload: () => Promise<void>; }

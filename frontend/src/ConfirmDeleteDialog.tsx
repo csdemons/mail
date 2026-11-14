@@ -1,6 +1,7 @@
 import { Trash2 } from 'lucide-react'
 import type { MessageSummary } from './types'
 
+/** Подтверждение безвозвратного удаления писем. */
 export interface ConfirmDeleteDialogProps {
   setConfirmDelete: React.Dispatch<React.SetStateAction<MessageSummary[] | null>>
   confirmDelete: MessageSummary[]

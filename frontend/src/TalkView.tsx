@@ -1,106 +1,27 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  BarChart3, Bell, BellOff, Check, Images, Wallpaper as WallpaperIcon, Timer, Loader2, CheckCheck, Copy, CornerUpLeft, Download, ExternalLink, FileText, Forward, KanbanSquare, LogOut, MailOpen, MessageCircle, MessageSquarePlus,
-  AlarmClock, EyeOff, MoreHorizontal, Paperclip, Pin, PinOff, UserRound, Pencil, Phone, RefreshCw, Search, Send, Settings2, Smile, SmilePlus, Star, Trash2, Users, X,
-} from 'lucide-react'
+  Loader2, MessageCircle, EyeOff, Pin, PinOff, Search, X } from 'lucide-react'
 
-import { api, errorText, formatSize, onSessionReset, TYPING_PAUSE_MS } from './api'
-import { EmojiPicker, QUICK_REACTIONS } from './Emoji'
-import TalkText from './TalkText'
-import Avatar from './Avatar'
-import AttachmentViewer, { previewKind } from './AttachmentViewer'
+import { api, errorText, onSessionReset, TYPING_PAUSE_MS } from './api'
+import AttachmentViewer from './AttachmentViewer'
 import type { TalkSearchHit } from './types'
-import type { AttachmentInfo, DeckBoard, DeckStack, NcUser, PickedFile, TalkFile, TalkMention, TalkMessage, TalkRoom } from './types'
-import { SkeletonChat, SkeletonRows } from './Skeleton'
+import type { AttachmentInfo, NcUser, TalkFile, TalkMention, TalkMessage, TalkRoom } from './types'
 import Splitter from './Splitter'
-import { openContextMenu, type MenuItem } from './PopupMenu'
+import { openContextMenu } from './PopupMenu'
 import { ForwardDialog, RoomPeople, RoomSettings } from './TalkRoomPanel'
 import WallpaperDialog from './WallpaperDialog'
 import { useDarkTheme, useWallpaperVersion, wallpaperFor, wallpaperStyle } from './wallpaper'
-import { firstUrl, LinkCard, MediaPanel, PollCard, PollDialog, VoicePlayer, VoiceRecorder } from './TalkExtras'
-import { PinDialog, personMenu, ProfileDialog, ReminderDialog, type PersonActions } from './TalkPeople'
+import { MediaPanel, PollDialog } from './TalkExtras'
+import { PinDialog, ProfileDialog, ReminderDialog, type PersonActions } from './TalkPeople'
 
-/** Файл чата открывается во встроенном просмотрщике (фото, PDF, текст), если известен его путь. */
-function viewable(f: TalkFile): boolean {
-  return !!f.path && previewKind({ name: f.name, contentType: f.mimetype }) !== null
-}
-
-function isImage(f: TalkFile): boolean {
-  return previewKind({ name: f.name, contentType: f.mimetype }) === 'image'
-}
-
-/** Кэши на время работы окна: уменьшенные копии и содержимое открытых файлов. */
-const previews = new Map<string, Promise<string | null>>()
-const contents = new Map<string, Promise<string>>()
-
-function cached<T>(map: Map<string, Promise<T>>, key: string, limit: number, make: () => Promise<T>): Promise<T> {
-  let p = map.get(key)
-  if (!p) {
-    p = make()
-    p.catch(() => map.delete(key))
-    map.set(key, p)
-    if (map.size > limit) map.delete(map.keys().next().value as string)
-  }
-  return p
-}
-
-function TalkThumb({ file }: { file: TalkFile }) {
-  const [src, setSrc] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
-  useEffect(() => {
-    let alive = true
-    cached(previews, file.id, 200, () => api.talkFilePreview(file.id))
-      .then((d) => { if (alive) { if (d) setSrc(d); else setFailed(true) } })
-      .catch(() => { if (alive) setFailed(true) })
-    return () => { alive = false }
-  }, [file.id])
-  if (failed) return <span className="talk-image-placeholder"><FileText size={22} /></span>
-  return src ? <img src={src} alt={file.name} draggable={false} /> : <span className="talk-image-placeholder">Загрузка…</span>
-}
-
-function expiryLabel(sec: number): string {
-  if (sec % 604800 === 0) return `${sec / 604800} нед.`
-  if (sec % 86400 === 0) return `${sec / 86400} дн.`
-  if (sec % 3600 === 0) return `${sec / 3600} ч`
-  return `${Math.round(sec / 60)} мин`
-}
-
-/** Найденные слова — полужирным (без HTML: только текст и <mark>). */
-function highlight(text: string, q: string): React.ReactNode {
-  if (!q) return text
-  const low = text.toLowerCase(), ql = q.toLowerCase()
-  const out: React.ReactNode[] = []
-  let i = 0
-  for (let j = low.indexOf(ql); j >= 0 && out.length < 40; j = low.indexOf(ql, i)) {
-    out.push(text.slice(i, j), <mark key={j}>{text.slice(j, j + q.length)}</mark>)
-    i = j + q.length
-  }
-  out.push(text.slice(i))
-  return out
-}
-
-function timeOf(ts: number) {
-  const d = new Date(ts * 1000)
-  const today = new Date()
-  return d.toDateString() === today.toDateString()
-    ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-    : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
-}
-
-/** Новые сообщения добавляются, обновления (реакции, правки, удаление) заменяют уже показанные. */
-function merge(list: TalkMessage[], incoming: TalkMessage[]): TalkMessage[] {
-  const byId = new Map(list.map((m) => [m.id, m]))
-  for (const m of incoming) {
-    const cur = byId.get(m.id)
-    if (cur || !m.update) byId.set(m.id, cur && m.update ? { ...m, update: false, parentText: m.parentText ?? cur.parentText, parentAuthor: m.parentAuthor ?? cur.parentAuthor } : { ...m, update: false })
-  }
-  return [...byId.values()].sort((a, b) => a.id - b.id)
-}
-
-/** Как в Talk: избранные беседы сверху, внутри — по последней активности. */
-function sortRooms(list: TalkRoom[]): TalkRoom[] {
-  return [...list].sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.lastActivity - a.lastActivity)
-}
+import { CardFromMessage, NewChat } from './TalkDialogs'
+import { useTalkAttachments } from './useTalkAttachments'
+import { messageMenu as messageMenuFor, roomMenu as roomMenuFor } from './talkMenus'
+import { cached, contents, highlight, merge, sortRooms, TalkThumb, viewable } from './talkUtils'
+import TalkCompose from './TalkCompose'
+import TalkMessageList from './TalkMessageList'
+import TalkChatHeader from './TalkChatHeader'
+import TalkRoomList from './TalkRoomList'
 
 /** Недописанные сообщения по беседам и последняя открытая беседа — переживают уход в другой раздел. */
 interface Draft { text: string; mentions: [string, string][] }
@@ -131,7 +52,6 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   const [remindFor, setRemindFor] = useState<TalkMessage | null>(null)
   const [profileFor, setProfileFor] = useState<{ id: string; name: string; busy: boolean } | null>(null)
   const [pinned, setPinned] = useState<TalkMessage[]>([])
-  const [files, setFiles] = useState<PickedFile[]>([])
   const [emojiOpen, setEmojiOpen] = useState(false)
   const [reactFor, setReactFor] = useState<number | null>(null)
   // Полный выбор эмодзи для реакции (после «＋» в быстрых реакциях).
@@ -180,15 +100,6 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   const [searchBusy, setSearchBusy] = useState(false)
   const [flash, setFlash] = useState<number | null>(null)
   const [forwarding, setForwarding] = useState<TalkMessage | null>(null)
-  // Картинки из буфера обмена, ожидающие отправки: превью по id вложения.
-  const [previews, setPreviews] = useState<Record<string, string>>({})
-  useEffect(() => {
-    // Превью отправленных или убранных картинок больше не нужны.
-    const gone = Object.keys(previews).filter((id) => !files.some((f) => f.id === id))
-    if (gone.length === 0) return
-    gone.forEach((id) => URL.revokeObjectURL(previews[id]))
-    setPreviews((p) => Object.fromEntries(Object.entries(p).filter(([id]) => !gone.includes(id))))
-  }, [files, previews])
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   // Показанное в поле «@Имя» → что отправить в Talk («@"id"»).
@@ -222,6 +133,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   }
 
   const notify = useCallback((t: string) => { if (onNotice) onNotice(t); else setError(t) }, [onNotice])
+  const { files, setFiles, previews, pickFiles, dropFile, onPaste } = useTalkAttachments(editing !== null, notify, setError)
 
   // Просмотр файлов беседы: стрелками листаются все фото и документы беседы по порядку.
   const viewFiles = useMemo(() => messages.filter((m) => !m.deleted).flatMap((m) => m.files.filter(viewable)), [messages])
@@ -375,19 +287,6 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
     setDraft(next)
   }
 
-  async function pickFiles() {
-    try {
-      const picked = await api.pickAttachments()
-      setFiles((list) => [...list, ...picked])
-    } catch (e) {
-      setError(errorText(e))
-    }
-  }
-
-  function dropFile(id: string) {
-    setFiles((list) => list.filter((f) => f.id !== id))
-    void api.forgetAttachment(id)
-  }
 
   async function send() {
     if (!token || (!draft.trim() && files.length === 0) || sendingRef.current) return
@@ -612,8 +511,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
         if (p.email && onWrite) onWrite(p.name && p.name !== p.email ? `${p.name} <${p.email}>` : p.email)
         else notify('В профиле сотрудника не открыт адрес почты')
       }).catch((e) => notify(`Не удалось узнать адрес: ${errorText(e)}`))
-    },
-  }
+    } }
 
   // --- закреплённые сообщения беседы (полоска вверху, как в Talk)
   const roomNow = rooms?.find((r) => r.token === token)
@@ -641,43 +539,10 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
     } catch (e) { notify(`Не удалось: ${errorText(e)}`) }
   }
 
-  /** Меню сообщения (правая кнопка мыши или «⋯»). */
-  function messageMenu(m: TalkMessage, r: TalkRoom): MenuItem[] {
-    if (m.system) return []
-    const canWrite = !r.readOnly && !m.deleted
-    const sel = window.getSelection()?.toString() ?? ''
-    const items: MenuItem[] = []
-    if (canWrite) {
-      items.push({ custom: <>{QUICK_REACTIONS.map((e) => <button key={e} type="button" aria-label={`Реакция ${e}`} onClick={() => void react(m, e)}>{e}</button>)}<button type="button" aria-label="Другая реакция" title="Все эмодзи" onClick={() => { setReactFor(m.id); setReactFull(true) }}>＋</button></> })
-      items.push({ label: 'Ответить', icon: <CornerUpLeft size={15} />, onClick: () => { setReplyTo(m); setEditing(null); inputRef.current?.focus() } })
-    }
-    if (sel.trim()) items.push({ label: 'Копировать выделенное', icon: <Copy size={15} />, onClick: () => copyText(sel) })
-    if (m.text && !m.deleted) items.push({ label: 'Копировать текст', icon: <Copy size={15} />, onClick: () => copyText(m.text) })
-    if (!m.deleted) items.push({ label: 'Переслать…', icon: <Forward size={15} />, onClick: () => setForwarding(m) })
-    if (canWrite) items.push({ label: 'Создать карточку Deck…', icon: <KanbanSquare size={15} />, onClick: () => setCardFrom(m) })
-    if (!m.deleted) {
-      items.push({ separator: true })
-      // Закреплено ли — по списку закреплённых беседы (в ленте метка обновляется не сразу).
-      const isPinned = pinned.some((p) => p.id === m.id)
-      if (r.moderator && !isPinned) items.push({ label: 'Закрепить…', icon: <Pin size={15} />, onClick: () => setPinFor(m) })
-      if (r.moderator && isPinned) items.push({ label: 'Открепить', icon: <PinOff size={15} />, onClick: () => void unpin(m, false) })
-      items.push({ label: 'Напомнить…', icon: <AlarmClock size={15} />, onClick: () => setRemindFor(m) })
-    }
-    if (!m.own && m.authorId && !m.system) {
-      items.push({ separator: true })
-      items.push(...personMenu(m.authorId, m.author, person, { inDirect: r.kind === 1 }))
-    }
-    const f = m.files[0]
-    if (f && !m.deleted) {
-      items.push({ separator: true })
-      items.push({ label: m.files.length > 1 ? `Открыть «${f.name}»` : 'Открыть файл', icon: <ExternalLink size={15} />, onClick: () => openFile(f) })
-      if (f.path) items.push({ label: 'Сохранить файл на компьютер…', icon: <Download size={15} />, onClick: () => void saveFile(f) })
-    }
-    if (canWrite && (m.editText !== null || m.own)) items.push({ separator: true })
-    if (canWrite && m.editText !== null) items.push({ label: 'Изменить', icon: <Pencil size={15} />, onClick: () => startEdit(m) })
-    if (canWrite && m.own) items.push({ label: 'Удалить', icon: <Trash2 size={15} />, danger: true, onClick: () => void remove(m) })
-    return items
-  }
+  const messageMenu = (m: TalkMessage, r: TalkRoom) => messageMenuFor(m, r, {
+    react, setReactFor, setReactFull, setReplyTo, setEditing, inputRef, copyText, setForwarding, setCardFrom, pinned, setPinFor, unpin, setRemindFor, person, openFile, saveFile, startEdit, remove })
+  const roomMenu = (r: TalkRoom) => roomMenuFor(r, {
+    toggleFavorite, manageRoom, setToken, setShowPeople, setSettingsFor, setWallpaperRoom, notify, roomGone })
 
   async function manageRoom(r: TalkRoom, action: string, value: Record<string, unknown>, done: string) {
     try {
@@ -695,76 +560,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
     void loadRooms()
   }
 
-  /** Меню беседы в списке. */
-  function roomMenu(r: TalkRoom): MenuItem[] {
-    const muted = r.notifyLevel === 3
-    return [
-      { label: r.favorite ? 'Убрать из избранного' : 'В избранное', icon: <Star size={15} />, onClick: () => void toggleFavorite(r) },
-      r.unread > 0
-        ? { label: 'Отметить прочитанной', icon: <MailOpen size={15} />, onClick: () => void manageRoom(r, 'read', {}, `«${r.name}» — прочитано`) }
-        : { label: 'Отметить непрочитанной', icon: <MailOpen size={15} />, onClick: () => void manageRoom(r, 'unread', {}, `«${r.name}» — непрочитано`) },
-      { label: muted ? 'Включить уведомления' : 'Не уведомлять', icon: muted ? <Bell size={15} /> : <BellOff size={15} />, onClick: () => void manageRoom(r, 'notify', { level: muted ? 0 : 3 }, muted ? 'Уведомления включены' : 'Уведомления беседы отключены') },
-      { separator: true },
-      { label: 'Участники', icon: <Users size={15} />, onClick: () => { setToken(r.token); setShowPeople(true) } },
-      { label: 'Настройки беседы…', icon: <Settings2 size={15} />, onClick: () => setSettingsFor(r) },
-      { label: 'Обои…', icon: <WallpaperIcon size={15} />, onClick: () => setWallpaperRoom(r) },
-      { label: 'Открыть в Nextcloud', icon: <ExternalLink size={15} />, onClick: () => void api.ncOpen(`call/${r.token}`) },
-      ...(r.canLeave ? [{ separator: true }, { label: 'Выйти из беседы', icon: <LogOut size={15} />, danger: true, onClick: () => { if (window.confirm(`Выйти из беседы «${r.name}»?`)) void api.talkManage(r.token, 'leave').then(() => { notify(`Вы вышли из «${r.name}»`); roomGone(r) }).catch((e) => notify(`Не удалось: ${errorText(e)}`)) } }] : []),
-    ]
-  }
 
-  /** Вложения, вставленные из буфера обмена: в списке файлов, картинки — с превью. */
-  async function addPasted(list: PickedFile[]) {
-    if (list.length === 0) return
-    setFiles((f) => [...f, ...list])
-    for (const p of list) {
-      if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(p.name)) {
-        const url = await api.pickedPreview(p.id).catch(() => null)
-        if (url) setPreviews((x) => ({ ...x, [p.id]: url }))
-      }
-    }
-    notify(list.length === 1 ? `Вставлено: ${list[0].name}` : `Вставлено файлов: ${list.length}`)
-  }
-
-  /**
-   * Ctrl+V (и «Вставить» в меню): картинки и файлы из буфера — вложениями к сообщению.
-   * Что WebView отдаёт сам (снимок экрана в Windows) — берём из события; файлы, скопированные
-   * в проводнике, и картинки, которых WebView не видит, — из буфера обмена системы.
-   */
-  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    if (editing) return
-    const dt = e.clipboardData
-    const direct = [...dt.files]
-    const types = [...dt.types]
-    const text = dt.getData('text/plain')
-    const uris = dt.getData('text/uri-list')
-    const fileUris = /^file:\/\//im.test(uris) || /^(\/|file:\/\/)\S+$/m.test(text) && types.includes('text/uri-list')
-    if (direct.length === 0 && text && !fileUris) return // обычный текст — вставляется как есть
-    e.preventDefault()
-    const target = e.currentTarget
-    try {
-      if (direct.length > 0) {
-        const picked: PickedFile[] = []
-        for (const f of direct) {
-          const buf = new Uint8Array(await f.arrayBuffer())
-          let bin = ''
-          for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000))
-          const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '')
-          const stamp = new Date().toLocaleString('ru-RU').replace(/[^\d]+/g, '-').replace(/-$/, '')
-          const name = f.name && f.name !== 'image.png' ? f.name : `Снимок ${stamp}.${ext}`
-          picked.push(await api.attachData(name, btoa(bin)))
-        }
-        await addPasted(picked)
-        return
-      }
-      const fromOs = await api.clipboardPasteFiles()
-      if (fromOs.length > 0) { await addPasted(fromOs); return }
-      // В буфере всё-таки текст (например, путь к файлу, которого уже нет) — вставить его.
-      if (text) { target.focus(); document.execCommand('insertText', false, text) }
-    } catch (err) {
-      notify(`Не вставлено: ${errorText(err)}`)
-    }
-  }
 
   const room = rooms?.find((r) => r.token === token)
   const wpChoice = room ? wallpaperFor(room.token) : null
@@ -818,41 +614,22 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
 
   return (
     <div className="module-view talk-view">
-      <aside className="message-column talk-rooms">
-        <div className="list-toolbar">
-          <label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Беседы и сотрудники" /></label>
-          <button className="icon-button soft" aria-label="Новая беседа" title="Новая беседа" onClick={() => setNewChat(true)}><MessageSquarePlus size={17} /></button>
-          <button className="icon-button soft" aria-label="Обновить" onClick={() => void loadRooms()}><RefreshCw size={17} /></button>
-        </div>
-        <div className="message-list">
-          {rooms === null && !error && <SkeletonRows variant="room" count={7} label="Загрузка бесед…" />}
-          {visibleRooms.map((r) => (
-            <button key={r.token} className={`message-row room-row ${r.token === token ? 'selected' : ''} ${r.unread ? 'unread' : ''}`} onClick={() => setToken(r.token)}
-              onContextMenu={(e) => openContextMenu(e, roomMenu(r))}>
-              {r.kind === 1 && r.peer
-                ? <Avatar id={r.peer} name={r.name} />
-                : <Avatar kind="room" id={r.token} name={r.name} fallback={r.kind === 1 ? undefined : <Users size={16} />} />}
-              <div className="message-summary">
-                <div className="message-topline"><span className="sender-name">{r.name}</span>{r.favorite && <Star size={13} className="room-favorite" aria-label="Избранное" fill="currentColor" />}{r.notifyLevel === 3 && <BellOff size={12} className="room-muted" aria-label="Без уведомлений" />}{r.unread > 0 && <b className={`folder-count ${r.unreadMention ? 'mention' : ''}`}>{r.unread}</b>}</div>
-                <div className="message-preview">{r.lastMessage ?? ''}</div>
-              </div>
-            </button>
-          ))}
-          {query.trim().length >= 2 && <div className="talk-people">
-            <div className="message-list-header"><span>Сотрудники</span>{peopleBusy && <span>поиск…</span>}</div>
-            {!peopleBusy && people.length === 0 && <div className="empty-state compact"><span>Никого не найдено в Nextcloud</span></div>}
-            {people.filter((u) => !visibleRooms.some((r) => r.kind === 1 && r.peer === u.id)).map((u) => (
-              <button key={u.id} className="message-row room-row person-row" title="Написать" onClick={() => void chatWith(u)}>
-                <Avatar id={u.id} name={u.label} />
-                <div className="message-summary">
-                  <div className="message-topline"><span className="sender-name">{u.label}</span></div>
-                  <div className="message-preview">{peers.has(u.id) ? 'Открыть беседу' : (u.sub || 'Начать беседу')}</div>
-                </div>
-              </button>
-            ))}
-          </div>}
-        </div>
-      </aside>
+      <TalkRoomList
+        query={query}
+        setQuery={setQuery}
+        setNewChat={setNewChat}
+        loadRooms={loadRooms}
+        rooms={rooms}
+        error={error}
+        visibleRooms={visibleRooms}
+        token={token}
+        setToken={setToken}
+        roomMenu={roomMenu}
+        peopleBusy={peopleBusy}
+        people={people}
+        chatWith={chatWith}
+        peers={peers}
+      />
       <Splitter id="talk-rooms" min={220} max={640} label="Ширина списка бесед" />
 
       <main className={`talk-main ${wp ? 'has-wallpaper' : ''}`} data-wallpaper={wpData}>
@@ -860,21 +637,19 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
         {wp?.shade && <div className="talk-wallpaper-shade" style={wp.shade} aria-hidden="true" />}
         {room ? (
           <>
-            <div className="calendar-toolbar">
-              <strong className="calendar-title">{room.name}</strong>
-              <button className={`icon-button soft talk-favorite ${room.favorite ? 'on' : ''}`} aria-pressed={room.favorite}
-                aria-label={room.favorite ? 'Убрать из избранного' : 'В избранное'} title={room.favorite ? 'Убрать из избранного' : 'В избранное — беседа будет выше остальных'}
-                onClick={() => void toggleFavorite(room)}><Star size={17} fill={room.favorite ? 'currentColor' : 'none'} /></button>
-              <div className="reader-toolbar-spacer" />
-              {room.messageExpiration > 0 && <span className="talk-expiry-badge" title="Сообщения в этой беседе исчезают"><Timer size={13} /> {expiryLabel(room.messageExpiration)}</span>}
-              <button className="secondary-button talk-call" title="Звонок и демонстрация экрана — в окне программы" onClick={() => void startCall(room)}
-                onContextMenu={(e) => openContextMenu(e, [{ label: 'Звонок в окне программы', icon: <Phone size={15} />, onClick: () => void startCall(room) }, { label: 'Звонок в браузере', icon: <ExternalLink size={15} />, onClick: () => void startCall(room, true) }])}><Phone size={15} /> Звонок</button>
-              <button className={`icon-button soft talk-media-toggle ${showMedia ? 'active' : ''}`} aria-pressed={showMedia} aria-label="Медиа и файлы" title="Медиа и файлы беседы" onClick={() => { setShowMedia(!showMedia); setShowPeople(false) }}><Images size={17} /></button>
-              <button className={`icon-button soft talk-search-toggle ${searchOpen ? 'active' : ''}`} aria-pressed={searchOpen} aria-label="Поиск по сообщениям" title="Поиск по сообщениям (Ctrl+F)" onClick={() => setSearchOpen(!searchOpen)}><Search size={17} /></button>
-              {room.kind === 1 && room.peer && <button className="icon-button soft talk-profile-toggle" aria-label="Профиль собеседника" title="Профиль, доступность, письмо" onClick={(e) => openContextMenu(e, personMenu(room.peer as string, room.name, person, { inDirect: true }))}><UserRound size={17} /></button>}
-              <button className={`icon-button soft talk-people-toggle ${showPeople ? 'active' : ''}`} aria-pressed={showPeople} aria-label="Участники" title="Участники беседы" onClick={() => { setShowPeople(!showPeople); setShowMedia(false) }}><Users size={17} /></button>
-              <button className="icon-button soft" aria-label="Меню беседы" title="Ещё" onClick={(e) => openContextMenu(e, roomMenu(room))}><MoreHorizontal size={17} /></button>
-            </div>
+            <TalkChatHeader
+              room={room}
+              toggleFavorite={toggleFavorite}
+              startCall={startCall}
+              showMedia={showMedia}
+              setShowMedia={setShowMedia}
+              setShowPeople={setShowPeople}
+              searchOpen={searchOpen}
+              setSearchOpen={setSearchOpen}
+              person={person}
+              showPeople={showPeople}
+              roomMenu={roomMenu}
+            />
             {searchOpen && (
               <div className="talk-search">
                 <label className="search-box"><Search size={15} />
@@ -910,133 +685,64 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
                     : void unpin(pinned[0], true)}><X size={15} /></button>
               </div>
             )}
-            <div className="talk-messages" ref={listRef}
-              onScroll={(e) => { const el = e.currentTarget; stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
-              {loading && messages.length === 0 && <SkeletonChat />}
-              {hasOlder && !loading && <button className="text-button talk-older" disabled={olderBusy} onClick={() => void loadOlder()}>{olderBusy ? 'Загрузка…' : 'Показать более ранние сообщения'}</button>}
-              {messages.map((m) => m.system ? (
-                <div key={m.id} className="talk-system">{m.text} · {timeOf(m.timestamp)}</div>
-              ) : (
-                <div key={m.id} className={`talk-msg ${m.own ? 'own' : ''} ${m.deleted ? 'deleted' : ''} ${flash === m.id ? 'flash' : ''}`} data-id={m.id}
-                  onContextMenu={(e) => { const items = messageMenu(m, room); if (items.length) openContextMenu(e, items) }}>
-                  {!m.own && <span className="talk-author-avatar" role="button" tabIndex={-1} title={m.author} onClick={(e) => m.authorId && openContextMenu(e, personMenu(m.authorId, m.author, person, { inDirect: room.kind === 1 }))}><Avatar id={m.authorId} name={m.author} /></span>}
-                  <div className="talk-bubble">
-                    {!m.own && <button type="button" className="talk-author" onClick={(e) => m.authorId && openContextMenu(e, personMenu(m.authorId, m.author, person, { inDirect: room.kind === 1 }))}>{m.author}</button>}
-                    {m.parentText && !m.deleted && <div className="talk-quote"><b>{m.parentAuthor}</b> {m.parentText}</div>}
-                    {m.text && (m.deleted ? <div className="talk-text talk-deleted">{m.text}</div> : <TalkText text={m.text} />)}
-                    {m.poll && !m.deleted && <PollCard token={room.token} id={m.poll.id} question={m.poll.question} notify={notify} />}
-                    {m.voice && !m.deleted && m.files[0] && <VoicePlayer file={m.files[0]} load={(f) => api.talkFileData(f.path as string)} />}
-                    {!m.deleted && m.files.length === 0 && !m.poll && firstUrl(m.text) && <LinkCard url={firstUrl(m.text) as string} />}
-                    {m.files.length > 0 && !m.voice && (
-                      <div className="talk-files">
-                        {m.files.map((f) => (isImage(f) && f.id && (f.preview || f.path)) ? (
-                          <div key={f.id} className="talk-image">
-                            <button className="talk-image-open" aria-label={`Открыть ${f.name}`} title="Открыть" onClick={() => openFile(f)}><TalkThumb file={f} /></button>
-                            <div className="talk-image-bar">
-                              <span title={f.name}>{f.name}</span>{f.size > 0 && <small>{formatSize(f.size)}</small>}
-                              {f.path && <button className="icon-button soft" aria-label={`Скачать ${f.name}`} title="Сохранить на компьютер" onClick={() => void saveFile(f)}><Download size={14} /></button>}
-                              <button className="icon-button soft" aria-label={`Открыть ${f.name} в Nextcloud`} title="Открыть в Nextcloud" onClick={() => void api.ncOpen(`f/${f.id}`)}><ExternalLink size={14} /></button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div key={f.id || f.name} className="talk-file-row">
-                            <button className="talk-file" title={viewable(f) ? 'Открыть' : 'Открыть в Nextcloud'} onClick={() => openFile(f)}>
-                              <FileText size={15} /><span>{f.name}</span>{f.size > 0 && <small>{formatSize(f.size)}</small>}
-                            </button>
-                            {f.path && <button className="icon-button soft" aria-label={`Скачать ${f.name}`} title="Сохранить на компьютер" onClick={() => void saveFile(f)}><Download size={14} /></button>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {m.reactions.length > 0 && (
-                      <div className="talk-reactions">
-                        {m.reactions.map((r) => (
-                          <button key={r.emoji} className={`talk-reaction ${r.own ? 'own' : ''}`} disabled={room.readOnly} title={r.own ? 'Убрать реакцию' : 'Поставить реакцию'} onClick={() => void react(m, r.emoji)}>
-                            {r.emoji} <span>{r.count}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <div className="talk-time">{m.expires > 0 && <Timer size={11} className="talk-expires" aria-label="Исчезающее сообщение" />}{m.edited && !m.deleted && <span className="talk-edited">изменено</span>}{timeOf(m.timestamp)}
-                      {m.own && !m.deleted && (m.id <= readMark
-                        ? <CheckCheck size={14} className="talk-tick read" aria-label="Прочитано" />
-                        : <Check size={14} className="talk-tick" aria-label="Отправлено" />)}</div>
-                    {!room.readOnly && !m.deleted && (
-                      <div className="talk-actions">
-                        <button aria-label="Реакция" title="Реакция" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}><SmilePlus size={14} /></button>
-                        <button aria-label="Ответить" title="Ответить" onClick={() => { setReplyTo(m); setEditing(null); inputRef.current?.focus() }}><CornerUpLeft size={14} /></button>
-                        <button aria-label="Карточка Deck" title="Создать карточку Deck" onClick={() => setCardFrom(m)}><KanbanSquare size={14} /></button>
-                        {m.editText !== null && <button aria-label="Изменить" title="Изменить" onClick={() => startEdit(m)}><Pencil size={14} /></button>}
-                        {m.own && <button aria-label="Удалить" title="Удалить" onClick={() => void remove(m)}><Trash2 size={14} /></button>}
-                        <button aria-label="Ещё" title="Ещё действия" onClick={(e) => openContextMenu(e, messageMenu(m, room))}><MoreHorizontal size={14} /></button>
-                      </div>
-                    )}
-                    {reactFor === m.id && (
-                      reactFull
-                        ? <EmojiPicker className="talk-react-full" label="Реакция" onPick={(e) => { setReactFor(null); void react(m, e) }} />
-                        : <div className="talk-react-picker popover">
-                          {QUICK_REACTIONS.map((e) => <button key={e} aria-label={`Реакция ${e}`} onClick={() => void react(m, e)}>{e}</button>)}
-                          <button aria-label="Другая реакция" title="Все эмодзи" onClick={() => setReactFull(true)}>＋</button>
-                        </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {!loading && messages.length === 0 && <div className="empty-state"><MessageCircle size={30} /><strong>Сообщений пока нет</strong></div>}
-            </div>
+            <TalkMessageList
+              listRef={listRef}
+              stickToBottom={stickToBottom}
+              loading={loading}
+              messages={messages}
+              hasOlder={hasOlder}
+              olderBusy={olderBusy}
+              loadOlder={loadOlder}
+              flash={flash}
+              messageMenu={messageMenu}
+              room={room}
+              person={person}
+              notify={notify}
+              openFile={openFile}
+              saveFile={saveFile}
+              react={react}
+              readMark={readMark}
+              setReactFor={setReactFor}
+              reactFor={reactFor}
+              setReplyTo={setReplyTo}
+              setEditing={setEditing}
+              inputRef={inputRef}
+              setCardFrom={setCardFrom}
+              startEdit={startEdit}
+              remove={remove}
+              reactFull={reactFull}
+              setReactFull={setReactFull}
+            />
             {room.readOnly ? <div className="muted talk-readonly">Беседа только для чтения</div> : (
-              <form className="talk-compose" onSubmit={(e) => { e.preventDefault(); void send() }}>
-                {files.length > 0 && (
-                  <div className="talk-pending">
-                    {files.map((f) => (
-                      <span key={f.id} className={`talk-file ${previews[f.id] ? 'with-preview' : ''}`}>{previews[f.id] ? <img className="talk-paste-preview" src={previews[f.id]} alt="" /> : <Paperclip size={14} />}<span>{f.name}</span><small>{formatSize(f.size)}</small>
-                        {!sending && <button type="button" aria-label={`Убрать ${f.name}`} onClick={() => dropFile(f.id)}><X size={13} /></button>}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {replyTo && <div className="talk-quote replying"><b>{replyTo.author}</b> {replyTo.text.slice(0, 120)}<button type="button" aria-label="Отменить ответ" onClick={() => setReplyTo(null)}><X size={13} /></button></div>}
-                {editing && <div className="talk-quote replying editing"><Pencil size={13} /> <b>Изменение сообщения</b><button type="button" aria-label="Отменить изменение" onClick={cancelEdit}><X size={13} /></button></div>}
-                <div className="talk-input-row">
-                  {!editing && <button type="button" className="icon-button soft talk-attach" aria-label="Прикрепить файл" title="Прикрепить файл" disabled={sending} onClick={() => void pickFiles()}><Paperclip size={18} /></button>}
-                  <div className="talk-input-wrap">
-                    {mentions.length > 0 && (
-                      <div className="talk-mentions popover">
-                        {mentions.map((mn, i) => (
-                          <button type="button" key={mn.insert} className={i === mentionSel ? 'active' : ''} onMouseDown={(e) => { e.preventDefault(); pickMention(mn) }}>
-                            {mn.source === 'calls' ? <span className="sender-avatar"><Users size={13} /></span> : <Avatar id={mn.source === 'users' ? mn.insert.replace(/^@"?|"$/g, '') : null} name={mn.label} />}{mn.source === 'calls' ? 'Все участники' : mn.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {emojiOpen && <EmojiPicker onPick={insertEmoji} />}
-                    <textarea
-                      ref={inputRef}
-                      rows={2}
-                      value={draft}
-                      onChange={(e) => onDraftChange(e.target.value, e.target.selectionStart)}
-                      onPaste={(e) => void onPaste(e)}
-                      onKeyDown={(e) => {
-                        if (mentions.length > 0) {
-                          if (e.key === 'ArrowDown') { e.preventDefault(); setMentionSel((i) => (i + 1) % mentions.length); return }
-                          if (e.key === 'ArrowUp') { e.preventDefault(); setMentionSel((i) => (i - 1 + mentions.length) % mentions.length); return }
-                          if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(mentions[mentionSel]); return }
-                          if (e.key === 'Escape') { setMentions([]); return }
-                        }
-                        if (e.key === 'Escape' && editing) { cancelEdit(); return }
-                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
-                      }}
-                      placeholder={editing ? 'Новый текст… (Enter — сохранить, Esc — отмена)' : files.length ? 'Подпись к файлу… (Enter — отправить)' : 'Сообщение… (@ — упомянуть, Enter — отправить, Shift+Enter — новая строка)'}
-                    />
-                  </div>
-                  <button type="button" className={`icon-button soft talk-emoji ${emojiOpen ? 'active' : ''}`} aria-label="Эмодзи" title="Эмодзи" onClick={() => setEmojiOpen((v) => !v)}><Smile size={18} /></button>
-                  {!editing && <button type="button" className="icon-button soft talk-poll-new" aria-label="Опрос" title="Создать опрос" disabled={sending} onClick={() => setPollOpen(true)}><BarChart3 size={18} /></button>}
-                  {!editing && <button type="button" className={`icon-button soft talk-silent ${silent ? 'active' : ''}`} aria-pressed={silent} aria-label="Без звука" title={silent ? 'Отправится без звука уведомления — нажмите, чтобы отменить' : 'Отправить без звука уведомления'} onClick={() => setSilent(!silent)}><BellOff size={18} /></button>}
-                  {/* Кнопка записи на месте всегда (чтобы кнопки не прыгали); активна, когда поле пустое. */}
-                  {!editing && <VoiceRecorder disabled={sending || Boolean(draft.trim()) || files.length > 0} notify={notify} onRecorded={(b, ext) => void sendVoice(b, ext)} />}
-                  <button className="primary-button" type="submit" disabled={sending || (!draft.trim() && files.length === 0)} aria-label={editing ? 'Сохранить' : 'Отправить'}>{sending && files.length > 0 ? 'Загрузка…' : editing ? 'Сохранить' : <Send size={16} />}</button>
-                </div>
-              </form>
+              <TalkCompose
+                send={send}
+                files={files}
+                previews={previews}
+                sending={sending}
+                dropFile={dropFile}
+                replyTo={replyTo}
+                setReplyTo={setReplyTo}
+                editing={editing}
+                cancelEdit={cancelEdit}
+                pickFiles={pickFiles}
+                mentions={mentions}
+                mentionSel={mentionSel}
+                pickMention={pickMention}
+                emojiOpen={emojiOpen}
+                insertEmoji={insertEmoji}
+                inputRef={inputRef}
+                draft={draft}
+                onDraftChange={onDraftChange}
+                onPaste={onPaste}
+                setMentionSel={setMentionSel}
+                setMentions={setMentions}
+                setEmojiOpen={setEmojiOpen}
+                setPollOpen={setPollOpen}
+                silent={silent}
+                setSilent={setSilent}
+                notify={notify}
+                sendVoice={sendVoice}
+              />
             )}
           </>
         ) : (
@@ -1070,139 +776,6 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
         <AttachmentViewer folder="" uid={0} items={viewItems} index={viewing} onIndex={setViewing} onClose={() => setViewing(null)}
           load={viewLoad} onSave={(i) => { const f = viewFiles[i]; if (f) void saveFile(f) }} />
       )}
-    </div>
-  )
-}
-
-/** Карточка Deck из сообщения: текст, автор и ссылка на сообщение в Talk. */
-function CardFromMessage({ message, room, onClose, onDone }: { message: TalkMessage; room: TalkRoom; onClose: () => void; onDone: (t: string) => void }) {
-  const [boards, setBoards] = useState<DeckBoard[] | null>(null)
-  const [boardId, setBoardId] = useState<number | null>(null)
-  const [stacks, setStacks] = useState<DeckStack[]>([])
-  const [stackId, setStackId] = useState<number | null>(null)
-  const firstLine = message.text.split('\n')[0] || message.files[0]?.name || 'Сообщение из Talk'
-  const [title, setTitle] = useState(firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [base, setBase] = useState('')
-
-  useEffect(() => {
-    api.ncStatus().then((s) => setBase(s.url.replace(/\/?$/, '/'))).catch(() => undefined)
-    api.deckBoards()
-      .then((list) => {
-        const editable = list.filter((b) => b.canEdit && !b.archived)
-        setBoards(editable)
-        let last: number | null = null
-        try { last = Number(localStorage.getItem('rrcki-mail.deck-board')) || null } catch { /* нет */ }
-        setBoardId(editable.find((b) => b.id === last)?.id ?? editable[0]?.id ?? null)
-      })
-      .catch((e) => setError(errorText(e)))
-  }, [])
-
-  useEffect(() => {
-    if (boardId === null) return
-    setStacks([])
-    api.deckStacks(boardId).then((s) => { setStacks(s); setStackId(s[0]?.id ?? null) }).catch((e) => setError(errorText(e)))
-  }, [boardId])
-
-  async function create() {
-    if (boardId === null || stackId === null || !title.trim()) return
-    setBusy(true)
-    setError('')
-    const when = new Date(message.timestamp * 1000).toLocaleString('ru-RU')
-    const link = base ? `${base}call/${room.token}#message_${message.id}` : ''
-    const files = message.files.map((f) => `- ${f.name}${base && f.id ? ` (${base}f/${f.id})` : ''}`).join('\n')
-    const description = [message.text, files, `— ${message.author}, ${when}, беседа «${room.name}»`, link].filter(Boolean).join('\n\n')
-    try {
-      await api.deckCreateCard(boardId, stackId, title, description)
-      onDone(`Карточка создана: ${boards?.find((b) => b.id === boardId)?.title ?? 'Deck'} → ${stacks.find((s) => s.id === stackId)?.title ?? ''}`)
-    } catch (e) {
-      setError(errorText(e))
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}>
-      <div className="settings-modal talk-card-modal">
-        <div className="compose-header"><div><strong>Карточка Deck из сообщения</strong><small>{message.author}</small></div><button className="icon-button" onClick={onClose} aria-label="Закрыть"><X size={18} /></button></div>
-        <div className="talk-quote">{message.text.slice(0, 300) || message.files.map((f) => f.name).join(', ')}</div>
-        <label className="login-field"><span>Доска</span>
-          <select value={boardId ?? ''} onChange={(e) => setBoardId(Number(e.target.value))} disabled={!boards?.length}>
-            {(boards ?? []).map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
-          </select>
-        </label>
-        <label className="login-field"><span>Колонка</span>
-          <select value={stackId ?? ''} onChange={(e) => setStackId(Number(e.target.value))} disabled={!stacks.length}>
-            {stacks.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
-          </select>
-        </label>
-        <label className="login-field"><span>Название</span><input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-        {boards && boards.length === 0 && <div className="muted">Нет досок, где вы можете создавать карточки.</div>}
-        {error && <div className="login-error" role="alert">{error}</div>}
-        <div className="settings-actions">
-          <button className="text-button" onClick={onClose}>Отмена</button>
-          <button className="primary-button" disabled={busy || boardId === null || stackId === null || !title.trim()} onClick={() => void create()}>{busy ? 'Создание…' : 'Создать карточку'}</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/** Новая беседа: один собеседник — личная, несколько или с названием — групповая. */
-function NewChat({ onClose, onCreated }: { onClose: () => void; onCreated: (token: string) => void }) {
-  const [q, setQ] = useState('')
-  const [found, setFound] = useState<NcUser[]>([])
-  const [picked, setPicked] = useState<NcUser[]>([])
-  const [name, setName] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (q.trim().length < 2) { setFound([]); return }
-    let cancelled = false
-    const t = setTimeout(() => {
-      api.ncSearchUsers(q).then((list) => { if (!cancelled) setFound(list) }).catch((e) => { if (!cancelled) setError(errorText(e)) })
-    }, TYPING_PAUSE_MS)
-    return () => { cancelled = true; clearTimeout(t) }
-  }, [q])
-
-  async function create() {
-    setBusy(true)
-    setError('')
-    try {
-      onCreated(await api.talkCreate(picked.map((u) => u.id), picked.length > 1 || name.trim() ? (name.trim() || picked.map((u) => u.label).join(', ')) : null))
-    } catch (e) {
-      setError(errorText(e))
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}>
-      <div className="settings-modal talk-new-modal">
-        <div className="compose-header"><div><strong>Новая беседа</strong><small>Один собеседник — личная беседа, несколько — групповая</small></div><button className="icon-button" onClick={onClose} aria-label="Закрыть"><X size={18} /></button></div>
-        {picked.length > 0 && (
-          <div className="talk-pending">
-            {picked.map((u) => <span key={u.id} className="talk-file"><span>{u.label}</span><button type="button" aria-label={`Убрать ${u.label}`} onClick={() => setPicked((l) => l.filter((x) => x.id !== u.id))}><X size={13} /></button></span>)}
-          </div>
-        )}
-        <label className="search-box"><Search size={17} /><input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя или логин сотрудника" /></label>
-        <div className="talk-user-list">
-          {found.filter((u) => !picked.some((p) => p.id === u.id)).map((u) => (
-            <button key={u.id} className="message-row" onClick={() => { setPicked((l) => [...l, u]); setQ('') }}>
-              <Avatar id={u.id} name={u.label} />
-              <div className="message-summary"><span className="sender-name">{u.label}</span>{u.sub && <span className="message-preview">{u.sub}</span>}</div>
-            </button>
-          ))}
-        </div>
-        {picked.length > 1 && <label className="login-field"><span>Название беседы</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder={picked.map((u) => u.label).join(', ')} /></label>}
-        {error && <div className="login-error" role="alert">{error}</div>}
-        <div className="settings-actions">
-          <button className="text-button" onClick={onClose}>Отмена</button>
-          <button className="primary-button" disabled={busy || picked.length === 0} onClick={() => void create()}>{busy ? 'Создание…' : picked.length > 1 ? 'Создать беседу' : 'Написать'}</button>
-        </div>
-      </div>
     </div>
   )
 }

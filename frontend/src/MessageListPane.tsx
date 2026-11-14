@@ -8,6 +8,7 @@ import { messageKey, formatListDate } from './api'
 import { Fragment } from 'react'
 import { snoozedUntil } from './mailTools'
 
+/** Список писем: поиск, фильтры, цепочки, действия над отмеченными, строки писем по датам. */
 export interface MessageListPaneProps {
   setFoldersOpen: React.Dispatch<React.SetStateAction<boolean>>
   foldersOpen: boolean

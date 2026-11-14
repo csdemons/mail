@@ -4,6 +4,7 @@ import { ROLE_ICONS, QUICK_VIEWS, pluralLetters, folderLabel } from './mailLabel
 import { SkeletonRows } from './Skeleton'
 import type { AccountEntry, UnifiedRole, SavedView, Folder, Scheduled, ConnectionStatus, Account } from './types'
 
+/** Колонка папок: общие папки всех учётных записей, сохранённые поиски, дерево папок, отложенные, состояние связи. */
 export interface FolderSidebarProps {
   acc: { accounts: AccountEntry[]; unread: Record<string, number | null>; multi: boolean; reload: () => Promise<void>; }
   unifiedOpen: boolean

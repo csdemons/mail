@@ -48,6 +48,8 @@ jobs:
           exit 1
       - name: Known vulnerabilities in npm dependencies (production)
         run: npm --prefix frontend audit --omit=dev --audit-level=high
+      - name: Размер исходников (≤ 800 строк TS, ≤ 1500 Rust; большие файлы не растут)
+        run: node frontend/scripts/check-file-size.mjs
       - run: npm --prefix frontend run typecheck
       - run: npm --prefix frontend run build
       - name: Known vulnerabilities in Rust dependencies (RustSec)
