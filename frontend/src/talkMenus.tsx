@@ -2,7 +2,7 @@
 import type { RefObject } from 'react'
 import {
   AlarmClock, Bell, BellOff, Copy, CornerUpLeft, Download, ExternalLink, Forward, KanbanSquare, LogOut, MailOpen, Pencil, Pin, PinOff,
-  Settings2, Star, Trash2, Users, Wallpaper as WallpaperIcon, Phone, PhoneOff, CircleAlert, Lock, Archive, MessagesSquare,
+  Settings2, Star, Trash2, Users, Wallpaper as WallpaperIcon, Phone, PhoneOff, CircleAlert, Lock, Archive, MessagesSquare, Languages, CalendarPlus, Sparkles,
 } from 'lucide-react'
 
 import { api, errorText } from './api'
@@ -33,6 +33,8 @@ export interface MessageMenuActions {
   remove: (m: TalkMessage) => Promise<void>
   /** Открыть ветку сообщения (Talk 22). */
   openThread?: (id: number) => void
+  /** Перевести сообщение (ИИ-переводчик сервера). */
+  translate?: (m: TalkMessage) => void
 }
 
 export interface RoomMenuActions {
@@ -46,11 +48,13 @@ export interface RoomMenuActions {
   /** Беседа покинута — убрать её черновик и выбор. */
   roomGone: (r: TalkRoom) => void
   features: TalkFeatures
+  /** Окна инструментов беседы: встреча, сводка, комнаты для групп. */
+  openTool: (kind: 'meeting' | 'summary' | 'breakout', r: TalkRoom) => void
 }
 
 /** Меню сообщения (правая кнопка мыши или «⋯»). */
 export function messageMenu(m: TalkMessage, r: TalkRoom, a: MessageMenuActions): MenuItem[] {
-  const { react, setReactFor, setReactFull, setReplyTo, setEditing, inputRef, copyText, setForwarding, setCardFrom, pinned, setPinFor, unpin, setRemindFor, person, openFile, saveFile, startEdit, remove, openThread } = a
+  const { react, setReactFor, setReactFull, setReplyTo, setEditing, inputRef, copyText, setForwarding, setCardFrom, pinned, setPinFor, unpin, setRemindFor, person, openFile, saveFile, startEdit, remove, openThread, translate } = a
   if (m.system) return []
   const canWrite = !r.readOnly && !m.deleted
   const sel = window.getSelection()?.toString() ?? ''
@@ -60,6 +64,7 @@ export function messageMenu(m: TalkMessage, r: TalkRoom, a: MessageMenuActions):
     items.push({ label: 'Ответить', icon: <CornerUpLeft size={15} />, onClick: () => { setReplyTo(m); setEditing(null); inputRef.current?.focus() } })
   }
   if (sel.trim()) items.push({ label: 'Копировать выделенное', icon: <Copy size={15} />, onClick: () => copyText(sel) })
+  if (translate && m.text && !m.deleted) items.push({ label: 'Перевести…', icon: <Languages size={15} />, onClick: () => translate(m) })
   if (m.text && !m.deleted) items.push({ label: 'Копировать текст', icon: <Copy size={15} />, onClick: () => copyText(m.text) })
   if (openThread && (m.isThread || m.threadId > 0)) items.push({ label: 'Открыть ветку', icon: <MessagesSquare size={15} />, onClick: () => openThread(m.threadId || m.id) })
   if (!m.deleted) items.push({ label: 'Переслать…', icon: <Forward size={15} />, onClick: () => setForwarding(m) })
@@ -90,7 +95,7 @@ export function messageMenu(m: TalkMessage, r: TalkRoom, a: MessageMenuActions):
 
 /** Меню беседы в списке. */
 export function roomMenu(r: TalkRoom, a: RoomMenuActions): MenuItem[] {
-  const { toggleFavorite, manageRoom, setToken, setShowPeople, setSettingsFor, setWallpaperRoom, notify, roomGone, features } = a
+  const { toggleFavorite, manageRoom, setToken, setShowPeople, setSettingsFor, setWallpaperRoom, notify, roomGone, features, openTool } = a
   const muted = r.notifyLevel === 3
   // Ветки, архив, «важная», «конфиденциальная» — только если сервер их знает (Talk 20–21).
   const flags: MenuItem[] = [
@@ -111,6 +116,9 @@ export function roomMenu(r: TalkRoom, a: RoomMenuActions): MenuItem[] {
     { label: muted ? 'Включить уведомления' : 'Не уведомлять', icon: muted ? <Bell size={15} /> : <BellOff size={15} />, onClick: () => void manageRoom(r, 'notify', { level: muted ? 0 : 3 }, muted ? 'Уведомления включены' : 'Уведомления беседы отключены') },
     ...flags,
     { separator: true },
+    ...(features.scheduleMeeting && r.kind !== 6 ? [{ label: 'Запланировать встречу…', icon: <CalendarPlus size={15} />, onClick: () => openTool('meeting', r) }] : []),
+    ...(features.summary && r.unread > 0 ? [{ label: `Кратко о непрочитанном (${r.unread})`, icon: <Sparkles size={15} />, onClick: () => openTool('summary', r) }] : []),
+    ...(features.breakout && r.moderator && (r.kind === 2 || r.kind === 3) && !r.breakoutParent ? [{ label: 'Комнаты для групп…', icon: <Users size={15} />, onClick: () => openTool('breakout', r) }] : []),
     { label: 'Участники', icon: <Users size={15} />, onClick: () => { setToken(r.token); setShowPeople(true) } },
     { label: 'Настройки беседы…', icon: <Settings2 size={15} />, onClick: () => setSettingsFor(r) },
     { label: 'Обои…', icon: <WallpaperIcon size={15} />, onClick: () => setWallpaperRoom(r) },

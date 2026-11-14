@@ -1023,7 +1023,7 @@ try:
     W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == '@Петрова Анна ')
     box.send_keys('посмотри **срочно** https://inst.test/doc'); box.send_keys(Keys.ENTER)
     W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['messages']['abc123'][-1].get('raw') == '@"petrova" посмотри **срочно** https://inst.test/doc')
-    mm = W(d, 15).until(lambda d: talk_msg('посмотри'))
+    mm = W(d, 15).until(lambda d: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'посмотри' in m.get_attribute('textContent')])[0]
     W(d, 10).until(lambda d: talk_msg('посмотри').find_elements(By.CSS_SELECTOR, '.talk-mention'))
     assert talk_msg('посмотри').find_element(By.CSS_SELECTOR, 'b').text == 'срочно'
     assert talk_msg('посмотри').find_element(By.CSS_SELECTOR, 'a').get_attribute('href') == 'https://inst.test/doc'
@@ -1224,7 +1224,7 @@ try:
     action(talk_msg('обновление в среду'), 'Карточка Deck')
     modal = wait(d, '.talk-card-modal')
     W(d, 10).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, '.talk-card-modal select option')) >= 2)
-    [b for b in modal.find_elements(By.TAG_NAME, 'button') if 'Создать карточку' in b.text][0].click()
+    W(d, 10).until(lambda d: [b for b in modal.find_elements(By.TAG_NAME, 'button') if 'Создать карточку' in b.text and b.is_enabled()])[0].click()
     W(d, 15).until(lambda d: any(c['title'].startswith('Коллеги') and 'call/abc123#message_1' in c['description'] for c in nc_mock('GET', '/test/state')['cards']))
     ok('Deck card created from message (text, author, link)')
     W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-card-modal'))
@@ -1408,7 +1408,7 @@ try:
     box.send_keys('Начинаем ветку про обновление'); box.send_keys(Keys.ENTER)
     root = W(d, 15).until(lambda d: next((m for m in nc_mock('GET', '/test/state')['messages']['abc123'] if m.get('isThread')), None))
     assert root['threadTitle'] == 'План обновления' and root['message'] == 'Начинаем ветку про обновление', root
-    assert not d.find_elements(By.CSS_SELECTOR, '.talk-new-thread'), 'thread title cleared after sending'
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-new-thread'))  # название ветки сброшено после отправки
     chip = W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.talk-thread-chip') if 'План обновления' in c.text])[0]
     d.execute_script("arguments[0].scrollIntoView({block: 'center'})", chip); time.sleep(0.3); chip.click()
     panel = wait(d, '.talk-thread-panel')
@@ -1579,6 +1579,123 @@ try:
     ctx(row()); ctx_pick('Включить уведомления')
     W(d, 10).until(lambda d: any(r['token'] == 'abc123' and r['notificationLevel'] == 0 for r in nc_mock('GET', '/test/state')['rooms']))
     ok('chat: conversation right-click menu (mute/unmute notifications)')
+
+    # Встреча из беседы (Talk 21): календарь Nextcloud, длительность, кого пригласить.
+    room_row2 = lambda name: [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if name in r.get_attribute('textContent')]
+    ctx(row()); ctx_pick('Запланировать встречу…')
+    md = wait(d, '[role="dialog"][aria-label="Запланировать встречу"]')
+    W(d, 10).until(lambda d: [o.text for o in md.find_elements(By.CSS_SELECTOR, 'select[aria-label="Календарь"] option')] == ['Личный', 'Рабочий'])
+    W(d, 10).until(lambda d: len(md.find_elements(By.CSS_SELECTOR, '.talk-meeting-people input[type=checkbox]')) >= 2)
+    [l for l in md.find_elements(By.CSS_SELECTOR, '.talk-meeting-people label') if 'Петрова Анна' in l.get_attribute('textContent')][0].find_element(By.TAG_NAME, 'input').click()
+    [b for b in md.find_elements(By.TAG_NAME, 'button') if b.text == 'Запланировать'][0].click()
+    mt_ = W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['meetings'])[-1]
+    ivanov_att = next(m['attendeeId'] for m in nc_mock('GET', '/test/state')['members']['abc123'] if m['actorId'] == 'ivanov')
+    assert mt_['token'] == 'abc123' and mt_['calendarUri'] == 'personal' and mt_['end'] - mt_['start'] == 3600 and mt_['title'] == 'УИТ — общий', mt_
+    assert mt_['attendeeIds'] == [ivanov_att], mt_
+    W(d, 10).until(lambda d: 'приглашения отправлены' in ' '.join(t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    ok('chat: schedule a meeting from the conversation (Nextcloud calendar, duration, chosen participants invited)')
+
+    # Личная беседа: собеседник в отпуске (календарь Nextcloud) и ближайшие общие встречи.
+    room_row2('Иванов Иван')[0].click()
+    info = W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-peer-info'))[0]
+    W(d, 10).until(lambda d: 'в отпуске до' in info.get_attribute('textContent') and 'Замещает: Петрова Анна' in info.get_attribute('textContent'))
+    W(d, 10).until(lambda d: 'Планёрка УИТ' in d.find_element(By.CSS_SELECTOR, '.talk-peer-info').get_attribute('textContent'))
+    d.save_screenshot(f'{OUT}/talk-peer-info.png')
+    room_row2('УИТ — общий')[0].click()
+    W(d, 10).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-peer-info'))
+    ok('chat: direct chat shows that the colleague is on vacation (with substitute) and upcoming shared meetings')
+
+    # Все напоминания одним окном: переход к сообщению и снятие.
+    W(d, 15).until(lambda d: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'Один раз, а не два' in m.get_attribute('textContent')])
+    ctx(talk_msg('Один раз, а не два')); ctx_pick('Напомнить…')
+    rd = wait(d, '[aria-label="Напомнить о сообщении"]')
+    [b for b in rd.find_elements(By.TAG_NAME, 'button') if b.text.startswith('Через час')][0].click()
+    W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['reminders'])
+    room_row2('Иванов Иван')[0].click()
+    d.find_element(By.CSS_SELECTOR, '.talk-rooms button[aria-label="Напоминания"]').click()
+    rl = wait(d, '[role="dialog"][aria-label="Напоминания"]')
+    item = W(d, 10).until(lambda d: [b for b in rl.find_elements(By.CSS_SELECTOR, '.talk-reminder-open') if 'Один раз, а не два' in b.get_attribute('textContent') and 'УИТ — общий' in b.get_attribute('textContent')])[0]
+    item.click()
+    W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'УИТ — общий' and d.find_elements(By.CSS_SELECTOR, '.talk-msg.flash'))
+    d.find_element(By.CSS_SELECTOR, '.talk-rooms button[aria-label="Напоминания"]').click()
+    rl = wait(d, '[role="dialog"][aria-label="Напоминания"]')
+    W(d, 10).until(lambda d: rl.find_elements(By.CSS_SELECTOR, 'button[aria-label="Убрать напоминание"]'))[0].click()
+    W(d, 10).until(lambda d: not nc_mock('GET', '/test/state')['reminders'])
+    rl.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
+    ok('chat: all reminders in one window — open the message, remove the reminder')
+
+    # Сводка непрочитанного (ИИ сервера): пропущено ≥ 3 сообщений — «Кратко о непрочитанном».
+    for n in range(4):
+        nc_mock('POST', '/test/inject?token=dm-ivanov&text=' + urllib.parse.quote(f'Пропущенное сообщение {n + 1}'))
+    # (первое может уже прочитать запрос ленты беседы, из которой только что ушли, — тогда их 3)
+    W(d, 30).until(lambda d: room_row2('Иванов Иван') and [c for c in room_row2('Иванов Иван')[0].find_elements(By.CSS_SELECTOR, '.folder-count') if c.get_attribute('textContent') in ('3', '4')])
+    time.sleep(2)
+    missed_n = room_row2('Иванов Иван')[0].find_element(By.CSS_SELECTOR, '.folder-count').get_attribute('textContent')
+    room_row2('Иванов Иван')[0].click()
+    bar = W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-missed'))[0]
+    assert f'Пропущено сообщений: {missed_n}' in bar.get_attribute('textContent'), bar.get_attribute('textContent')
+    bar.find_element(By.CSS_SELECTOR, '.text-button').click()
+    sd = wait(d, '[role="dialog"][aria-label="Кратко о непрочитанном"]')
+    W(d, 20).until(lambda d: f'Кратко: {missed_n} сообщ.' in sd.get_attribute('textContent') and 'Пропущенное сообщение 4' in sd.get_attribute('textContent'))
+    sd.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
+    ok('chat: summary of unread messages by the server AI assistant (offered after 3+ missed messages)')
+
+    # Перевод сообщения (ИИ сервера, TaskProcessing): язык можно сменить.
+    ctx(talk_msg('Пропущенное сообщение 2')); ctx_pick('Перевести…')
+    td = wait(d, '[role="dialog"][aria-label="Перевод сообщения"]')
+    W(d, 20).until(lambda d: '[ru] Пропущенное сообщение 2' in td.find_element(By.CSS_SELECTOR, '.talk-translate-result').get_attribute('textContent'))
+    Select(td.find_element(By.CSS_SELECTOR, 'select[aria-label="Язык перевода"]')).select_by_visible_text('Английский')
+    W(d, 20).until(lambda d: '[en] Пропущенное сообщение 2' in td.find_element(By.CSS_SELECTOR, '.talk-translate-result').get_attribute('textContent'))
+    assert any(t['type'] == 'core:text2text:translate' and t['input']['target_language'] == 'en' for t in nc_mock('GET', '/test/state')['tasks'].values())
+    td.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
+    room_row2('УИТ — общий')[0].click()
+    W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'УИТ — общий')
+    ok('chat: translate a message with the server AI translator, change the target language')
+
+    # Модерация: зал ожидания, блокировка участника и снятие блокировки.
+    inv('talk_manage', {'token': 'abc123', 'action': 'add', 'value': {'id': 'sidorov', 'source': 'users'}})
+    d.find_element(By.CSS_SELECTOR, '.talk-people-toggle').click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-person[data-actor="sidorov"]'))
+    ctx(d.find_element(By.CSS_SELECTOR, '.talk-person[data-actor="sidorov"]')); ctx_pick('Заблокировать…'); accept_confirm(d)
+    W(d, 15).until(lambda d: [b for b in nc_mock('GET', '/test/state')['bans'].get('abc123', []) if b['bannedActorId'] == 'sidorov'])
+    W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-person[data-actor="sidorov"]'))
+    d.find_element(By.CSS_SELECTOR, '.talk-people-panel button[aria-label="Настройки беседы"]').click()
+    dlg = wait(d, '.talk-settings-modal')
+    W(d, 10).until(lambda d: 'Сидоров Олег' in dlg.find_element(By.CSS_SELECTOR, '.talk-bans').get_attribute('textContent'))
+    [b for b in dlg.find_elements(By.CSS_SELECTOR, '.talk-bans button') if b.text == 'Разблокировать'][0].click()
+    W(d, 10).until(lambda d: not nc_mock('GET', '/test/state')['bans']['abc123'])
+    lobby = [l for l in dlg.find_elements(By.TAG_NAME, 'label') if 'ждут, пока модератор' in l.get_attribute('textContent')][0]
+    lobby.find_element(By.TAG_NAME, 'input').click()
+    W(d, 10).until(lambda d: room_of('abc123')['lobbyState'] == 1)
+    dlg = wait(d, '.talk-settings-modal')
+    lobby = [l for l in dlg.find_elements(By.TAG_NAME, 'label') if 'ждут, пока модератор' in l.get_attribute('textContent')][0]
+    W(d, 10).until(lambda d: lobby.find_element(By.TAG_NAME, 'input').is_selected())
+    lobby.find_element(By.TAG_NAME, 'input').click()
+    W(d, 10).until(lambda d: room_of('abc123')['lobbyState'] == 0)
+    dlg.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
+    d.find_element(By.CSS_SELECTOR, '.talk-people-panel button[aria-label="Закрыть список участников"]').click()
+    ok('chat moderation: ban a participant (removed, listed in settings) and unban; waiting lobby on and off')
+
+    # Комнаты для групп: создать 2, запустить, написать во все, остановить, удалить.
+    ctx(row()); ctx_pick('Комнаты для групп…')
+    bd = wait(d, '[role="dialog"][aria-label="Комнаты для групп"]')
+    [b for b in bd.find_elements(By.TAG_NAME, 'button') if b.text == 'Создать комнаты'][0].click()
+    W(d, 15).until(lambda d: len([r for r in nc_mock('GET', '/test/state')['rooms'] if r.get('objectId') == 'abc123']) == 2)
+    bd = wait(d, '[role="dialog"][aria-label="Комнаты для групп"]')
+    W(d, 15).until(lambda d: [b.get_attribute('textContent') for b in bd.find_elements(By.CSS_SELECTOR, '.talk-breakout-list .talk-media-row')] == ['Комната 1', 'Комната 2'])
+    assert not room_row2('Комната 1'), 'breakout rooms are not shown in the main conversation list'
+    [b for b in bd.find_elements(By.TAG_NAME, 'button') if b.text == 'Запустить'][0].click()
+    W(d, 10).until(lambda d: room_of('abc123')['breakoutRoomStatus'] == 1)
+    bd.find_element(By.CSS_SELECTOR, 'textarea[aria-label="Сообщение во все комнаты"]').send_keys('Через 5 минут возвращаемся')
+    W(d, 10).until(lambda d: [b for b in bd.find_elements(By.TAG_NAME, 'button') if b.text == 'Отправить во все' and b.is_enabled()])
+    [b for b in bd.find_elements(By.TAG_NAME, 'button') if b.text == 'Отправить во все'][0].click()
+    W(d, 10).until(lambda d: nc_mock('GET', '/test/state')['broadcasts'] and nc_mock('GET', '/test/state')['broadcasts'][-1]['message'] == 'Через 5 минут возвращаемся')
+    W(d, 10).until(lambda d: [b for b in bd.find_elements(By.TAG_NAME, 'button') if b.text == 'Остановить'])[0].click()
+    W(d, 10).until(lambda d: room_of('abc123')['breakoutRoomStatus'] == 0)
+    [b for b in bd.find_elements(By.TAG_NAME, 'button') if 'Удалить комнаты' in b.text][0].click(); accept_confirm(d)
+    W(d, 10).until(lambda d: not [r for r in nc_mock('GET', '/test/state')['rooms'] if r.get('objectId') == 'abc123'] and room_of('abc123')['breakoutRoomMode'] == 0)
+    bd.find_element(By.CSS_SELECTOR, 'button[aria-label="Закрыть"]').click()
+    ok('chat breakout rooms: create, start, message all rooms, stop, remove (moderator)')
 
     # Новая личная беседа.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Новая беседа"]').click()

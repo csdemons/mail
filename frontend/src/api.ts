@@ -1,7 +1,7 @@
 import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { BusySlot, NcProfile, CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
-  SieveFilter, TalkChunk, TalkFeatures, TalkScheduled, TalkThread, TalkThreadTarget, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
+  SieveFilter, TalkChunk, TalkFeatures, NcCalendar, TalkEvent, TalkReminderItem, NcAbsence, NcTask, TalkBan, TalkScheduled, TalkThread, TalkThreadTarget, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
   MessageSummary, NcSearch, PickedFile, SignatureSet, MailboxSet, Identity, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
@@ -191,7 +191,7 @@ export const api = {
 
   talkRooms: () => invoke<TalkRoom[]>('talk_rooms'),
   talkHistory: (token: string, before: number | null = null) => invoke<TalkChunk>('talk_history', { token, before }),
-  talkPoll: (token: string, lastKnown: number) => invoke<TalkChunk>('talk_poll', { token, lastKnown }),
+  talkPoll: (token: string, lastKnown: number, markRead = true) => invoke<TalkChunk>('talk_poll', { token, lastKnown, markRead }),
   talkReact: (token: string, messageId: number, emoji: string, add: boolean) => invoke<void>('talk_react', { token, messageId, emoji, add }),
   talkFavorite: (token: string, on: boolean) => invoke<void>('talk_favorite', { token, on }),
   talkParticipants: (token: string) => invoke<TalkParticipant[]>('talk_participants', { token }),
@@ -237,6 +237,20 @@ export const api = {
   talkScheduleEdit: (token: string, id: string, message: string, sendAt: number, silent: boolean) => invoke<TalkScheduled>('talk_schedule_edit', { token, id, message, sendAt, silent }),
   talkScheduleDelete: (token: string, id: string) => invoke<void>('talk_schedule_delete', { token, id }),
   talkNoteToSelf: () => invoke<string>('talk_note_to_self'),
+  ncCalendars: () => invoke<NcCalendar[]>('nc_calendars'),
+  talkScheduleMeeting: (token: string, calendar: string, start: number, end: number, title: string, description: string, attendees: number[] | null) =>
+    invoke<void>('talk_schedule_meeting', { token, calendar, start, end, title, description, attendees }),
+  talkMutualEvents: (token: string) => invoke<TalkEvent[]>('talk_mutual_events', { token }),
+  talkUpcomingReminders: () => invoke<TalkReminderItem[]>('talk_upcoming_reminders'),
+  ncAbsence: (user: string) => invoke<NcAbsence | null>('nc_absence', { user }),
+  talkSummarize: (token: string, from: number) => invoke<{ taskId: number; nextOffset: number } | null>('talk_summarize', { token, from }),
+  ncTask: (id: number) => invoke<NcTask>('nc_task', { id }),
+  talkTranslate: (mode: string, message: string, to: string) => invoke<{ text: string | null; taskId: number | null }>('talk_translate', { mode, message, to }),
+  talkBans: (token: string) => invoke<TalkBan[]>('talk_bans', { token }),
+  talkBan: (token: string, actorType: string, actorId: string, note: string) => invoke<void>('talk_ban', { token, actorType, actorId, note }),
+  talkUnban: (token: string, banId: number) => invoke<void>('talk_unban', { token, banId }),
+  talkLobby: (token: string, on: boolean, timer: number | null = null) => invoke<void>('talk_lobby', { token, on, timer }),
+  talkBreakout: (token: string, action: string, value: Record<string, unknown> = {}) => invoke<void>('talk_breakout', { token, action, value }),
   talkPollCreate: (token: string, question: string, options: string[], maxVotes: number, hidden: boolean) =>
     invoke<TalkPoll>('talk_poll_create', { token, question, options, maxVotes, hidden }),
   talkPollGet: (token: string, id: number) => invoke<TalkPoll>('talk_poll_get', { token, id }),

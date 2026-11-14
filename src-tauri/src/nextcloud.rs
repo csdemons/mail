@@ -683,53 +683,15 @@ const TALK_ROOM: &str = "ocs/v2.php/apps/spreed/api/v4/room";
 #[path = "nextcloud_talk.rs"]
 mod talk_more;
 pub use talk_more::*;
+// Календарь и беседы, напоминания, сводка и перевод (ИИ), модерация.
+#[path = "nextcloud_talk_tools.rs"]
+mod talk_tools;
+pub use talk_tools::*;
 const TALK_CHAT: &str = "ocs/v2.php/apps/spreed/api/v1/chat/";
 const TALK_POLL: &str = "ocs/v2.php/apps/spreed/api/v1/poll/";
 /// Порция истории беседы (более ранние — следующим запросом с lastKnownMessageId).
 const TALK_PAGE: usize = 100;
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TalkRoom {
-    pub token: String,
-    pub name: String,
-    /// 1 — личная, 2 — группа, 3 — публичная, 4 — журнал изменений, 6 — заметки
-    pub kind: i64,
-    pub unread: i64,
-    pub unread_mention: bool,
-    pub last_activity: i64,
-    pub last_message: Option<String>,
-    pub read_only: bool,
-    /// Личная беседа: ID собеседника (для аватара).
-    pub peer: Option<String>,
-    /// Избранная беседа (как «Избранное» в Talk) — показывается выше остальных.
-    pub favorite: bool,
-    /// Последнее сообщение, прочитанное всеми участниками (для «✓✓»); 0 — неизвестно.
-    pub last_common_read: i64,
-    /// Моя роль: 1 — владелец, 2 — модератор, 3 — участник, 4 — гость, 5 — сам вошёл, 6 — гость-модератор.
-    pub role: i64,
-    /// Я владелец или модератор — могу управлять беседой.
-    pub moderator: bool,
-    pub description: String,
-    /// Уведомления: 1 — всегда, 2 — при упоминании, 3 — никогда (0 — по умолчанию).
-    pub notify_level: i64,
-    pub can_leave: bool,
-    pub can_delete: bool,
-    /// Исчезающие сообщения: через сколько секунд удаляются; 0 — выключено.
-    pub message_expiration: i64,
-    /// Последнее закреплённое сообщение (0 — нет) и то, что я скрыл у себя.
-    pub last_pinned_id: i64,
-    pub hidden_pinned_id: i64,
-    /// Звонок: идёт ли, с какого времени (unix, с), уведомлять ли о звонках (0 — нет), я в звонке.
-    pub has_call: bool,
-    pub call_start: i64,
-    pub notify_calls: i64,
-    pub in_call: bool,
-    /// В архиве, «важная» (уведомления и в «Не беспокоить»), «конфиденциальная» (без текста в уведомлениях).
-    pub archived: bool,
-    pub important: bool,
-    pub sensitive: bool,
-}
 
 /// Найденная карточка Deck — с доской и колонкой, чтобы открыть её на месте.
 #[derive(Debug, Serialize)]
@@ -1222,46 +1184,6 @@ fn hidden_system(v: &Value) -> bool {
 }
 
 impl Nc {
-    pub async fn talk_rooms(&self) -> Result<Vec<TalkRoom>> {
-        let (_, _, d) = self.ocs(Method::GET, TALK_ROOM, &[], None, "Беседы Talk").await?;
-        let mut rooms: Vec<TalkRoom> = d.as_array().map(|a| a.iter().map(|r| TalkRoom {
-            token: text(&r["token"]),
-            name: r["displayName"].as_str().or(r["name"].as_str()).unwrap_or_default().to_string(),
-            kind: int(&r["type"]),
-            unread: int(&r["unreadMessages"]),
-            unread_mention: r["unreadMention"].as_bool().unwrap_or(false),
-            last_activity: int(&r["lastActivity"]),
-            last_message: r["lastMessage"].is_object().then(|| {
-                let (t, f) = render_message(&r["lastMessage"]);
-                let t = match f.first() { Some(file) if t.is_empty() => format!("📎 {}", file.name), _ => t };
-                let who = text(&r["lastMessage"]["actorDisplayName"]);
-                if who.is_empty() { t } else { format!("{who}: {t}") }
-            }),
-            read_only: int(&r["readOnly"]) == 1,
-            peer: (int(&r["type"]) == 1).then(|| text(&r["name"])).filter(|n| !n.is_empty()),
-            favorite: r["isFavorite"].as_bool().unwrap_or(false),
-            last_common_read: int(&r["lastCommonReadMessage"]),
-            role: int(&r["participantType"]),
-            moderator: matches!(int(&r["participantType"]), 1 | 2 | 6),
-            description: text(&r["description"]),
-            notify_level: int(&r["notificationLevel"]),
-            can_leave: r["canLeaveConversation"].as_bool().unwrap_or(true),
-            can_delete: r["canDeleteConversation"].as_bool().unwrap_or(false),
-            message_expiration: int(&r["messageExpiration"]),
-            last_pinned_id: int(&r["lastPinnedId"]),
-            hidden_pinned_id: int(&r["hiddenPinnedId"]),
-            has_call: r["hasCall"].as_bool().unwrap_or(false),
-            call_start: int(&r["callStartTime"]),
-            notify_calls: r["notificationCalls"].as_i64().unwrap_or(1),
-            in_call: int(&r["participantFlags"]) != 0,
-            archived: r["isArchived"].as_bool().unwrap_or(false),
-            important: r["isImportant"].as_bool().unwrap_or(false),
-            sensitive: r["isSensitive"].as_bool().unwrap_or(false),
-        }).filter(|r| r.kind != 4).collect()).unwrap_or_default();
-        // Как в Talk: избранные сверху, внутри — по последней активности.
-        rooms.sort_by_key(|r| (std::cmp::Reverse(r.favorite), std::cmp::Reverse(r.last_activity)));
-        Ok(rooms)
-    }
 
     /// История: последние сообщения (или более старые, чем `before`). Помечает беседу прочитанной.
     pub async fn talk_history(&self, token: &str, before: Option<i64>) -> Result<TalkChunk> {
@@ -1274,9 +1196,10 @@ impl Nc {
     }
 
     /// Ждёт новые сообщения до 30 с (long-poll). Пусто — новых нет.
-    pub async fn talk_poll(&self, token: &str, last_known: i64) -> Result<TalkChunk> {
+    /// `mark_read` — сразу отметить прочитанным (программа отмечает сама, только если беседа ещё открыта).
+    pub async fn talk_poll(&self, token: &str, last_known: i64, mark_read: bool) -> Result<TalkChunk> {
         let q = vec![("lookIntoFuture", "1".to_string()), ("lastKnownMessageId", last_known.to_string()),
-            ("timeout", "30".to_string()), ("limit", "100".to_string()), ("setReadMarker", "1".to_string())];
+            ("timeout", "30".to_string()), ("limit", "100".to_string()), ("setReadMarker", if mark_read { "1" } else { "0" }.to_string())];
         let (status, h, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Новые сообщения").await?;
         if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0, last_common_read: common_read(&h), more: false }); }
         Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d), last_common_read: common_read(&h), more: false })

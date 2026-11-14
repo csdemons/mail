@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Search, MessageSquarePlus, RefreshCw, Users, Star, BellOff, Phone, Archive, ChevronDown, ChevronRight, CircleAlert, Lock, NotebookPen } from 'lucide-react'
+import { Search, MessageSquarePlus, RefreshCw, Users, Star, BellOff, Phone, Archive, ChevronDown, ChevronRight, CircleAlert, Lock, NotebookPen, AlarmClock } from 'lucide-react'
 import { SkeletonRows } from './Skeleton'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import Avatar from './Avatar'
@@ -23,9 +23,11 @@ export interface TalkRoomListProps {
   peers: Set<string | null>
   /** Открыть «Заметки для себя»; нет — сервер их не поддерживает. */
   onNoteToSelf?: () => void
+  /** Все напоминания (Talk 21.1). */
+  onReminders?: () => void
 }
 
-export default function TalkRoomList({ onNoteToSelf, query, setQuery, setNewChat, loadRooms, rooms, error, visibleRooms, token, setToken, roomMenu, peopleBusy, people, chatWith, peers }: TalkRoomListProps) {
+export default function TalkRoomList({ onNoteToSelf, onReminders, query, setQuery, setNewChat, loadRooms, rooms, error, visibleRooms, token, setToken, roomMenu, peopleBusy, people, chatWith, peers }: TalkRoomListProps) {
   const [showArchive, setShowArchive] = useState(false)
   // Архивные беседы — отдельной свёрнутой группой внизу; при поиске — вместе со всеми.
   const searching = query.trim().length > 0
@@ -52,6 +54,7 @@ export default function TalkRoomList({ onNoteToSelf, query, setQuery, setNewChat
     <aside className="message-column talk-rooms">
       <div className="list-toolbar">
         <label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Беседы и сотрудники" /></label>
+        {onReminders && <button className="icon-button soft" aria-label="Напоминания" title="Все напоминания о сообщениях" onClick={onReminders}><AlarmClock size={17} /></button>}
         {onNoteToSelf && <button className="icon-button soft" aria-label="Заметки для себя" title="Заметки для себя — беседа только с собой: ссылки, файлы, черновики" onClick={onNoteToSelf}><NotebookPen size={17} /></button>}
         <button className="icon-button soft" aria-label="Новая беседа" title="Новая беседа" onClick={() => setNewChat(true)}><MessageSquarePlus size={17} /></button>
         <button className="icon-button soft" aria-label="Обновить" onClick={() => void loadRooms()}><RefreshCw size={17} /></button>

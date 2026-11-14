@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-absence"
+description = "Enables the nc_absence command without any pre-configured scope."
+commands.allow = ["nc_absence"]
+
+[[permission]]
+identifier = "deny-nc-absence"
+description = "Denies the nc_absence command without any pre-configured scope."
+commands.deny = ["nc_absence"]

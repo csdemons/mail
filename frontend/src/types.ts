@@ -371,6 +371,15 @@ export interface TalkRoom {
   archived: boolean
   important: boolean
   sensitive: boolean
+  /** Последнее прочитанное мной сообщение. */
+  lastRead: number
+  /** Зал ожидания: 0 — нет, 1 — включён; когда откроется сам (unix, с; 0 — вручную). */
+  lobbyState: number
+  lobbyTimer: number
+  /** Комнаты для групп: режим (0 — нет), идут ли (1), основная беседа групповой комнаты. */
+  breakoutMode: number
+  breakoutStatus: number
+  breakoutParent: string | null
 }
 
 /** Ветка беседы (Talk 22). */
@@ -405,7 +414,26 @@ export interface TalkFeatures {
   important: boolean
   sensitive: boolean
   noteToSelf: boolean
+  scheduleMeeting: boolean
+  mutualEvents: boolean
+  upcomingReminders: boolean
+  summary: boolean
+  summaryThreshold: number
+  /** 'task' — перевод через ИИ сервера, 'legacy' — старый API перевода, '' — перевода нет. */
+  translation: string
+  ban: boolean
+  breakout: boolean
+  lobby: boolean
 }
+
+export interface NcCalendar { uri: string; name: string; color: string }
+export interface TalkEvent { name: string; start: number; end: number; link: string }
+export interface TalkReminderItem { token: string; messageId: number; at: number; author: string; text: string }
+/** Отпуск: последний день «ГГГГ-ММ-ДД», сообщение, кто замещает. */
+export interface NcAbsence { until: string; message: string; replacement: string }
+/** Задача ИИ на сервере: scheduled, running, successful, failed, cancelled. */
+export interface NcTask { status: string; output: string }
+export interface TalkBan { id: number; actorType: string; actorId: string; name: string; by: string; time: number; note: string }
 
 /** Куда отправить: в ветку или новой веткой. */
 export interface TalkThreadTarget { threadId?: number; threadTitle?: string }

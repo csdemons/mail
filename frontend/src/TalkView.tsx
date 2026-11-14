@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import {
-  MessageCircle } from 'lucide-react'
+import { MessageCircle, Sparkles, X } from 'lucide-react'
 
 import { api, errorText, onSessionReset, TYPING_PAUSE_MS } from './api'
 import AttachmentViewer from './AttachmentViewer'
@@ -19,6 +18,7 @@ import { messageMenu as messageMenuFor, roomMenu as roomMenuFor } from './talkMe
 import { cached, contents, merge, NO_TALK_FEATURES, sortRooms, TalkThumb, viewable } from './talkUtils'
 import TalkThreadPanel from './TalkThreadPanel'
 import TalkScheduledBar from './TalkScheduledBar'
+import { BreakoutDialog, MeetingDialog, PeerInfo, RemindersDialog, SummaryDialog, TranslateDialog } from './TalkTools'
 import TalkCompose from './TalkCompose'
 import TalkMessageList from './TalkMessageList'
 import TalkChatHeader from './TalkChatHeader'
@@ -101,6 +101,10 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   const [threadTitle, setThreadTitle] = useState<string | null>(null)
   const [threadView, setThreadView] = useState<number | null | undefined>(undefined)
   const [scheduledVer, setScheduledVer] = useState(0)
+  // Окна инструментов: встреча, все напоминания, сводка, перевод, комнаты для групп.
+  const [tool, setTool] = useState<{ kind: 'meeting' | 'reminders' | 'breakout'; room?: TalkRoom } | { kind: 'summary'; room: TalkRoom; from: number; count: number } | { kind: 'translate'; m: TalkMessage } | null>(null)
+  // Пропущено много сообщений (на момент открытия беседы) — предложить сводку.
+  const [missed, setMissed] = useState<{ token: string; from: number; count: number } | null>(null)
   const [mediaView, setMediaView] = useState<{ files: TalkFile[]; index: number } | null>(null)
   // Поиск по сообщениям беседы (на сервере, после паузы в наборе).
   const [searchOpen, setSearchOpen] = useState(false)
@@ -149,6 +153,12 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   const viewItems = useMemo<AttachmentInfo[]>(() => viewFiles.map((f, i) => ({ index: i, name: f.name, contentType: f.mimetype, size: f.size })), [viewFiles])
   const [viewing, setViewing] = useState<number | null>(null)
   useEffect(() => { setViewing(null); setThreadTitle(null); setThreadView(undefined) }, [token])
+  const roomsRef = useRef(rooms)
+  roomsRef.current = rooms
+  useEffect(() => {
+    const r = roomsRef.current?.find((x) => x.token === token)
+    setMissed(r && features.summary && r.unread >= features.summaryThreshold ? { token: r.token, from: r.lastRead, count: r.unread } : null)
+  }, [token, features.summary, features.summaryThreshold])
   const viewLoad = useCallback((a: AttachmentInfo) => {
     const f = viewFiles[a.index]
     return f?.path ? cached(contents, f.path, 20, () => api.talkFileData(f.path as string)) : Promise.reject(new Error('Файл недоступен'))
@@ -222,8 +232,11 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
       // Long-poll: сервер держит запрос до 30 с и отвечает, как только что-то изменится.
       while (pollSession.current === session) {
         try {
-          const fresh = await api.talkPoll(token, lastId)
+          // Прочитанным отмечаем сами и только если беседа всё ещё открыта: ответ на запрос,
+          // начатый до ухода в другую беседу, не должен «прочитать» пришедшее после ухода.
+          const fresh = await api.talkPoll(token, lastId, false)
           if (pollSession.current !== session) return
+          if (fresh.lastId > lastId) void api.talkManage(token, 'read', { lastId: fresh.lastId }).catch(() => undefined)
           if (fresh.messages.length > 0) setMessages((list) => merge(list, fresh.messages))
           if (fresh.lastCommonRead) setReadUpTo((r) => Math.max(r, fresh.lastCommonRead))
           if (fresh.lastId > lastId) lastId = fresh.lastId
@@ -559,9 +572,11 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
 
   const messageMenu = (m: TalkMessage, r: TalkRoom) => messageMenuFor(m, r, {
     react, setReactFor, setReactFull, setReplyTo, setEditing, inputRef, copyText, setForwarding, setCardFrom, pinned, setPinFor, unpin, setRemindFor, person, openFile, saveFile, startEdit, remove,
-    openThread: features.threads ? (id: number) => { setThreadView(id); setShowMedia(false); setShowPeople(false) } : undefined })
+    openThread: features.threads ? (id: number) => { setThreadView(id); setShowMedia(false); setShowPeople(false) } : undefined,
+    translate: features.translation ? (msg: TalkMessage) => setTool({ kind: 'translate', m: msg }) : undefined })
   const roomMenu = (r: TalkRoom) => roomMenuFor(r, {
-    toggleFavorite, manageRoom, setToken, setShowPeople, setSettingsFor, setWallpaperRoom, notify, roomGone, features })
+    toggleFavorite, manageRoom, setToken, setShowPeople, setSettingsFor, setWallpaperRoom, notify, roomGone, features,
+    openTool: (kind, r) => setTool(kind === 'summary' ? { kind, room: r, from: r.lastRead, count: r.unread } : { kind, room: r }) })
 
   async function manageRoom(r: TalkRoom, action: string, value: Record<string, unknown>, done: string) {
     try {
@@ -600,8 +615,9 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   }
   const visibleRooms = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return (rooms ?? []).filter((r) => !q || r.name.toLowerCase().includes(q))
-  }, [rooms, query])
+    // Комнаты для групп — в окне «Комнаты для групп» основной беседы, а не в общем списке.
+    return (rooms ?? []).filter((r) => (q ? r.name.toLowerCase().includes(q) : !r.breakoutParent || r.token === token))
+  }, [rooms, query, token])
 
   // Поиск сотрудников Nextcloud прямо из списка бесед — не только тех, с кем уже переписывались.
   const [people, setPeople] = useState<NcUser[]>([])
@@ -645,7 +661,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
       <TalkRoomList {...{
         query, setQuery, setNewChat, loadRooms, rooms, error, visibleRooms, token, setToken, roomMenu, peopleBusy,
         people, chatWith, peers,
-      }} onNoteToSelf={features.noteToSelf ? () => void openNotes() : undefined} />
+      }} onNoteToSelf={features.noteToSelf ? () => void openNotes() : undefined} onReminders={features.upcomingReminders ? () => setTool({ kind: 'reminders' }) : undefined} />
       <Splitter id="talk-rooms" min={220} max={640} label="Ширина списка бесед" />
 
       <main className={`talk-main ${wp ? 'has-wallpaper' : ''}`} data-wallpaper={wpData}>
@@ -661,6 +677,10 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
               <TalkSearchBar {...{ searchQ, setSearchQ, setSearchOpen, hits, jumpTo, searchBusy }} />
             )}
             {error && <div className="inline-warning" role="alert">Talk: {error}</div>}
+            <PeerInfo room={room} features={features} />
+            {missed?.token === room.token && <div className="talk-missed" role="status"><Sparkles size={14} /> Пропущено сообщений: {missed.count}
+              <button type="button" className="text-button" onClick={() => setTool({ kind: 'summary', room, from: missed.from, count: missed.count })}>Кратко о непрочитанном</button>
+              <button type="button" className="icon-button soft" aria-label="Скрыть" onClick={() => setMissed(null)}><X size={14} /></button></div>}
             {pinned.length > 0 && room.lastPinnedId > 0 && room.hiddenPinnedId !== room.lastPinnedId && (
               <TalkPinnedBar {...{ jumpTo, pinned, room, unpin }} />
             )}
@@ -697,13 +717,19 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
           onSave={(i) => { const f = mediaView.files[i]; if (f) void saveFile(f) }} />
       )}
       {room && showPeople && <Splitter id="talk-people" side="next" min={220} max={520} label="Ширина списка участников" />}
-      {room && showPeople && <RoomPeople room={room} notify={notify} person={person} onClose={() => setShowPeople(false)} onRoomChanged={() => void loadRooms()} onSettings={() => setSettingsFor(room)} />}
+      {room && showPeople && <RoomPeople ban={features.ban} room={room} notify={notify} person={person} onClose={() => setShowPeople(false)} onRoomChanged={() => void loadRooms()} onSettings={() => setSettingsFor(room)} />}
       {pinFor && <PinDialog message={pinFor} onPin={(u) => pin(pinFor, u)} onClose={() => setPinFor(null)} />}
       {remindFor && token && <ReminderDialog token={token} message={remindFor} notify={notify} onClose={() => setRemindFor(null)} />}
       {profileFor && <ProfileDialog userId={profileFor.id} name={profileFor.name} showBusy={profileFor.busy} onChat={() => person.chat(profileFor.id)}
         onWrite={(email, name) => { setProfileFor(null); onWrite?.(name && name !== email ? `${name} <${email}>` : email) }} onClose={() => setProfileFor(null)} />}
 
-      {settingsFor && <RoomSettings room={rooms?.find((r) => r.token === settingsFor.token) ?? settingsFor} notify={notify} onClose={() => setSettingsFor(null)} onChanged={() => void loadRooms()} onGone={() => roomGone(settingsFor)} />}
+      {tool?.kind === 'meeting' && tool.room && <MeetingDialog room={tool.room} notify={notify} onClose={() => setTool(null)} />}
+      {tool?.kind === 'reminders' && <RemindersDialog rooms={rooms ?? []} notify={notify} onClose={() => setTool(null)}
+        onOpen={(t, id) => { if (t === token) void jumpTo(id); else { pendingJump.current = { token: t, id }; setToken(t) } }} />}
+      {tool?.kind === 'summary' && <SummaryDialog room={tool.room} from={tool.from} count={tool.count} onClose={() => setTool(null)} />}
+      {tool?.kind === 'translate' && <TranslateDialog text={tool.m.text} author={tool.m.author} mode={features.translation} onClose={() => setTool(null)} />}
+      {tool?.kind === 'breakout' && tool.room && <BreakoutDialog room={rooms?.find((r) => r.token === tool.room?.token) ?? tool.room} rooms={rooms ?? []} notify={notify} onChanged={loadRooms} onOpen={setToken} onClose={() => setTool(null)} />}
+      {settingsFor && <RoomSettings features={features} room={rooms?.find((r) => r.token === settingsFor.token) ?? settingsFor} notify={notify} onClose={() => setSettingsFor(null)} onChanged={() => void loadRooms()} onGone={() => roomGone(settingsFor)} />}
       {forwarding && rooms && <ForwardDialog rooms={rooms} message={forwarding} notify={notify} onClose={() => setForwarding(null)} />}
       {cardFrom && room && <CardFromMessage message={cardFrom} room={room} onClose={() => setCardFrom(null)} onDone={(t) => { setCardFrom(null); notify(t) }} />}
       {newChat && <NewChat onClose={() => setNewChat(false)} onCreated={(t) => { setNewChat(false); void loadRooms().then(() => setToken(t)) }} />}

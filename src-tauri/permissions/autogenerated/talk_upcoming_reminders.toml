@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-upcoming-reminders"
+description = "Enables the talk_upcoming_reminders command without any pre-configured scope."
+commands.allow = ["talk_upcoming_reminders"]
+
+[[permission]]
+identifier = "deny-talk-upcoming-reminders"
+description = "Denies the talk_upcoming_reminders command without any pre-configured scope."
+commands.deny = ["talk_upcoming_reminders"]

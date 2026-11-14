@@ -5,8 +5,62 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{int, parse_message, seg, text, Nc, TalkChunk, TalkMessage, TALK_CHAT, TALK_ROOM};
+use super::{int, parse_message, render_message, seg, text, Nc, TalkChunk, TalkMessage, TALK_CHAT, TALK_ROOM};
 use crate::error::{AppError, Result};
+
+/// Беседа Talk в списке бесед.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkRoom {
+    pub token: String,
+    pub name: String,
+    /// 1 — личная, 2 — группа, 3 — публичная, 4 — журнал изменений, 6 — заметки
+    pub kind: i64,
+    pub unread: i64,
+    pub unread_mention: bool,
+    pub last_activity: i64,
+    pub last_message: Option<String>,
+    pub read_only: bool,
+    /// Личная беседа: ID собеседника (для аватара).
+    pub peer: Option<String>,
+    /// Избранная беседа (как «Избранное» в Talk) — показывается выше остальных.
+    pub favorite: bool,
+    /// Последнее сообщение, прочитанное всеми участниками (для «✓✓»); 0 — неизвестно.
+    pub last_common_read: i64,
+    /// Моя роль: 1 — владелец, 2 — модератор, 3 — участник, 4 — гость, 5 — сам вошёл, 6 — гость-модератор.
+    pub role: i64,
+    /// Я владелец или модератор — могу управлять беседой.
+    pub moderator: bool,
+    pub description: String,
+    /// Уведомления: 1 — всегда, 2 — при упоминании, 3 — никогда (0 — по умолчанию).
+    pub notify_level: i64,
+    pub can_leave: bool,
+    pub can_delete: bool,
+    /// Исчезающие сообщения: через сколько секунд удаляются; 0 — выключено.
+    pub message_expiration: i64,
+    /// Последнее закреплённое сообщение (0 — нет) и то, что я скрыл у себя.
+    pub last_pinned_id: i64,
+    pub hidden_pinned_id: i64,
+    /// Звонок: идёт ли, с какого времени (unix, с), уведомлять ли о звонках (0 — нет), я в звонке.
+    pub has_call: bool,
+    pub call_start: i64,
+    pub notify_calls: i64,
+    pub in_call: bool,
+    /// В архиве, «важная» (уведомления и в «Не беспокоить»), «конфиденциальная» (без текста в уведомлениях).
+    pub archived: bool,
+    pub important: bool,
+    pub sensitive: bool,
+    /// Последнее прочитанное мной сообщение (для сводки непрочитанного).
+    pub last_read: i64,
+    /// Зал ожидания: 0 — нет, 1 — для всех, кроме модераторов; когда откроется (unix, с; 0 — вручную).
+    pub lobby_state: i64,
+    pub lobby_timer: i64,
+    /// Комнаты для групп: режим (0 — нет, 1 — авто, 2 — вручную, 3 — по выбору), идут ли (1),
+    /// и для самой групповой комнаты — токен основной беседы.
+    pub breakout_mode: i64,
+    pub breakout_status: i64,
+    pub breakout_parent: Option<String>,
+}
 
 /// Куда отправить сообщение: в беседу, в ветку или новой веткой.
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -70,6 +124,20 @@ pub struct TalkFeatures {
     pub important: bool,
     pub sensitive: bool,
     pub note_to_self: bool,
+    /// Запланировать встречу из беседы (Talk 21), общие встречи в личной беседе (21.1).
+    pub schedule_meeting: bool,
+    pub mutual_events: bool,
+    /// Список всех напоминаний (Talk 21.1).
+    pub upcoming_reminders: bool,
+    /// Сводка непрочитанного (Talk 20.1, нужен ИИ на сервере) и с какого числа непрочитанных её предлагать.
+    pub summary: bool,
+    pub summary_threshold: i64,
+    /// Перевод сообщений: "task" — через TaskProcessing (Talk 21), "legacy" — старый API перевода, "" — нет.
+    pub translation: String,
+    /// Бан участников (Talk 20), комнаты для групп, зал ожидания.
+    pub ban: bool,
+    pub breakout: bool,
+    pub lobby: bool,
 }
 
 fn parse_thread(v: &Value, me: &str) -> TalkThread {
@@ -120,6 +188,54 @@ fn check_send_at(at: i64) -> Result<()> {
 }
 
 impl Nc {
+    /// Беседы пользователя (без журнала изменений), избранные сверху, затем по активности.
+    pub async fn talk_rooms(&self) -> Result<Vec<TalkRoom>> {
+        let (_, _, d) = self.ocs(Method::GET, TALK_ROOM, &[], None, "Беседы Talk").await?;
+        let mut rooms: Vec<TalkRoom> = d.as_array().map(|a| a.iter().map(|r| TalkRoom {
+            token: text(&r["token"]),
+            name: r["displayName"].as_str().or(r["name"].as_str()).unwrap_or_default().to_string(),
+            kind: int(&r["type"]),
+            unread: int(&r["unreadMessages"]),
+            unread_mention: r["unreadMention"].as_bool().unwrap_or(false),
+            last_activity: int(&r["lastActivity"]),
+            last_message: r["lastMessage"].is_object().then(|| {
+                let (t, f) = render_message(&r["lastMessage"]);
+                let t = match f.first() { Some(file) if t.is_empty() => format!("📎 {}", file.name), _ => t };
+                let who = text(&r["lastMessage"]["actorDisplayName"]);
+                if who.is_empty() { t } else { format!("{who}: {t}") }
+            }),
+            read_only: int(&r["readOnly"]) == 1,
+            peer: (int(&r["type"]) == 1).then(|| text(&r["name"])).filter(|n| !n.is_empty()),
+            favorite: r["isFavorite"].as_bool().unwrap_or(false),
+            last_common_read: int(&r["lastCommonReadMessage"]),
+            role: int(&r["participantType"]),
+            moderator: matches!(int(&r["participantType"]), 1 | 2 | 6),
+            description: text(&r["description"]),
+            notify_level: int(&r["notificationLevel"]),
+            can_leave: r["canLeaveConversation"].as_bool().unwrap_or(true),
+            can_delete: r["canDeleteConversation"].as_bool().unwrap_or(false),
+            message_expiration: int(&r["messageExpiration"]),
+            last_pinned_id: int(&r["lastPinnedId"]),
+            hidden_pinned_id: int(&r["hiddenPinnedId"]),
+            has_call: r["hasCall"].as_bool().unwrap_or(false),
+            call_start: int(&r["callStartTime"]),
+            notify_calls: r["notificationCalls"].as_i64().unwrap_or(1),
+            in_call: int(&r["participantFlags"]) != 0,
+            archived: r["isArchived"].as_bool().unwrap_or(false),
+            important: r["isImportant"].as_bool().unwrap_or(false),
+            sensitive: r["isSensitive"].as_bool().unwrap_or(false),
+            last_read: int(&r["lastReadMessage"]),
+            lobby_state: int(&r["lobbyState"]),
+            lobby_timer: int(&r["lobbyTimer"]),
+            breakout_mode: int(&r["breakoutRoomMode"]),
+            breakout_status: int(&r["breakoutRoomStatus"]),
+            breakout_parent: (r["objectType"].as_str() == Some("room")).then(|| text(&r["objectId"])).filter(|t| !t.is_empty()),
+        }).filter(|r| r.kind != 4).collect()).unwrap_or_default();
+        // Как в Talk: избранные сверху, внутри — по последней активности.
+        rooms.sort_by_key(|r| (std::cmp::Reverse(r.favorite), std::cmp::Reverse(r.last_activity)));
+        Ok(rooms)
+    }
+
     /// Что из новых возможностей Talk есть на сервере (`spreed.features`).
     pub async fn talk_features(&self) -> Result<TalkFeatures> {
         let (_, _, d) = self.ocs(Method::GET, "ocs/v2.php/cloud/capabilities", &[("format", "json".into())], None, "Возможности Talk").await?;
@@ -132,6 +248,19 @@ impl Nc {
             important: has("important-conversations"),
             sensitive: has("sensitive-conversations"),
             note_to_self: has("note-to-self"),
+            schedule_meeting: has("schedule-meeting"),
+            mutual_events: has("mutual-calendar-events"),
+            upcoming_reminders: has("upcoming-reminders"),
+            summary: has("chat-summary-api"),
+            summary_threshold: d.pointer("/capabilities/spreed/config/chat/summary-threshold").and_then(Value::as_i64).unwrap_or(100).max(1),
+            translation: {
+                let chat = d.pointer("/capabilities/spreed/config/chat");
+                let flag = |k: &str| chat.and_then(|c| c[k].as_bool()).unwrap_or(false);
+                if flag("has-translation-task-providers") { "task".into() } else if flag("has-translation-providers") { "legacy".into() } else { String::new() }
+            },
+            ban: has("ban-v1"),
+            breakout: has("breakout-rooms-v1"),
+            lobby: has("webinary-lobby"),
         })
     }
 

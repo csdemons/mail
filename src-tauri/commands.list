@@ -104,6 +104,19 @@ talk_schedule
 talk_schedule_edit
 talk_schedule_delete
 talk_note_to_self
+nc_calendars
+talk_schedule_meeting
+talk_mutual_events
+talk_upcoming_reminders
+nc_absence
+talk_summarize
+nc_task
+talk_translate
+talk_bans
+talk_ban
+talk_unban
+talk_lobby
+talk_breakout
 open_link               msg
 nc_files_list           msg
 nc_files_mkdir

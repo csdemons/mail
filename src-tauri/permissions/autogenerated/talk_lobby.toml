@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-lobby"
+description = "Enables the talk_lobby command without any pre-configured scope."
+commands.allow = ["talk_lobby"]
+
+[[permission]]
+identifier = "deny-talk-lobby"
+description = "Denies the talk_lobby command without any pre-configured scope."
+commands.deny = ["talk_lobby"]

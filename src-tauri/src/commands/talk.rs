@@ -55,10 +55,10 @@ pub async fn talk_history(state: State<'_, AppState>, token: String, before: Opt
 }
 
 #[tauri::command]
-pub async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i64) -> Result<nextcloud::TalkChunk> {
+pub async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i64, mark_read: Option<bool>) -> Result<nextcloud::TalkChunk> {
     let ctx = state.ctx().await?;
     let (creds, uid) = ctx.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
-    nextcloud::Nc::long_poll(creds, &uid)?.talk_poll(&token, last_known).await
+    nextcloud::Nc::long_poll(creds, &uid)?.talk_poll(&token, last_known, mark_read.unwrap_or(true)).await
 }
 
 #[tauri::command]
@@ -264,4 +264,86 @@ pub async fn talk_schedule_delete(state: State<'_, AppState>, token: String, id:
 pub async fn talk_note_to_self(state: State<'_, AppState>) -> Result<String> {
     let ctx = state.ctx().await?;
     nc(&ctx).await?.talk_note_to_self().await
+}
+
+/// Календари Nextcloud, куда можно записать встречу беседы.
+#[tauri::command]
+pub async fn nc_calendars(state: State<'_, AppState>) -> Result<Vec<nextcloud::NcCalendar>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.nc_calendars().await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn talk_schedule_meeting(state: State<'_, AppState>, token: String, calendar: String, start: i64, end: i64, title: String, description: String, attendees: Option<Vec<i64>>) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_schedule_meeting(&token, &calendar, start, end, &title, &description, attendees).await
+}
+
+#[tauri::command]
+pub async fn talk_mutual_events(state: State<'_, AppState>, token: String) -> Result<Vec<nextcloud::TalkEvent>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_mutual_events(&token).await
+}
+
+#[tauri::command]
+pub async fn talk_upcoming_reminders(state: State<'_, AppState>) -> Result<Vec<nextcloud::TalkReminderItem>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_upcoming_reminders().await
+}
+
+/// Отпуск сотрудника (отсутствие из календаря Nextcloud) или None.
+#[tauri::command]
+pub async fn nc_absence(state: State<'_, AppState>, user: String) -> Result<Option<nextcloud::NcAbsence>> {
+    let ctx = state.ctx().await?;
+    Ok(nc(&ctx).await?.nc_absence(&user).await)
+}
+
+#[tauri::command]
+pub async fn talk_summarize(state: State<'_, AppState>, token: String, from: i64) -> Result<Option<nextcloud::TalkSummaryTask>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_summarize(&token, from).await
+}
+
+/// Состояние задачи ИИ на сервере (сводка, перевод).
+#[tauri::command]
+pub async fn nc_task(state: State<'_, AppState>, id: i64) -> Result<nextcloud::NcTask> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.nc_task(id).await
+}
+
+#[tauri::command]
+pub async fn talk_translate(state: State<'_, AppState>, mode: String, message: String, to: String) -> Result<nextcloud::TalkTranslation> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_translate(&mode, &message, &to).await
+}
+
+#[tauri::command]
+pub async fn talk_bans(state: State<'_, AppState>, token: String) -> Result<Vec<nextcloud::TalkBan>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_bans(&token).await
+}
+
+#[tauri::command]
+pub async fn talk_ban(state: State<'_, AppState>, token: String, actor_type: String, actor_id: String, note: String) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_ban(&token, &actor_type, &actor_id, &note).await
+}
+
+#[tauri::command]
+pub async fn talk_unban(state: State<'_, AppState>, token: String, ban_id: i64) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_unban(&token, ban_id).await
+}
+
+#[tauri::command]
+pub async fn talk_lobby(state: State<'_, AppState>, token: String, on: bool, timer: Option<i64>) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_lobby(&token, on, timer).await
+}
+
+#[tauri::command]
+pub async fn talk_breakout(state: State<'_, AppState>, token: String, action: String, value: serde_json::Value) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_breakout(&token, &action, &value).await
 }

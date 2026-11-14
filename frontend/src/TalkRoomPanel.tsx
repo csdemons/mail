@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Crown, LogOut, MoreHorizontal, Search, Settings2, Shield, ShieldOff, Trash2, UserMinus, UserPlus, X } from 'lucide-react'
+import { Crown, LogOut, MoreHorizontal, Search, Settings2, Shield, ShieldOff, ShieldBan, Trash2, UserMinus, UserPlus, X } from 'lucide-react'
 import { api, errorText, TYPING_PAUSE_MS } from './api'
 import Avatar from './Avatar'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import { SkeletonRows } from './Skeleton'
-import type { NcUser, TalkMessage, TalkParticipant, TalkRoom } from './types'
+import type { NcUser, TalkFeatures, TalkMessage, TalkParticipant, TalkRoom } from './types'
 import { personMenu, type PersonActions } from './TalkPeople'
+import { banParticipant, BansSection, LobbySection } from './TalkModeration'
 
 export function roleLabel(role: number): string {
   switch (role) {
@@ -20,7 +21,9 @@ export function roleLabel(role: number): string {
 const STATUS: Record<string, string> = { online: 'в сети', away: 'отошёл', dnd: 'не беспокоить', busy: 'занят', offline: 'не в сети' }
 
 /** Боковая панель «Участники» — как в Talk: роли, статус, управление для модератора. */
-export function RoomPeople({ room, notify, person, onClose, onRoomChanged, onSettings }: {
+export function RoomPeople({ room, notify, person, onClose, onRoomChanged, onSettings, ban = false }: {
+  /** Можно блокировать участников (Talk 20). */
+  ban?: boolean
   room: TalkRoom
   notify: (t: string) => void
   /** Действия с сотрудником: личный чат, профиль, доступность, письмо. */
@@ -71,6 +74,7 @@ export function RoomPeople({ room, notify, person, onClose, onRoomChanged, onSet
         ? { label: 'Снять права модератора', icon: <ShieldOff size={15} />, onClick: () => void act('demote', { attendeeId: p.attendeeId }, `${p.name} больше не модератор`) }
         : { label: 'Назначить модератором', icon: <Shield size={15} />, onClick: () => void act('promote', { attendeeId: p.attendeeId }, `${p.name} — модератор`) },
       { separator: true },
+      ...(ban && ['users', 'guests', 'emails'].includes(p.actorType) && room.kind !== 1 ? [{ label: 'Заблокировать…', icon: <ShieldBan size={15} />, danger: true, onClick: () => void banParticipant(room, p.actorType, p.actorId, p.name, notify, () => { load(); onRoomChanged() }) }] : []),
       { label: 'Удалить из беседы', icon: <UserMinus size={15} />, danger: true, onClick: () => { if (window.confirm(`Удалить ${p.name} из беседы «${room.name}»?`)) void act('remove', { attendeeId: p.attendeeId }, `${p.name} удалён из беседы`) } },
     ]
   }
@@ -126,7 +130,8 @@ export function RoomPeople({ room, notify, person, onClose, onRoomChanged, onSet
 }
 
 /** Настройки беседы: название, описание, режимы (модератор) и свои уведомления, выход. */
-export function RoomSettings({ room, notify, onClose, onChanged, onGone }: {
+export function RoomSettings({ room, notify, onClose, onChanged, onGone, features }: {
+  features?: TalkFeatures
   room: TalkRoom
   notify: (t: string) => void
   onClose: () => void
@@ -187,6 +192,8 @@ export function RoomSettings({ room, notify, onClose, onChanged, onGone }: {
             <span className="settings-hint">Касается новых сообщений: они удаляются у всех участников через выбранное время.</span>
           </div>
         )}
+        {room.moderator && group && features?.lobby && <LobbySection room={room} notify={notify} onChanged={onChanged} />}
+        {room.moderator && group && features?.ban && <BansSection room={room} notify={notify} />}
         <div className="settings-section notify-settings">
           <strong>Мои уведомления</strong>
           <select aria-label="Уведомления" value={room.notifyLevel} disabled={busy} onChange={(e) => void run([['notify', { level: Number(e.target.value) }]], 'Уведомления беседы изменены')}>

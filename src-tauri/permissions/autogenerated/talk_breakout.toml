@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-breakout"
+description = "Enables the talk_breakout command without any pre-configured scope."
+commands.allow = ["talk_breakout"]
+
+[[permission]]
+identifier = "deny-talk-breakout"
+description = "Denies the talk_breakout command without any pre-configured scope."
+commands.deny = ["talk_breakout"]

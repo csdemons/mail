@@ -1745,3 +1745,31 @@ button.talk-author:hover { text-decoration: underline; }
 .talk-scheduled-item { display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 20px; }
 .talk-scheduled-when { flex: none; color: var(--accent-ink); }
 .talk-scheduled-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Инструменты чата: встреча, напоминания, сводка, перевод, комнаты для групп, модерация */
+.talk-tool-modal { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 60px); overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.talk-tool-modal.wide { width: min(620px, calc(100vw - 32px)); }
+.talk-meeting-people { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+.talk-meeting-people strong { display: flex; align-items: center; gap: 6px; }
+.talk-peer-info { display: flex; flex-direction: column; gap: 4px; padding: 6px 14px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12px; }
+.talk-absence, .talk-mutual-events { display: flex; align-items: flex-start; gap: 6px; }
+.talk-absence svg { color: #d97706; flex: none; margin-top: 1px; }
+.talk-mutual-events svg { color: var(--accent-ink); flex: none; margin-top: 1px; }
+.talk-mutual-events .text-button { font-size: 12px; padding: 0 4px; }
+.talk-missed { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid var(--line); background: var(--accent-soft); color: var(--accent-ink); font-size: 12px; }
+.talk-missed .icon-button { margin-left: auto; }
+.talk-reminder-list { display: flex; flex-direction: column; gap: 4px; }
+.talk-reminder-item { display: flex; align-items: center; gap: 6px; }
+.talk-reminder-open { flex: 1; min-width: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.talk-reminder-open:hover { background: var(--hover); }
+.talk-reminder-when { color: var(--accent-ink); font-size: 12px; white-space: nowrap; }
+.talk-reminder-room { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-reminder-text { grid-column: 1 / -1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-summary-text { display: flex; flex-direction: column; gap: 10px; font-size: 13px; line-height: 1.5; max-height: 50vh; overflow-y: auto; }
+.talk-ai-wait { display: inline-flex; align-items: center; gap: 6px; }
+.talk-translate-original { font-size: 12px; padding: 8px; border-left: 3px solid var(--line); white-space: pre-wrap; max-height: 120px; overflow-y: auto; }
+.talk-translate-result { font-size: 14px; padding: 8px; border-left: 3px solid var(--accent-line); min-height: 40px; white-space: pre-wrap; }
+.talk-breakout-list { display: flex; flex-direction: column; gap: 2px; }
+.talk-bans { display: flex; flex-direction: column; gap: 4px; }
+.talk-bans strong { display: flex; align-items: center; gap: 6px; }
+.talk-ban-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }

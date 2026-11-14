@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-unban"
+description = "Enables the talk_unban command without any pre-configured scope."
+commands.allow = ["talk_unban"]
+
+[[permission]]
+identifier = "deny-talk-unban"
+description = "Denies the talk_unban command without any pre-configured scope."
+commands.deny = ["talk_unban"]

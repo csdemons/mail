@@ -57,7 +57,7 @@ async fn main() {
             client.talk_send(&r.token, "Привет из RRCKI Mail", hist.first().map(|m| m.id), false, &Default::default()).await.expect("send");
             let poller = nc::Nc::long_poll(creds.clone(), &uid).unwrap();
             let t = std::time::Instant::now();
-            let new = poller.talk_poll(&r.token, last).await.expect("poll");
+            let new = poller.talk_poll(&r.token, last, true).await.expect("poll");
             println!("  новое ({:?}): {:?}", t.elapsed(), new.messages.iter().map(|m| (m.own, m.text.clone(), m.parent_text.clone())).collect::<Vec<_>>());
         }
     }

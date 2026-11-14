@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-bans"
+description = "Enables the talk_bans command without any pre-configured scope."
+commands.allow = ["talk_bans"]
+
+[[permission]]
+identifier = "deny-talk-bans"
+description = "Denies the talk_bans command without any pre-configured scope."
+commands.deny = ["talk_bans"]

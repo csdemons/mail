@@ -89,7 +89,22 @@ export function sortRooms(list: TalkRoom[]): TalkRoom[] {
 }
 
 /** Возможности Talk, пока сервер не ответил (или старый сервер): ничего нового. */
-export const NO_TALK_FEATURES: TalkFeatures = { threads: false, scheduled: false, archive: false, important: false, sensitive: false, noteToSelf: false }
+export const NO_TALK_FEATURES: TalkFeatures = {
+  threads: false, scheduled: false, archive: false, important: false, sensitive: false, noteToSelf: false, scheduleMeeting: false, mutualEvents: false,
+  upcomingReminders: false, summary: false, summaryThreshold: 100, translation: '', ban: false, breakout: false, lobby: false,
+}
+
+/** Дождаться задачи ИИ на сервере (сводка, перевод): опрос раз в 2 с, не дольше 3 минут. */
+export async function waitTask(id: number, alive: () => boolean = () => true): Promise<string> {
+  const until = Date.now() + 180_000
+  while (Date.now() < until && alive()) {
+    const t = await api.ncTask(id)
+    if (t.status === 'successful') return t.output
+    if (t.status === 'failed' || t.status === 'cancelled') throw new Error('ИИ-ассистент сервера не смог выполнить задачу')
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  throw new Error(alive() ? 'ИИ-ассистент сервера не ответил за 3 минуты — попробуйте позже' : 'Отменено')
+}
 
 /** «1 ответ», «3 ответа», «5 ответов». */
 export function repliesLabel(n: number): string {

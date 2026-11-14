@@ -163,7 +163,10 @@ def room_view(r):
                 lastPinnedId=max([m['id'] for m in state['messages'][r['token']] if pin_active(m)] or [0]), hiddenPinnedId=state.get('pin_hidden', {}).get(r['token'], 0),
                 hasCall=bool(r.get('call_start')), callStartTime=r.get('call_start', 0), callFlag=7 if r.get('call_start') else 0,
                 participantFlags=7 if r.get('in_call') else 0, notificationCalls=r.get('notify_calls', 1),
-                isArchived=bool(r.get('archived')), isImportant=bool(r.get('important')), isSensitive=bool(r.get('sensitive')))
+                isArchived=bool(r.get('archived')), isImportant=bool(r.get('important')), isSensitive=bool(r.get('sensitive')),
+                lastReadMessage=state['read'][r['token']], lobbyState=r.get('lobby', 0), lobbyTimer=r.get('lobby_timer', 0),
+                breakoutRoomMode=r.get('breakout_mode', 0), breakoutRoomStatus=r.get('breakout_status', 0),
+                objectType='room' if r.get('parent') else '', objectId=r.get('parent', ''))
 
 
 def pin_active(m):
@@ -311,7 +314,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares', 'boards')} | {k: state.get(k, d) for k, d in (('pins', []), ('unpins', []), ('reminders', {}), ('freebusy', []), ('pin_hidden', {}), ('scheduled', {}), ('threads', {}))} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares', 'boards')} | {k: state.get(k, d) for k, d in (('pins', []), ('unpins', []), ('reminders', {}), ('freebusy', []), ('pin_hidden', {}), ('scheduled', {}), ('threads', {}), ('meetings', []), ('bans', {}), ('broadcasts', []), ('tasks', {}))} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/set':
             for k in ('slow_send',):
@@ -559,6 +562,71 @@ class H(BaseHTTPRequestHandler):
             self.send_response(207); self.send_header('Content-Type', 'application/xml; charset=utf-8')
             self.send_header('Content-Length', str(len(out))); self.end_headers(); self.wfile.write(out)
             return
+        # --- Календари Nextcloud (для «Запланировать встречу»)
+        if method == 'PROPFIND' and p == f'/remote.php/dav/calendars/{UID}/':
+            cal = lambda uri, name, comp, write: (f'<d:response><d:href>/remote.php/dav/calendars/{UID}/{uri}/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
+                f'<d:displayname>{name}</d:displayname><c:supported-calendar-component-set><c:comp name="{comp}"/></c:supported-calendar-component-set>'
+                f'<d:current-user-privilege-set><d:privilege><d:{"write" if write else "read"}/></d:privilege></d:current-user-privilege-set></d:prop></d:propstat></d:response>')
+            xml = ('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+                   f'<d:response><d:href>/remote.php/dav/calendars/{UID}/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>'
+                   + cal('personal', 'Личный', 'VEVENT', True) + cal('work', 'Рабочий', 'VEVENT', True) + cal('tasks', 'Задачи', 'VTODO', True) + cal('shared_ro', 'Чужой', 'VEVENT', False)
+                   + '</d:multistatus>').encode()
+            self.send_response(207); self.send_header('Content-Type', 'application/xml; charset=utf-8'); self.send_header('Content-Length', str(len(xml))); self.end_headers(); self.wfile.write(xml)
+            return
+        # Задачи ИИ (TaskProcessing): сводка и перевод; первый запрос — «идёт», затем готово.
+        tasks = state.setdefault('tasks', {})
+        if method == 'POST' and p == '/ocs/v2.php/taskprocessing/schedule':
+            b = self.body(); tid = next(ids)
+            tasks[str(tid)] = {'type': b['type'], 'input': b['input'], 'polls': 0, 'output': f"[{b['input']['target_language']}] {b['input']['input']}"}
+            return self.ocs({'task': {'id': tid, 'status': 'STATUS_SCHEDULED'}})
+        mtask = _re_mod.match(r'^/ocs/v2\.php/taskprocessing/task/(\d+)$', p)
+        if method == 'GET' and mtask and mtask.group(1) in tasks:
+            t = tasks[mtask.group(1)]; t['polls'] += 1
+            done = t['polls'] > 1
+            return self.ocs({'task': {'id': int(mtask.group(1)), 'status': 'STATUS_SUCCESSFUL' if done else 'STATUS_RUNNING', 'output': {'output': t['output']} if done else None}})
+        # Отсутствие (отпуск) сотрудника — из календаря Nextcloud.
+        if method == 'GET' and p == '/ocs/v2.php/apps/dav/api/v1/outOfOffice/ivanov/now':
+            return self.ocs({'id': 1, 'userId': 'ivanov', 'startDate': int(time.time()) - 86400, 'endDate': int(time.time()) + 6 * 86400, 'shortMessage': 'Отпуск', 'message': '', 'replacementUserId': 'petrova', 'replacementUserDisplayName': 'Петрова Анна'})
+        if method == 'GET' and p.startswith('/ocs/v2.php/apps/dav/api/v1/outOfOffice/'):
+            return self.send(404, {'ocs': {'meta': {'status': 'failure', 'statuscode': 404}, 'data': None}})
+        if method == 'GET' and p == '/ocs/v2.php/apps/spreed/api/v1/chat/upcoming-reminders':
+            out = []
+            for key, ts in state.get('reminders', {}).items():
+                tok, mid = key.split(':'); m = next((x for x in state['messages'].get(tok, []) if x['id'] == int(mid)), None)
+                if m: out.append({'roomToken': tok, 'messageId': int(mid), 'reminderTimestamp': ts, 'actorDisplayName': m['actorDisplayName'], 'actorId': m['actorId'], 'actorType': 'users', 'message': m['message'], 'messageParameters': m.get('messageParameters') or {}})
+            return self.ocs(out)
+        mban = _re_mod.match(r'^/ocs/v2\.php/apps/spreed/api/v1/ban/([a-z0-9-]+)(?:/(\d+))?$', p)
+        if mban and mban.group(1) in state['messages']:
+            tok = mban.group(1); bans = state.setdefault('bans', {}).setdefault(tok, [])
+            if method == 'GET': return self.ocs(bans)
+            if method == 'POST':
+                b = self.body(); r = next(x for x in state['rooms'] if x['token'] == tok)
+                victim = next((m for m in members(r) if m['actorId'] == b['actorId']), None)
+                if victim: r['members'].remove(victim)
+                ban = {'id': next(ids), 'moderatorActorType': 'users', 'moderatorActorId': UID, 'moderatorDisplayName': 'Тестовый Пользователь', 'bannedActorType': b['actorType'],
+                       'bannedActorId': b['actorId'], 'bannedDisplayName': NAMES.get(b['actorId'], b['actorId']), 'bannedTime': int(time.time()), 'internalNote': b.get('internalNote', '')}
+                bans.append(ban); return self.ocs(ban)
+            if method == 'DELETE':
+                state['bans'][tok] = [x for x in bans if x['id'] != int(mban.group(2))]; return self.ocs(None)
+        mbr = _re_mod.match(r'^/ocs/v2\.php/apps/spreed/api/v1/breakout-rooms/([a-z0-9-]+)(/rooms|/broadcast)?$', p)
+        if mbr and mbr.group(1) in state['messages']:
+            tok, what = mbr.group(1), mbr.group(2) or ''
+            r = next(x for x in state['rooms'] if x['token'] == tok)
+            if what == '' and method == 'POST':
+                b = self.body()
+                if r.get('breakout_mode'): return self.send(400, {'ocs': {'meta': {'status': 'failure', 'statuscode': 400}, 'data': {'error': 'mode'}}})
+                r['breakout_mode'] = int(b['mode'])
+                for n in range(int(b['amount'])):
+                    t = f'{tok}br{n + 1}'
+                    state['rooms'].append({'token': t, 'type': 2, 'name': f'Комната {n + 1}', 'displayName': f'Комната {n + 1}', 'readOnly': 0, 'parent': tok})
+                    state['messages'][t] = []; state['read'][t] = 0
+                return self.ocs([room_view(x) for x in state['rooms'] if x.get('parent') == tok])
+            if what == '' and method == 'DELETE':
+                state['rooms'] = [x for x in state['rooms'] if x.get('parent') != tok]; r['breakout_mode'] = 0; r['breakout_status'] = 0; return self.ocs(room_view(r))
+            if what == '/rooms':
+                r['breakout_status'] = 1 if method == 'POST' else 0; return self.ocs([room_view(x) for x in state['rooms'] if x.get('parent') == tok])
+            if what == '/broadcast':
+                state.setdefault('broadcasts', []).append({'token': tok, 'message': self.body()['message']}); return self.ocs([], 201)
         # --- Файлы (WebDAV) и публикация в беседу
         F = f'/remote.php/dav/files/{UID}/'
         if p.startswith(F):
@@ -606,8 +674,10 @@ class H(BaseHTTPRequestHandler):
                 state['files'][path] = {'id': next(ids), 'data': data}
                 return self.send(201)
         if method == 'GET' and p == '/ocs/v2.php/cloud/capabilities':
-            feats = ['threads', 'scheduled-messages', 'archived-conversations-v2', 'important-conversations', 'sensitive-conversations', 'note-to-self', 'pinned-messages']
-            return self.ocs({'capabilities': {'spreed': {'features': [] if state.get('old_talk') else feats, 'config': {'attachments': {'allowed': True, 'folder': '/Talk'}}}}})
+            feats = ['threads', 'scheduled-messages', 'archived-conversations-v2', 'important-conversations', 'sensitive-conversations', 'note-to-self', 'pinned-messages',
+                     'schedule-meeting', 'mutual-calendar-events', 'upcoming-reminders', 'chat-summary-api', 'ban-v1', 'breakout-rooms-v1', 'webinary-lobby']
+            return self.ocs({'capabilities': {'spreed': {'features': [] if state.get('old_talk') else feats, 'config': {'attachments': {'allowed': True, 'folder': '/Talk'},
+                             'chat': {'summary-threshold': 3, 'has-translation-task-providers': True}}}}})
         SH = '/ocs/v2.php/apps/files_sharing/api/v1/shares'
         if method == 'GET' and p == SH:
             return self.ocs([x for x in state['shares'] if x['path'] == q.get('path')])
@@ -808,6 +878,16 @@ class H(BaseHTTPRequestHandler):
                 r['expiration'] = int(b.get('seconds', 0)); return self.ocs({})
             if method == 'POST' and sub == 'notify':
                 r['notify'] = int(b.get('level', 0)); return self.ocs({})
+            if method == 'POST' and sub == 'meeting':
+                if b.get('calendarUri') not in ('personal', 'work'): return self.send(400, {'ocs': {'meta': {'status': 'failure', 'statuscode': 400}, 'data': {'error': 'calendar'}}})
+                state.setdefault('meetings', []).append({'token': tok, **b}); return self.ocs(None)
+            if method == 'GET' and sub == 'mutual-events':
+                if r['type'] != 1: return self.send(403, {})
+                now = int(time.time())
+                return self.ocs([{'eventName': 'Планёрка УИТ', 'start': now + 86400, 'end': now + 86400 + 1800, 'eventLink': 'https://localhost:8443/index.php/apps/calendar', 'calendars': [{'principalUri': '', 'calendarName': 'Личный', 'calendarColor': '#0082c9'}], 'eventDescription': None, 'eventAttachments': {}, 'roomToken': tok, 'roomAvatarVersion': '', 'roomName': r['displayName'], 'roomActiveSince': None, 'roomDisplayName': r['displayName'], 'invited': 2, 'accepted': 2, 'tentative': 0, 'declined': 0}])
+            if method == 'PUT' and sub == 'webinar/lobby':
+                if not mod: return self.ocs({}, 403)
+                r['lobby'] = int(b.get('state', 0)); r['lobby_timer'] = int(b.get('timer') or 0) if r['lobby'] else 0; return self.ocs(room_view(r))
             if method == 'POST' and sub == 'notify-calls':
                 r['notify_calls'] = int(b.get('level', 1)); return self.ocs({})
             if sub in ('archive', 'important', 'sensitive') and method in ('POST', 'DELETE'):
@@ -883,7 +963,15 @@ class H(BaseHTTPRequestHandler):
                 msg.update(message='Message deleted by you', messageType='comment_deleted', messageParameters=[], reactions={}, reactionsSelf=[])
                 push_update(token, 'message_deleted', msg)
             return self.ocs(msg)
-        mt = _re2.match(r'^/ocs/v2\.php/apps/spreed/api/v1/chat/([a-z0-9]+)/(threads/recent|threads/(\d+)|threads/(\d+)/notify|schedule|schedule/(\d+))$', p)
+        msum = _re2.match(r'^/ocs/v2\.php/apps/spreed/api/v1/chat/([a-z0-9-]+)/summarize$', p)
+        if msum and method == 'POST' and msum.group(1) in state['messages']:
+            frm = int(self.body().get('fromMessageId', 0))
+            new = [m for m in state['messages'][msum.group(1)] if m['id'] > frm and m['messageType'] != 'system']
+            if not new: self.send_response(204); self.send_header('Content-Length', '0'); self.end_headers(); return
+            tid = next(ids)
+            state.setdefault('tasks', {})[str(tid)] = {'type': 'core:text2text:summary', 'input': {'from': frm}, 'polls': 0, 'output': f'Кратко: {len(new)} сообщ., главное — «{new[-1]["message"][:40]}»'}
+            return self.ocs({'taskId': tid}, 201)
+        mt = _re2.match(r'^/ocs/v2\.php/apps/spreed/api/v1/chat/([a-z0-9-]+)/(threads/recent|threads/(\d+)|threads/(\d+)/notify|schedule|schedule/(\d+))$', p)
         if mt and mt.group(1) in state['messages']:
             tok = mt.group(1)
             ths = state.setdefault('threads', {}).setdefault(tok, {})
