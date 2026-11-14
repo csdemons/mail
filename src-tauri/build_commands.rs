@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 pub struct Command {
     pub name: String,
     pub message_window: bool,
+    /// Путь к функции: `crate::commands::<модуль>::<имя>`.
+    pub path: String,
 }
 
 /// Прочитать `commands.list` и сверить его с исходниками в `src_dir`.
@@ -38,12 +40,20 @@ pub fn read_commands(list: &Path, src_dir: &Path) -> Vec<Command> {
         if out.iter().any(|c| c.name == name) {
             panic!("{}:{}: команда «{name}» указана дважды", list.display(), n + 1);
         }
-        out.push(Command { name, message_window: tags.contains(&"msg") });
+        out.push(Command { name, message_window: tags.contains(&"msg"), path: String::new() });
     }
 
     // Все #[tauri::command] в исходниках — и только они.
     let mut defined = BTreeSet::new();
+    let mut module_of = std::collections::BTreeMap::new();
     for file in rust_files(src_dir) {
+        // src/commands/mail.rs → crate::commands::mail; src/commands/mod.rs → crate::commands
+        let rel = file.strip_prefix(src_dir).unwrap_or(&file).with_extension("");
+        let mut segs: Vec<String> = rel.iter().map(|s| s.to_string_lossy().to_string()).collect();
+        if segs.last().is_some_and(|s| s == "mod") {
+            segs.pop();
+        }
+        let module = std::iter::once("crate".to_string()).chain(segs).collect::<Vec<_>>().join("::");
         println!("cargo:rerun-if-changed={}", file.display());
         let src = fs::read_to_string(&file).unwrap_or_default();
         let mut pending = false;
@@ -59,6 +69,7 @@ pub fn read_commands(list: &Path, src_dir: &Path) -> Vec<Command> {
                 }
                 if let Some(rest) = t.split(" fn ").nth(1).or_else(|| t.strip_prefix("fn ")) {
                     let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                    module_of.insert(name.clone(), module.clone());
                     defined.insert(name);
                 }
                 pending = false;
@@ -72,6 +83,9 @@ pub fn read_commands(list: &Path, src_dir: &Path) -> Vec<Command> {
         panic!(
             "commands.list расходится с исходниками.\n  Есть #[tauri::command], но нет в списке: {missing:?}\n  В списке, но функции нет: {extra:?}\nДобавьте или уберите строки в src-tauri/commands.list."
         );
+    }
+    for c in &mut out {
+        c.path = format!("{}::{}", module_of[&c.name], c.name);
     }
     out
 }
@@ -94,7 +108,7 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
 /// `$OUT_DIR/app_commands.rs`: обработчик со всеми командами списка.
 pub fn write_handler(commands: &[Command]) {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
-    let body: String = commands.iter().map(|c| format!("    crate::commands::{},\n", c.name)).collect();
+    let body: String = commands.iter().map(|c| format!("    {},\n", c.path)).collect();
     write_if_changed(&out.join("app_commands.rs"), &format!("tauri::generate_handler![\n{body}]\n"));
 }
 

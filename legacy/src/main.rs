@@ -6,7 +6,7 @@
 // Часть общих функций используется только примерами и тестами основной сборки.
 #![allow(dead_code)]
 
-#[path = "../../src-tauri/src/commands.rs"]
+#[path = "../../src-tauri/src/commands/mod.rs"]
 mod commands;
 #[path = "../../src-tauri/src/dav.rs"]
 mod dav;

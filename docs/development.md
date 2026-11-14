@@ -25,7 +25,16 @@ npm run build   # установщики в src-tauri/target/release/bundle/
 ```
 frontend/src/        интерфейс: React + TypeScript (Vite)
 src-tauri/src/
-  commands.rs        команды Tauri, контекст учётной записи (AccountCtx), очередь без сети
+  commands/          команды Tauri по областям; mod.rs — общее: AppState, контекст учётной
+                     записи (AccountCtx), сеанс, with_ctx!/with_conn!
+    session.rs       вход, учётные записи, профиль, политика, второй фактор, диагностика
+    mail.rs          папки, письма, поиск, виды, вложения, перемещение, спам, «отложить»
+    compose.rs       подписи, отправители, черновики, отправка, исходящие, отложенные, шаблоны
+    offline_mode.rs  локальное хранилище и очередь действий без сети
+    mail_rules.rs    правила, категории и сроки, фильтры SOGo/Sieve
+    counterparties.rs, calendar.rs, cloud.rs (Nextcloud), talk.rs, deck.rs, files.rs
+    ui.rs            окна, трей, уведомления, навигация окон, веб-профили
+    system.rs        о программе, обновления, импорт и резервная копия
   imap.rs smtp.rs    IMAP (с переходником на EWS) и отправка
   ews.rs ntlm.rs     Exchange Web Services, вход NTLMv2 (MIC, привязка к TLS)
   dav.rs sogo.rs     CalDAV/CardDAV, веб-API и фильтры SOGo
@@ -47,7 +56,8 @@ tests/servers/       SMTPS, Radicale (CalDAV/CardDAV), имитации Nextclou
 tests/e2e/           сквозные тесты приложения через WebDriver
 ```
 
-**Новая команда Tauri** — одна строка в `src-tauri/commands.list` (`имя` или `имя msg`, если она
+**Новая команда Tauri** пишется в модуле своей области в `src-tauri/src/commands/` и добавляется
+одной строкой в `src-tauri/commands.list` (`имя` или `имя msg`, если она
 нужна окну письма). Остальное `build.rs` делает сам (`build_commands.rs`, общий для обеих сборок):
 обработчик `app_commands!()`, разрешения `allow-<команда>` и `capabilities/*.json`.
 Сборка не пройдёт, если функция с `#[tauri::command]` не указана в списке или в списке есть лишнее.
