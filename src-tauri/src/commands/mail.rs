@@ -507,6 +507,7 @@ pub async fn save_attachment(
         return Ok(None);
     };
     tokio::fs::write(&path, data).await?;
+    crate::dragout::mark_from_internet(&path);
     Ok(Some(path.display().to_string()))
 }
 

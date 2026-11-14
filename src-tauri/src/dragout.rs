@@ -10,10 +10,11 @@ use std::path::{Path, PathBuf};
 /// Через сколько убирать временные копии перетащенных вложений: файловый
 /// менеджер копирует файл уже после того, как его отпустили.
 const KEEP_SECS: u64 = 3600;
-/// Копии, открытые в программе компьютера (Word, Excel…): с ними могут работать долго.
-const OPEN_KEEP_SECS: u64 = 7 * 24 * 3600;
+/// Копии, открытые в программе компьютера (Word, Excel…): с ними могут работать долго,
+/// но не дольше суток (и до выхода, блокировки или смены учётной записи — `wipe_staged`).
+const OPEN_KEEP_SECS: u64 = 24 * 3600;
 
-/// Убрать временные копии прошлых перетаскиваний (старше часа) и открытых вложений (старше недели).
+/// Убрать временные копии прошлых перетаскиваний (старше часа) и открытых вложений (старше суток).
 pub fn cleanup_old(base: &Path) {
     let Ok(rd) = std::fs::read_dir(base) else { return };
     for e in rd.flatten() {
@@ -30,6 +31,36 @@ pub fn cleanup_old(base: &Path) {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
+}
+
+/// Удалить все временные копии вложений: открытые, перетащенные и (`with_picked`) выбранные
+/// или вставленные для отправки. Вызывается при выходе, блокировке и смене учётной записи —
+/// расшифрованные копии писем не должны переживать сеанс. Файл, занятый программой
+/// (Word держит его открытым), удалится при следующей уборке.
+pub fn wipe_staged(with_picked: bool) {
+    let Ok(base) = crate::updater::private_root() else { return };
+    let Ok(rd) = std::fs::read_dir(&base) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let ours = name.starts_with("dragout-") || name.starts_with("open-") || (with_picked && name.starts_with("drop-"));
+        if ours && e.file_type().is_ok_and(|t| t.is_dir()) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// Windows: пометить файл как полученный из интернета (Mark of the Web, зона «Интернет»).
+/// Office откроет его в защищённом просмотре, SmartScreen проверит программу перед запуском.
+/// В других системах ничего не делает.
+pub fn mark_from_internet(path: &Path) {
+    #[cfg(windows)]
+    {
+        let mut ads = path.as_os_str().to_owned();
+        ads.push(":Zone.Identifier");
+        let _ = std::fs::write(PathBuf::from(ads), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    #[cfg(not(windows))]
+    let _ = path;
 }
 
 /// Записать вложение во временный каталог: путь к файлу с исходным именем.
@@ -85,12 +116,7 @@ pub fn stage_for_open(name: &str, data: &[u8]) -> crate::error::Result<PathBuf> 
         return Err(crate::error::AppError::Other(format!("«{name}» нельзя открыть прямо из письма — сохраните файл и проверьте его перед открытием")));
     }
     let path = stage_in("open", name, data)?;
-    #[cfg(windows)]
-    {
-        let mut ads = path.as_os_str().to_owned();
-        ads.push(":Zone.Identifier");
-        let _ = std::fs::write(std::path::PathBuf::from(ads), b"[ZoneTransfer]\r\nZoneId=3\r\n");
-    }
+    mark_from_internet(&path);
     Ok(path)
 }
 

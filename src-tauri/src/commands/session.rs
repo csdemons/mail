@@ -205,6 +205,9 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
     }
     // Письма из «окна отмены» уходят, фоновые задачи сессии останавливаются.
     state.outbox.flush().await;
+    // Затем — временные копии вложений: открытые, перетащенные, выбранные для отправки
+    // (письма из «окна отмены» уже ушли со своими вложениями).
+    tokio::task::spawn_blocking(|| crate::dragout::wipe_staged(true)).await.ok();
     let active = state.ctx_opt().await;
     let account = match (active.as_ref(), state.pending.lock().await.as_ref()) {
         (Some(c), _) => Some(c.key.clone()),
@@ -555,6 +558,9 @@ pub async fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> 
     host::close_account_windows(&app);
     end_session(&state).await;
     drop_others(&state).await;
+    // Расшифрованные копии открытых вложений не остаются на время блокировки
+    // (выбранные для отправки файлы остаются — письмо продолжат после разблокировки).
+    tokio::task::spawn_blocking(|| crate::dragout::wipe_staged(false)).await.ok();
     *state.pending.lock().await = Some(Pending { creds, profile, remember: None });
     Ok(())
 }
@@ -758,6 +764,8 @@ pub async fn account_switch(app: AppHandle, state: State<'_, AppState>, key: Str
     check.logout().await;
 
     host::close_account_windows(&app);
+    // Копии открытых вложений прежней учётной записи не видны после переключения.
+    tokio::task::spawn_blocking(|| crate::dragout::wipe_staged(false)).await.ok();
     state.outbox.flush().await;
     state.jobs.cancel_all();
     state.import_sources.lock().await.clear();

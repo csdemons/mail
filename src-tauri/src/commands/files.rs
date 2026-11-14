@@ -58,6 +58,8 @@ pub async fn nc_files_download(app: AppHandle, state: State<'_, AppState>, path:
         return Ok(None);
     };
     nc_upload(&ctx).await?.files_download_to(&path, &target).await?;
+    // Файлы в облаке приходят от кого угодно (вложения чата, общие папки).
+    crate::dragout::mark_from_internet(&target);
     Ok(Some(target.display().to_string()))
 }
 

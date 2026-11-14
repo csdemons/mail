@@ -315,6 +315,11 @@ pub fn private_download_dir() -> Result<PathBuf> {
 }
 
 /// Новый личный каталог (0700) для временных файлов: обновление, перетащенные вложения.
+/// Общий личный временный каталог программы (там создаются каталоги `private_dir`).
+pub(crate) fn private_root() -> Result<PathBuf> {
+    private_base()
+}
+
 pub fn private_dir(prefix: &str) -> Result<PathBuf> {
     let base = private_base()?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);

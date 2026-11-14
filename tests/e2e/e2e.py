@@ -3507,8 +3507,12 @@ try:
     W(d, 15).until(lambda d: subj_mine in d.find_element(By.CSS_SELECTOR, '.reader-content h1').get_attribute('textContent'))
     # Переключение во время фоновой задачи прежней учётной записи (резервная копия).
     job = inv('backup_start', {'folders': []})['ok']
+    # Расшифрованная копия вложения, открытого в прежней учётной записи («Смета 2027.xlsx»
+    # выше), переключение не переживает.
+    assert [f for b in bases for f in glob.glob(f'{b}/open-*/*')], 'precondition: an opened attachment copy exists'
     [r for r in d.find_elements(By.CSS_SELECTOR, '.unified-row') if 'E2E второй ящик 2' in r.get_attribute('textContent')][0].click()
     W(d, 30).until(lambda d: 'second@corp.test' in d.find_element(By.CSS_SELECTOR, '.account-switch').get_attribute('textContent'))
+    assert not [f for b in bases for f in glob.glob(f'{b}/open-*/*')], 'opened attachment copies must be removed on account switch'
     st = W(d, 60).until(lambda d: (inv('job_status', {'id': job}).get('ok') or {}).get('finished') and inv('job_status', {'id': job})['ok'])
     assert st['cancelled'] and 'остановлено' in (st['summary'] or ''), st
     assert st['imported'] < st['total'], st
