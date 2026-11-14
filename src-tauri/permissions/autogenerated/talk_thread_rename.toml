@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-thread-rename"
+description = "Enables the talk_thread_rename command without any pre-configured scope."
+commands.allow = ["talk_thread_rename"]
+
+[[permission]]
+identifier = "deny-talk-thread-rename"
+description = "Denies the talk_thread_rename command without any pre-configured scope."
+commands.deny = ["talk_thread_rename"]

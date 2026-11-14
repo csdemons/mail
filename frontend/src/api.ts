@@ -1,7 +1,7 @@
 import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import type { BusySlot, NcProfile, CalendarFile, CalendarImport, ConnectionStatus, Counterparty, CounterpartyTimeline, DeckActivity, Dossier, RuleSet,
   Account, Category, MailTemplate, DesktopPrefs, OfflineStatus, Scheduled, SendTicket, TotpSetup, TotpStatus, Contact, NcFile, NcShare, UploadedLink, DeckAttachment, DeckBoardDetails, DeckComment, ContactInput, ContactsResult, DeckBoard, DeckStack, EventInput, EventsResult, Folder, NcStatus,
-  SieveFilter, TalkChunk, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
+  SieveFilter, TalkChunk, TalkFeatures, TalkScheduled, TalkThread, TalkThreadTarget, TalkMention, NcUser, TalkRoom, TalkParticipant, TalkSearchHit, TalkPoll, TalkMessage, LinkPreview, LoginResult, MessageDetail, MessagePage,
   MessageSummary, NcSearch, PickedFile, SignatureSet, MailboxSet, Identity, SendResult, Settings, UpdateInfo, InstallResult, AppInfo, ImportSource, JobStatus, AccountEntry, AccountUnread, OtherNewMail, UnifiedInbox, UnifiedRole, SavedView,
 } from './types'
 
@@ -218,13 +218,25 @@ export const api = {
   ncUploadLinks: (dir: string, attachments: string[]) => invoke<UploadedLink[]>('nc_upload_links', { dir, attachments }),
   ncSaveMailAttachment: (folder: string, uid: number, index: number, dir: string) =>
     invoke<string>('nc_save_mail_attachment', { folder, uid, index, dir }),
-  talkSendFile: (token: string, attachment: string, caption: string, replyTo: number | null = null, opts: { voice?: boolean; silent?: boolean } = {}) =>
-    invoke<void>('talk_send_file', { token, attachment, caption, replyTo, voice: opts.voice ?? false, silent: opts.silent ?? false }),
+  talkSendFile: (token: string, attachment: string, caption: string, replyTo: number | null = null, opts: { voice?: boolean; silent?: boolean; threadId?: number } = {}) =>
+    invoke<void>('talk_send_file', { token, attachment, caption, replyTo, voice: opts.voice ?? false, silent: opts.silent ?? false, threadId: opts.threadId ?? null }),
   talkFilePreview: (fileId: string) => invoke<string | null>('talk_file_preview', { fileId }),
   talkFileData: (path: string) => invoke<string>('talk_file_data', { path }),
   forgetAttachment: (attachment: string) => invoke<void>('forget_attachment', { attachment }),
-  talkSend: (token: string, message: string, replyTo: number | null = null, silent = false) =>
-    invoke<void>('talk_send', { token, message, replyTo, silent }),
+  talkSend: (token: string, message: string, replyTo: number | null = null, silent = false, thread: TalkThreadTarget | null = null) =>
+    invoke<void>('talk_send', { token, message, replyTo, silent, thread }),
+  talkFeatures: () => invoke<TalkFeatures>('talk_features'),
+  talkThreads: (token: string) => invoke<TalkThread[]>('talk_threads', { token }),
+  talkThread: (token: string, threadId: number) => invoke<TalkThread>('talk_thread', { token, threadId }),
+  talkThreadHistory: (token: string, threadId: number, before: number | null = null) => invoke<TalkChunk>('talk_thread_history', { token, threadId, before }),
+  talkThreadNotify: (token: string, threadId: number, level: number) => invoke<void>('talk_thread_notify', { token, threadId, level }),
+  talkThreadRename: (token: string, threadId: number, title: string) => invoke<void>('talk_thread_rename', { token, threadId, title }),
+  talkScheduled: (token: string) => invoke<TalkScheduled[]>('talk_scheduled', { token }),
+  talkSchedule: (token: string, message: string, sendAt: number, replyTo: number | null, silent: boolean, thread: TalkThreadTarget | null = null) =>
+    invoke<TalkScheduled>('talk_schedule', { token, message, sendAt, replyTo, silent, thread }),
+  talkScheduleEdit: (token: string, id: string, message: string, sendAt: number, silent: boolean) => invoke<TalkScheduled>('talk_schedule_edit', { token, id, message, sendAt, silent }),
+  talkScheduleDelete: (token: string, id: string) => invoke<void>('talk_schedule_delete', { token, id }),
+  talkNoteToSelf: () => invoke<string>('talk_note_to_self'),
   talkPollCreate: (token: string, question: string, options: string[], maxVotes: number, hidden: boolean) =>
     invoke<TalkPoll>('talk_poll_create', { token, question, options, maxVotes, hidden }),
   talkPollGet: (token: string, id: number) => invoke<TalkPoll>('talk_poll_get', { token, id }),

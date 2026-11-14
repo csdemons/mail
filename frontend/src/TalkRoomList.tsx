@@ -1,4 +1,5 @@
-import { Search, MessageSquarePlus, RefreshCw, Users, Star, BellOff } from 'lucide-react'
+import { useState } from 'react'
+import { Search, MessageSquarePlus, RefreshCw, Users, Star, BellOff, Phone, Archive, ChevronDown, ChevronRight, CircleAlert, Lock, NotebookPen } from 'lucide-react'
 import { SkeletonRows } from './Skeleton'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import Avatar from './Avatar'
@@ -20,30 +21,51 @@ export interface TalkRoomListProps {
   people: NcUser[]
   chatWith: (u: NcUser) => Promise<void>
   peers: Set<string | null>
+  /** Открыть «Заметки для себя»; нет — сервер их не поддерживает. */
+  onNoteToSelf?: () => void
 }
 
-export default function TalkRoomList({ query, setQuery, setNewChat, loadRooms, rooms, error, visibleRooms, token, setToken, roomMenu, peopleBusy, people, chatWith, peers }: TalkRoomListProps) {
+export default function TalkRoomList({ onNoteToSelf, query, setQuery, setNewChat, loadRooms, rooms, error, visibleRooms, token, setToken, roomMenu, peopleBusy, people, chatWith, peers }: TalkRoomListProps) {
+  const [showArchive, setShowArchive] = useState(false)
+  // Архивные беседы — отдельной свёрнутой группой внизу; при поиске — вместе со всеми.
+  const searching = query.trim().length > 0
+  const active = searching ? visibleRooms : visibleRooms.filter((r) => !r.archived)
+  const archived = searching ? [] : visibleRooms.filter((r) => r.archived)
+  const row = (r: TalkRoom) => (
+    <button key={r.token} className={`message-row room-row ${r.token === token ? 'selected' : ''} ${r.unread ? 'unread' : ''} ${r.archived ? 'archived' : ''}`} onClick={() => setToken(r.token)}
+      onContextMenu={(e) => openContextMenu(e, roomMenu(r))}>
+      {r.kind === 1 && r.peer
+        ? <Avatar id={r.peer} name={r.name} />
+        : r.kind === 6 ? <span className="sender-avatar room-notes"><NotebookPen size={16} /></span>
+          : <Avatar kind="room" id={r.token} name={r.name} fallback={r.kind === 1 ? undefined : <Users size={16} />} />}
+      <div className="message-summary">
+        <div className="message-topline"><span className="sender-name">{r.name}</span>
+          {r.hasCall && <Phone size={13} className="room-call" aria-label="Идёт звонок" />}
+          {r.important && <CircleAlert size={13} className="room-important" aria-label="Важная беседа" />}
+          {r.sensitive && <Lock size={12} className="room-sensitive" aria-label="Конфиденциальная беседа" />}
+          {r.favorite && <Star size={13} className="room-favorite" aria-label="Избранное" fill="currentColor" />}{r.notifyLevel === 3 && <BellOff size={12} className="room-muted" aria-label="Без уведомлений" />}{r.unread > 0 && <b className={`folder-count ${r.unreadMention ? 'mention' : ''}`}>{r.unread}</b>}</div>
+        <div className="message-preview">{r.sensitive ? 'Конфиденциальная беседа' : (r.lastMessage ?? '')}</div>
+      </div>
+    </button>
+  )
   return (
     <aside className="message-column talk-rooms">
       <div className="list-toolbar">
         <label className="search-box"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Беседы и сотрудники" /></label>
+        {onNoteToSelf && <button className="icon-button soft" aria-label="Заметки для себя" title="Заметки для себя — беседа только с собой: ссылки, файлы, черновики" onClick={onNoteToSelf}><NotebookPen size={17} /></button>}
         <button className="icon-button soft" aria-label="Новая беседа" title="Новая беседа" onClick={() => setNewChat(true)}><MessageSquarePlus size={17} /></button>
         <button className="icon-button soft" aria-label="Обновить" onClick={() => void loadRooms()}><RefreshCw size={17} /></button>
       </div>
       <div className="message-list">
         {rooms === null && !error && <SkeletonRows variant="room" count={7} label="Загрузка бесед…" />}
-        {visibleRooms.map((r) => (
-          <button key={r.token} className={`message-row room-row ${r.token === token ? 'selected' : ''} ${r.unread ? 'unread' : ''}`} onClick={() => setToken(r.token)}
-            onContextMenu={(e) => openContextMenu(e, roomMenu(r))}>
-            {r.kind === 1 && r.peer
-              ? <Avatar id={r.peer} name={r.name} />
-              : <Avatar kind="room" id={r.token} name={r.name} fallback={r.kind === 1 ? undefined : <Users size={16} />} />}
-            <div className="message-summary">
-              <div className="message-topline"><span className="sender-name">{r.name}</span>{r.favorite && <Star size={13} className="room-favorite" aria-label="Избранное" fill="currentColor" />}{r.notifyLevel === 3 && <BellOff size={12} className="room-muted" aria-label="Без уведомлений" />}{r.unread > 0 && <b className={`folder-count ${r.unreadMention ? 'mention' : ''}`}>{r.unread}</b>}</div>
-              <div className="message-preview">{r.lastMessage ?? ''}</div>
-            </div>
+        {active.map(row)}
+        {archived.length > 0 && <>
+          <button className="talk-archive-toggle" aria-expanded={showArchive} onClick={() => setShowArchive(!showArchive)}>
+            {showArchive ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<Archive size={14} /> Архив <span className="muted">{archived.length}</span>
+            {archived.some((r) => r.unreadMention) && <b className="folder-count mention">@</b>}
           </button>
-        ))}
+          {showArchive && archived.map(row)}
+        </>}
         {query.trim().length >= 2 && <div className="talk-people">
           <div className="message-list-header"><span>Сотрудники</span>{peopleBusy && <span>поиск…</span>}</div>
           {!peopleBusy && people.length === 0 && <div className="empty-state compact"><span>Никого не найдено в Nextcloud</span></div>}

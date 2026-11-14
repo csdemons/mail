@@ -4,7 +4,7 @@ import { FileText } from 'lucide-react'
 
 import { api } from './api'
 import { previewKind } from './AttachmentViewer'
-import type { TalkFile, TalkMessage, TalkRoom } from './types'
+import type { TalkFeatures, TalkFile, TalkMessage, TalkRoom } from './types'
 
 /** Файл чата открывается во встроенном просмотрщике (фото, PDF, текст), если известен его путь. */
 export function viewable(f: TalkFile): boolean {
@@ -87,3 +87,6 @@ export function merge(list: TalkMessage[], incoming: TalkMessage[]): TalkMessage
 export function sortRooms(list: TalkRoom[]): TalkRoom[] {
   return [...list].sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.lastActivity - a.lastActivity)
 }
+
+/** Возможности Talk, пока сервер не ответил (или старый сервер): ничего нового. */
+export const NO_TALK_FEATURES: TalkFeatures = { threads: false, scheduled: false, archive: false, important: false, sensitive: false, noteToSelf: false }

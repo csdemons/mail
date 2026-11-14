@@ -6,13 +6,15 @@ import Avatar from './Avatar'
 import TalkText from './TalkText'
 import { PollCard, VoicePlayer, firstUrl, LinkCard } from './TalkExtras'
 import { api, formatSize } from './api'
-import { Download, ExternalLink, FileText, Timer, CheckCheck, Check, SmilePlus, CornerUpLeft, KanbanSquare, Pencil, Trash2, MoreHorizontal, MessageCircle } from 'lucide-react'
+import { Download, ExternalLink, FileText, Timer, CheckCheck, Check, SmilePlus, CornerUpLeft, KanbanSquare, Pencil, Trash2, MoreHorizontal, MessageCircle, MessagesSquare } from 'lucide-react'
 import { EmojiPicker, QUICK_REACTIONS } from './Emoji'
 import type { TalkMessage, TalkRoom, TalkFile } from './types'
 
 /** Лента сообщений беседы: даты, сообщения, файлы, реакции, отметки прочтения. */
 export interface TalkMessageListProps {
   listRef: React.RefObject<HTMLDivElement>
+  /** Открыть ветку (Talk 22); нет — ветки сервер не поддерживает. */
+  openThread?: (id: number) => void
   stickToBottom: React.MutableRefObject<boolean>
   loading: boolean
   messages: TalkMessage[]
@@ -40,7 +42,7 @@ export interface TalkMessageListProps {
   setReactFull: React.Dispatch<React.SetStateAction<boolean>>
 }
 
-export default function TalkMessageList({ listRef, stickToBottom, loading, messages, hasOlder, olderBusy, loadOlder, flash, messageMenu, room, person, notify, openFile, saveFile, react, readMark, setReactFor, reactFor, setReplyTo, setEditing, inputRef, setCardFrom, startEdit, remove, reactFull, setReactFull }: TalkMessageListProps) {
+export default function TalkMessageList({ listRef, openThread, stickToBottom, loading, messages, hasOlder, olderBusy, loadOlder, flash, messageMenu, room, person, notify, openFile, saveFile, react, readMark, setReactFor, reactFor, setReplyTo, setEditing, inputRef, setCardFrom, startEdit, remove, reactFull, setReactFull }: TalkMessageListProps) {
   return (
     <div className="talk-messages" ref={listRef}
       onScroll={(e) => { const el = e.currentTarget; stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
@@ -56,6 +58,8 @@ export default function TalkMessageList({ listRef, stickToBottom, loading, messa
             {!m.own && <button type="button" className="talk-author" onClick={(e) => m.authorId && openContextMenu(e, personMenu(m.authorId, m.author, person, { inDirect: room.kind === 1 }))}>{m.author}</button>}
             {m.parentText && !m.deleted && <div className="talk-quote"><b>{m.parentAuthor}</b> {m.parentText}</div>}
             {m.text && (m.deleted ? <div className="talk-text talk-deleted">{m.text}</div> : <TalkText text={m.text} />)}
+            {openThread && m.isThread && <button type="button" className="talk-thread-chip" onClick={() => openThread(m.threadId || m.id)}><MessagesSquare size={13} /> {m.threadTitle || 'Ветка'} · {m.threadReplies} {m.threadReplies === 1 ? 'ответ' : 'отв.'}</button>}
+            {openThread && !m.isThread && m.threadId > 0 && <button type="button" className="talk-thread-chip reply" onClick={() => openThread(m.threadId)}><MessagesSquare size={12} /> в ветке{m.threadTitle ? ` «${m.threadTitle}»` : ''}</button>}
             {m.poll && !m.deleted && <PollCard token={room.token} id={m.poll.id} question={m.poll.question} notify={notify} />}
             {m.voice && !m.deleted && m.files[0] && <VoicePlayer file={m.files[0]} load={(f) => api.talkFileData(f.path as string)} />}
             {!m.deleted && m.files.length === 0 && !m.poll && firstUrl(m.text) && <LinkCard url={firstUrl(m.text) as string} />}

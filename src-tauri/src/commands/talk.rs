@@ -62,9 +62,9 @@ pub async fn talk_poll(state: State<'_, AppState>, token: String, last_known: i6
 }
 
 #[tauri::command]
-pub async fn talk_send(state: State<'_, AppState>, token: String, message: String, reply_to: Option<i64>, silent: Option<bool>) -> Result<()> {
+pub async fn talk_send(state: State<'_, AppState>, token: String, message: String, reply_to: Option<i64>, silent: Option<bool>, thread: Option<nextcloud::TalkThreadTarget>) -> Result<()> {
     let ctx = state.ctx().await?;
-    nc(&ctx).await?.talk_send(&token, &message, reply_to, silent.unwrap_or(false)).await
+    nc(&ctx).await?.talk_send(&token, &message, reply_to, silent.unwrap_or(false), &thread.unwrap_or_default()).await
 }
 
 #[tauri::command]
@@ -177,7 +177,8 @@ pub(crate) const MAX_TALK_FILE_MB: u64 = 512;
 
 /// Отправляет в беседу файл, выбранный через `pick_attachments`.
 #[tauri::command]
-pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachment: String, caption: String, reply_to: Option<i64>, voice: Option<bool>, silent: Option<bool>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachment: String, caption: String, reply_to: Option<i64>, voice: Option<bool>, silent: Option<bool>, thread_id: Option<i64>) -> Result<()> {
     let ctx = state.ctx().await?;
     let (creds, uid) = ctx.nc.lock().await.clone().ok_or_else(|| AppError::Other("Nextcloud не подключён".into()))?;
     let path = ctx
@@ -192,7 +193,75 @@ pub async fn talk_send_file(state: State<'_, AppState>, token: String, attachmen
         return Err(AppError::Other(format!("Файл больше {MAX_TALK_FILE_MB} МБ — отправьте ссылку из Nextcloud")));
     }
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
-    nextcloud::Nc::upload(creds, &uid)?.talk_send_file(&token, &name, nextcloud::UploadSource::File(path), &caption, nextcloud::TalkFileOpts { reply_to, voice: voice.unwrap_or(false), silent: silent.unwrap_or(false) }).await?;
+    nextcloud::Nc::upload(creds, &uid)?.talk_send_file(&token, &name, nextcloud::UploadSource::File(path), &caption, nextcloud::TalkFileOpts { reply_to, voice: voice.unwrap_or(false), silent: silent.unwrap_or(false), thread_id }).await?;
     ctx.picked.lock().await.remove(&attachment);
     Ok(())
+}
+
+/// Что из новых возможностей Talk есть на сервере (ветки, отложенные, архив, отметки бесед).
+#[tauri::command]
+pub async fn talk_features(state: State<'_, AppState>) -> Result<nextcloud::TalkFeatures> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_features().await
+}
+
+#[tauri::command]
+pub async fn talk_threads(state: State<'_, AppState>, token: String) -> Result<Vec<nextcloud::TalkThread>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_threads(&token).await
+}
+
+#[tauri::command]
+pub async fn talk_thread(state: State<'_, AppState>, token: String, thread_id: i64) -> Result<nextcloud::TalkThread> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_thread(&token, thread_id).await
+}
+
+#[tauri::command]
+pub async fn talk_thread_history(state: State<'_, AppState>, token: String, thread_id: i64, before: Option<i64>) -> Result<nextcloud::TalkChunk> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_thread_history(&token, thread_id, before).await
+}
+
+#[tauri::command]
+pub async fn talk_thread_notify(state: State<'_, AppState>, token: String, thread_id: i64, level: i64) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_thread_notify(&token, thread_id, level).await
+}
+
+#[tauri::command]
+pub async fn talk_thread_rename(state: State<'_, AppState>, token: String, thread_id: i64, title: String) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_thread_rename(&token, thread_id, &title).await
+}
+
+#[tauri::command]
+pub async fn talk_scheduled(state: State<'_, AppState>, token: String) -> Result<Vec<nextcloud::TalkScheduled>> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_scheduled(&token).await
+}
+
+#[tauri::command]
+pub async fn talk_schedule(state: State<'_, AppState>, token: String, message: String, send_at: i64, reply_to: Option<i64>, silent: Option<bool>, thread: Option<nextcloud::TalkThreadTarget>) -> Result<nextcloud::TalkScheduled> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_schedule(&token, &message, send_at, reply_to, silent.unwrap_or(false), &thread.unwrap_or_default()).await
+}
+
+#[tauri::command]
+pub async fn talk_schedule_edit(state: State<'_, AppState>, token: String, id: String, message: String, send_at: i64, silent: Option<bool>) -> Result<nextcloud::TalkScheduled> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_schedule_edit(&token, &id, &message, send_at, silent.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn talk_schedule_delete(state: State<'_, AppState>, token: String, id: String) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_schedule_delete(&token, &id).await
+}
+
+/// «Заметки для себя»: токен беседы с самим собой.
+#[tauri::command]
+pub async fn talk_note_to_self(state: State<'_, AppState>) -> Result<String> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.talk_note_to_self().await
 }

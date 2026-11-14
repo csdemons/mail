@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  Loader2, MessageCircle, EyeOff, Pin, PinOff, Search, X } from 'lucide-react'
+  MessageCircle } from 'lucide-react'
 
 import { api, errorText, onSessionReset, TYPING_PAUSE_MS } from './api'
 import AttachmentViewer from './AttachmentViewer'
 import type { TalkSearchHit } from './types'
-import type { AttachmentInfo, NcUser, TalkFile, TalkMention, TalkMessage, TalkRoom } from './types'
+import type { AttachmentInfo, NcUser, TalkFeatures, TalkFile, TalkMention, TalkMessage, TalkRoom } from './types'
 import Splitter from './Splitter'
-import { openContextMenu } from './PopupMenu'
 import { ForwardDialog, RoomPeople, RoomSettings } from './TalkRoomPanel'
 import WallpaperDialog from './WallpaperDialog'
 import { useDarkTheme, useWallpaperVersion, wallpaperFor, wallpaperStyle } from './wallpaper'
@@ -17,11 +16,15 @@ import { PinDialog, ProfileDialog, ReminderDialog, type PersonActions } from './
 import { CardFromMessage, NewChat } from './TalkDialogs'
 import { useTalkAttachments } from './useTalkAttachments'
 import { messageMenu as messageMenuFor, roomMenu as roomMenuFor } from './talkMenus'
-import { cached, contents, highlight, merge, sortRooms, TalkThumb, viewable } from './talkUtils'
+import { cached, contents, merge, NO_TALK_FEATURES, sortRooms, TalkThumb, viewable } from './talkUtils'
+import TalkThreadPanel from './TalkThreadPanel'
+import TalkScheduledBar from './TalkScheduledBar'
 import TalkCompose from './TalkCompose'
 import TalkMessageList from './TalkMessageList'
 import TalkChatHeader from './TalkChatHeader'
 import TalkRoomList from './TalkRoomList'
+import TalkSearchBar from './TalkSearchBar'
+import TalkPinnedBar from './TalkPinnedBar'
 
 /** Недописанные сообщения по беседам и последняя открытая беседа — переживают уход в другой раздел. */
 interface Draft { text: string; mentions: [string, string][] }
@@ -92,6 +95,12 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   const [pollOpen, setPollOpen] = useState(false)
   // «Без звука»: следующее сообщение придёт получателям без звука уведомления.
   const [silent, setSilent] = useState(false)
+  // Возможности сервера Talk; новая ветка (название); панель веток (null — список, число — ветка).
+  const [features, setFeatures] = useState<TalkFeatures>(NO_TALK_FEATURES)
+  useEffect(() => { api.talkFeatures().then(setFeatures).catch(() => undefined) }, [])
+  const [threadTitle, setThreadTitle] = useState<string | null>(null)
+  const [threadView, setThreadView] = useState<number | null | undefined>(undefined)
+  const [scheduledVer, setScheduledVer] = useState(0)
   const [mediaView, setMediaView] = useState<{ files: TalkFile[]; index: number } | null>(null)
   // Поиск по сообщениям беседы (на сервере, после паузы в наборе).
   const [searchOpen, setSearchOpen] = useState(false)
@@ -139,7 +148,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   const viewFiles = useMemo(() => messages.filter((m) => !m.deleted).flatMap((m) => m.files.filter(viewable)), [messages])
   const viewItems = useMemo<AttachmentInfo[]>(() => viewFiles.map((f, i) => ({ index: i, name: f.name, contentType: f.mimetype, size: f.size })), [viewFiles])
   const [viewing, setViewing] = useState<number | null>(null)
-  useEffect(() => setViewing(null), [token])
+  useEffect(() => { setViewing(null); setThreadTitle(null); setThreadView(undefined) }, [token])
   const viewLoad = useCallback((a: AttachmentInfo) => {
     const f = viewFiles[a.index]
     return f?.path ? cached(contents, f.path, 20, () => api.talkFileData(f.path as string)) : Promise.reject(new Error('Файл недоступен'))
@@ -288,8 +297,10 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   }
 
 
-  async function send() {
+  /** Отправить (или, с `at`, отложить до этого времени — только текст). */
+  async function send(at?: Date) {
     if (!token || (!draft.trim() && files.length === 0) || sendingRef.current) return
+    if (threadTitle !== null && !threadTitle.trim() && !editing && !replyTo) { notify('Введите название ветки'); return }
     sendingRef.current = true
     setSending(true)
     setError('')
@@ -314,7 +325,14 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
           setFiles((list) => list.filter((x) => x.id !== f.id))
         }
       } else {
-        await api.talkSend(token, text, replyTo?.id ?? null, silent)
+        const thread = threadTitle?.trim() && !replyTo ? { threadTitle } : null
+        if (at) {
+          const s = await api.talkSchedule(token, text, Math.floor(at.getTime() / 1000), replyTo?.id ?? null, silent, thread)
+          notify(`Сообщение уйдёт ${new Date(s.sendAt * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}`)
+          setScheduledVer((v) => v + 1)
+        } else {
+          await api.talkSend(token, text, replyTo?.id ?? null, silent, thread)
+        }
       }
       const here = draftOwner.current === room
       if (wasEditing) {
@@ -331,7 +349,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
           setDraft((d) => (d === sentDraft ? '' : d))
         }
       }
-      if (here) { setReplyTo(null); setSilent(false) }
+      if (here) { setReplyTo(null); setSilent(false); setThreadTitle(null) }
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -540,9 +558,10 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   }
 
   const messageMenu = (m: TalkMessage, r: TalkRoom) => messageMenuFor(m, r, {
-    react, setReactFor, setReactFull, setReplyTo, setEditing, inputRef, copyText, setForwarding, setCardFrom, pinned, setPinFor, unpin, setRemindFor, person, openFile, saveFile, startEdit, remove })
+    react, setReactFor, setReactFull, setReplyTo, setEditing, inputRef, copyText, setForwarding, setCardFrom, pinned, setPinFor, unpin, setRemindFor, person, openFile, saveFile, startEdit, remove,
+    openThread: features.threads ? (id: number) => { setThreadView(id); setShowMedia(false); setShowPeople(false) } : undefined })
   const roomMenu = (r: TalkRoom) => roomMenuFor(r, {
-    toggleFavorite, manageRoom, setToken, setShowPeople, setSettingsFor, setWallpaperRoom, notify, roomGone })
+    toggleFavorite, manageRoom, setToken, setShowPeople, setSettingsFor, setWallpaperRoom, notify, roomGone, features })
 
   async function manageRoom(r: TalkRoom, action: string, value: Record<string, unknown>, done: string) {
     try {
@@ -612,24 +631,21 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
     }
   }
 
+  /** «Заметки для себя»: сервер создаёт беседу при первом обращении. */
+  async function openNotes() {
+    try {
+      const tok = await api.talkNoteToSelf()
+      await loadRooms()
+      setToken(tok)
+    } catch (e) { notify(`Заметки не открыты: ${errorText(e)}`) }
+  }
+
   return (
     <div className="module-view talk-view">
-      <TalkRoomList
-        query={query}
-        setQuery={setQuery}
-        setNewChat={setNewChat}
-        loadRooms={loadRooms}
-        rooms={rooms}
-        error={error}
-        visibleRooms={visibleRooms}
-        token={token}
-        setToken={setToken}
-        roomMenu={roomMenu}
-        peopleBusy={peopleBusy}
-        people={people}
-        chatWith={chatWith}
-        peers={peers}
-      />
+      <TalkRoomList {...{
+        query, setQuery, setNewChat, loadRooms, rooms, error, visibleRooms, token, setToken, roomMenu, peopleBusy,
+        people, chatWith, peers,
+      }} onNoteToSelf={features.noteToSelf ? () => void openNotes() : undefined} />
       <Splitter id="talk-rooms" min={220} max={640} label="Ширина списка бесед" />
 
       <main className={`talk-main ${wp ? 'has-wallpaper' : ''}`} data-wallpaper={wpData}>
@@ -637,118 +653,37 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
         {wp?.shade && <div className="talk-wallpaper-shade" style={wp.shade} aria-hidden="true" />}
         {room ? (
           <>
-            <TalkChatHeader
-              room={room}
-              toggleFavorite={toggleFavorite}
-              startCall={startCall}
-              showMedia={showMedia}
-              setShowMedia={setShowMedia}
-              setShowPeople={setShowPeople}
-              searchOpen={searchOpen}
-              setSearchOpen={setSearchOpen}
-              person={person}
-              showPeople={showPeople}
-              roomMenu={roomMenu}
-            />
+            <TalkChatHeader {...{
+              room, toggleFavorite, startCall, showMedia, setShowMedia, setShowPeople, searchOpen, setSearchOpen, person,
+              showPeople, roomMenu,
+            }} threads={features.threads ? () => { setThreadView(threadView === undefined ? null : undefined); setShowMedia(false); setShowPeople(false) } : undefined} threadsOpen={threadView !== undefined} />
             {searchOpen && (
-              <div className="talk-search">
-                <label className="search-box"><Search size={15} />
-                  <input autoFocus aria-label="Найти в беседе" placeholder="Найти в сообщениях беседы" value={searchQ} onChange={(e) => setSearchQ(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Escape') { setSearchOpen(false); setSearchQ('') } else if (e.key === 'Enter' && hits?.[0]) void jumpTo(hits[0].messageId) }} />
-                  {searchBusy && <Loader2 size={15} className="spin" />}
-                </label>
-                {hits && (
-                  <div className="talk-search-results" role="listbox" aria-label="Найденные сообщения">
-                    {hits.length === 0 && <div className="muted talk-search-empty">Ничего не найдено</div>}
-                    {hits.map((h) => (
-                      <button key={h.messageId} role="option" className="talk-search-hit" onClick={() => void jumpTo(h.messageId)}>
-                        <span className="talk-search-meta"><b>{h.author}</b>{h.timestamp > 0 && <small>{new Date(h.timestamp * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small>}</span>
-                        <span className="talk-search-text">{highlight(h.text, searchQ.trim())}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <TalkSearchBar {...{ searchQ, setSearchQ, setSearchOpen, hits, jumpTo, searchBusy }} />
             )}
             {error && <div className="inline-warning" role="alert">Talk: {error}</div>}
             {pinned.length > 0 && room.lastPinnedId > 0 && room.hiddenPinnedId !== room.lastPinnedId && (
-              <div className="talk-pinned" role="region" aria-label="Закреплённое сообщение">
-                <Pin size={15} />
-                <button type="button" className="talk-pinned-text" title="Перейти к сообщению" onClick={() => void jumpTo(pinned[0].id)}>
-                  <b>{pinned[0].author}</b> {pinned[0].text || pinned[0].files[0]?.name}
-                  {pinned[0].pinnedUntil > 0 && <small> · до {new Date(pinned[0].pinnedUntil * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small>}
-                </button>
-                {pinned.length > 1 && <button type="button" className="text-button" onClick={(e) => openContextMenu(e, pinned.map((m) => ({ label: `${m.author}: ${(m.text || m.files[0]?.name || '').slice(0, 60)}`, icon: <Pin size={15} />, onClick: () => void jumpTo(m.id) })))}>ещё {pinned.length - 1}</button>}
-                <button type="button" className="icon-button soft" aria-label="Скрыть закреплённое" title="Скрыть"
-                  onClick={(e) => room.moderator
-                    ? openContextMenu(e, [{ label: 'Скрыть у себя', icon: <EyeOff size={15} />, onClick: () => void unpin(pinned[0], true) }, { label: 'Открепить для всех', icon: <PinOff size={15} />, onClick: () => void unpin(pinned[0], false) }])
-                    : void unpin(pinned[0], true)}><X size={15} /></button>
-              </div>
+              <TalkPinnedBar {...{ jumpTo, pinned, room, unpin }} />
             )}
-            <TalkMessageList
-              listRef={listRef}
-              stickToBottom={stickToBottom}
-              loading={loading}
-              messages={messages}
-              hasOlder={hasOlder}
-              olderBusy={olderBusy}
-              loadOlder={loadOlder}
-              flash={flash}
-              messageMenu={messageMenu}
-              room={room}
-              person={person}
-              notify={notify}
-              openFile={openFile}
-              saveFile={saveFile}
-              react={react}
-              readMark={readMark}
-              setReactFor={setReactFor}
-              reactFor={reactFor}
-              setReplyTo={setReplyTo}
-              setEditing={setEditing}
-              inputRef={inputRef}
-              setCardFrom={setCardFrom}
-              startEdit={startEdit}
-              remove={remove}
-              reactFull={reactFull}
-              setReactFull={setReactFull}
-            />
+            <TalkMessageList {...{
+              listRef, stickToBottom, loading, messages, hasOlder, olderBusy, loadOlder, flash, messageMenu, room, person,
+              notify, openFile, saveFile, react, readMark, setReactFor, reactFor, setReplyTo, setEditing, inputRef,
+              setCardFrom, startEdit, remove, reactFull, setReactFull,
+            }} openThread={features.threads ? (id) => { setThreadView(id); setShowMedia(false); setShowPeople(false) } : undefined} />
+            {features.scheduled && !room.readOnly && <TalkScheduledBar token={room.token} version={scheduledVer} notify={notify} />}
             {room.readOnly ? <div className="muted talk-readonly">Беседа только для чтения</div> : (
-              <TalkCompose
-                send={send}
-                files={files}
-                previews={previews}
-                sending={sending}
-                dropFile={dropFile}
-                replyTo={replyTo}
-                setReplyTo={setReplyTo}
-                editing={editing}
-                cancelEdit={cancelEdit}
-                pickFiles={pickFiles}
-                mentions={mentions}
-                mentionSel={mentionSel}
-                pickMention={pickMention}
-                emojiOpen={emojiOpen}
-                insertEmoji={insertEmoji}
-                inputRef={inputRef}
-                draft={draft}
-                onDraftChange={onDraftChange}
-                onPaste={onPaste}
-                setMentionSel={setMentionSel}
-                setMentions={setMentions}
-                setEmojiOpen={setEmojiOpen}
-                setPollOpen={setPollOpen}
-                silent={silent}
-                setSilent={setSilent}
-                notify={notify}
-                sendVoice={sendVoice}
-              />
+              <TalkCompose {...{
+                send, files, previews, sending, dropFile, replyTo, setReplyTo, editing, cancelEdit, pickFiles, mentions,
+                mentionSel, pickMention, emojiOpen, insertEmoji, inputRef, draft, onDraftChange, onPaste, setMentionSel,
+                setMentions, setEmojiOpen, setPollOpen, silent, setSilent, notify, sendVoice,
+              }} features={features} threadTitle={threadTitle} setThreadTitle={setThreadTitle} onSchedule={(at) => void send(at)} />
             )}
           </>
         ) : (
           <div className="empty-reader">{error ? <><strong>Talk недоступен</strong><span>{error}</span></> : <><MessageCircle size={42} /><strong>Выберите беседу</strong></>}</div>
         )}
       </main>
+      {room && threadView !== undefined && <Splitter id="talk-people" side="next" min={220} max={520} label="Ширина панели веток" />}
+      {room && threadView !== undefined && <TalkThreadPanel token={room.token} threadId={threadView} readOnly={room.readOnly} onOpen={setThreadView} onClose={() => setThreadView(undefined)} notify={notify} />}
       {room && showMedia && <Splitter id="talk-people" side="next" min={220} max={520} label="Ширина панели медиа и файлов" />}
       {room && showMedia && <MediaPanel token={room.token} messages={messages} onClose={() => setShowMedia(false)} thumb={(f) => <TalkThumb file={f} />}
         loadVoice={(f) => api.talkFileData(f.path as string)}

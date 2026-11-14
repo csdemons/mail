@@ -160,7 +160,10 @@ def room_view(r):
                 canDeleteConversation=bool(me and me['participantType'] in (1, 2) and r['type'] != 1),
                 lastCommonReadMessage=state['peer_read'].get(r['token'], 0),
                 lastActivity=last['timestamp'] if last else 0, lastMessage=last or [],
-                lastPinnedId=max([m['id'] for m in state['messages'][r['token']] if pin_active(m)] or [0]), hiddenPinnedId=state.get('pin_hidden', {}).get(r['token'], 0))
+                lastPinnedId=max([m['id'] for m in state['messages'][r['token']] if pin_active(m)] or [0]), hiddenPinnedId=state.get('pin_hidden', {}).get(r['token'], 0),
+                hasCall=bool(r.get('call_start')), callStartTime=r.get('call_start', 0), callFlag=7 if r.get('call_start') else 0,
+                participantFlags=7 if r.get('in_call') else 0, notificationCalls=r.get('notify_calls', 1),
+                isArchived=bool(r.get('archived')), isImportant=bool(r.get('important')), isSensitive=bool(r.get('sensitive')))
 
 
 def pin_active(m):
@@ -308,11 +311,16 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares', 'boards')} | {k: state.get(k, d) for k, d in (('pins', []), ('unpins', []), ('reminders', {}), ('freebusy', []), ('pin_hidden', {}))} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares', 'boards')} | {k: state.get(k, d) for k, d in (('pins', []), ('unpins', []), ('reminders', {}), ('freebusy', []), ('pin_hidden', {}), ('scheduled', {}), ('threads', {}))} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/set':
             for k in ('slow_send',):
                 if k in q: state[k] = q[k]
+            if 'old_talk' in q: state['old_talk'] = q['old_talk'] == '1'
+            # Звонок в беседе: call=<token> начинает (call_ago — сколько секунд назад), call_end=<token> завершает.
+            for r in state['rooms']:
+                if q.get('call') == r['token']: r['call_start'] = int(time.time()) - int(q.get('call_ago', 0)); r['in_call'] = q.get('in_call') == '1'
+                if q.get('call_end') == r['token']: r.pop('call_start', None); r.pop('in_call', None)
             return self.send(200, {})
         if method == 'POST' and p == '/test/inject':
             with lock:
@@ -598,7 +606,8 @@ class H(BaseHTTPRequestHandler):
                 state['files'][path] = {'id': next(ids), 'data': data}
                 return self.send(201)
         if method == 'GET' and p == '/ocs/v2.php/cloud/capabilities':
-            return self.ocs({'capabilities': {'spreed': {'config': {'attachments': {'allowed': True, 'folder': '/Talk'}}}}})
+            feats = ['threads', 'scheduled-messages', 'archived-conversations-v2', 'important-conversations', 'sensitive-conversations', 'note-to-self', 'pinned-messages']
+            return self.ocs({'capabilities': {'spreed': {'features': [] if state.get('old_talk') else feats, 'config': {'attachments': {'allowed': True, 'folder': '/Talk'}}}}})
         SH = '/ocs/v2.php/apps/files_sharing/api/v1/shares'
         if method == 'GET' and p == SH:
             return self.ocs([x for x in state['shares'] if x['path'] == q.get('path')])
@@ -768,6 +777,12 @@ class H(BaseHTTPRequestHandler):
             if method == 'DELETE':
                 rem.pop(key, None); return self.ocs(None)
         RM = '/ocs/v2.php/apps/spreed/api/v4/room/'
+        if method == 'GET' and p == RM + 'note-to-self':
+            r = next((x for x in state['rooms'] if x['type'] == 6), None)
+            if not r:
+                r = {'token': 'notes1', 'type': 6, 'name': 'Note to self', 'displayName': 'Заметки для себя', 'readOnly': 0}
+                state['rooms'].append(r); state['messages'][r['token']] = []; state['read'][r['token']] = 0
+            return self.ocs(room_view(r))
         if p.startswith(RM) and p[len(RM):].split('/')[0] in [x['token'] for x in state['rooms']]:
             tok, *rest = p[len(RM):].split('/')
             r = next(x for x in state['rooms'] if x['token'] == tok)
@@ -793,6 +808,10 @@ class H(BaseHTTPRequestHandler):
                 r['expiration'] = int(b.get('seconds', 0)); return self.ocs({})
             if method == 'POST' and sub == 'notify':
                 r['notify'] = int(b.get('level', 0)); return self.ocs({})
+            if method == 'POST' and sub == 'notify-calls':
+                r['notify_calls'] = int(b.get('level', 1)); return self.ocs({})
+            if sub in ('archive', 'important', 'sensitive') and method in ('POST', 'DELETE'):
+                r[{'archive': 'archived'}.get(sub, sub)] = method == 'POST'; return self.ocs(room_view(r))
             if not mod and (sub in ('attendees', 'moderators', 'description', 'read-only', 'public') or (sub == '' and method in ('PUT', 'DELETE'))):
                 return self.ocs({}, 403)
             if method == 'DELETE' and sub == 'attendees':
@@ -864,6 +883,44 @@ class H(BaseHTTPRequestHandler):
                 msg.update(message='Message deleted by you', messageType='comment_deleted', messageParameters=[], reactions={}, reactionsSelf=[])
                 push_update(token, 'message_deleted', msg)
             return self.ocs(msg)
+        mt = _re2.match(r'^/ocs/v2\.php/apps/spreed/api/v1/chat/([a-z0-9]+)/(threads/recent|threads/(\d+)|threads/(\d+)/notify|schedule|schedule/(\d+))$', p)
+        if mt and mt.group(1) in state['messages']:
+            tok = mt.group(1)
+            ths = state.setdefault('threads', {}).setdefault(tok, {})
+            def thread_info(tid):
+                t = ths[tid]
+                msgs = [m for m in state['messages'][tok] if m.get('threadId') == tid]
+                return {'thread': {'id': tid, 'roomToken': tok, 'title': t['title'], 'lastMessageId': msgs[-1]['id'], 'lastActivity': msgs[-1]['timestamp'], 'numReplies': len(msgs) - 1},
+                        'attendee': {'notificationLevel': t.get('notify', 0)}, 'first': msgs[0], 'last': msgs[-1]}
+            what = mt.group(2)
+            if what == 'threads/recent':
+                return self.ocs([thread_info(t) for t in sorted(ths, key=lambda t: -thread_info(t)['thread']['lastActivity'])])
+            if what.startswith('threads/'):
+                tid = int(mt.group(3) or mt.group(4))
+                if tid not in ths: return self.send(404, {'ocs': {'meta': {'status': 'failure', 'statuscode': 404}, 'data': {'error': 'thread'}}})
+                if what.endswith('/notify'):
+                    ths[tid]['notify'] = int(self.body().get('level', 0)); return self.ocs(thread_info(tid))
+                if method == 'PUT':
+                    ths[tid]['title'] = self.body()['threadTitle']
+                    for m in state['messages'][tok]:
+                        if m['id'] == tid: m['threadTitle'] = ths[tid]['title']
+                return self.ocs(thread_info(tid))
+            sch = state.setdefault('scheduled', {}).setdefault(tok, [])
+            if what == 'schedule' and method == 'GET':
+                return self.ocs(sch)
+            if what == 'schedule' and method == 'POST':
+                b = self.body()
+                if int(b['sendAt']) <= time.time(): return self.send(400, {'ocs': {'meta': {'status': 'failure', 'statuscode': 400}, 'data': {'error': 'send-at'}}})
+                item = {'id': str(7340000000000000000 + next(ids)), 'actorId': UID, 'actorType': 'users', 'threadId': int(b.get('threadId', 0)), 'message': b['message'],
+                        'messageType': 'comment', 'createdAt': int(time.time()), 'sendAt': int(b['sendAt']), 'silent': bool(b.get('silent'))}
+                if b.get('threadTitle'): item['threadTitle'] = b['threadTitle']
+                if b.get('replyTo'): item['parent'] = next(x for x in state['messages'][tok] if x['id'] == int(b['replyTo']))
+                sch.append(item); return self.ocs(item, 201)
+            item = next((x for x in sch if x['id'] == mt.group(5)), None)
+            if not item: return self.send(404, {})
+            if method == 'DELETE':
+                sch.remove(item); return self.ocs({})
+            b = self.body(); item.update(message=b['message'], sendAt=int(b['sendAt']), silent=bool(b.get('silent'))); return self.ocs(item)
         if p.startswith(T):
             token = p[len(T):]
             if token not in state['messages']:
@@ -886,12 +943,28 @@ class H(BaseHTTPRequestHandler):
                     if b.get('replyTo'):
                         parent = next(x for x in state['messages'][token] if x['id'] == int(b['replyTo']))
                         m['parent'] = parent
+                    # Ветки (Talk 22): новая — с названием, ответ — в ветку родителя или по threadId.
+                    ths = state.setdefault('threads', {}).setdefault(token, {})
+                    tid = int(m['parent'].get('threadId', 0)) if m.get('parent') else int(b.get('threadId', 0) or 0)
+                    if not m.get('parent') and not tid and (b.get('threadTitle') or '').strip():
+                        ths[m['id']] = {'title': b['threadTitle'].strip()}
+                        m.update(threadId=m['id'], isThread=True, threadTitle=ths[m['id']]['title'], threadReplies=0)
+                    elif tid in ths:
+                        m['threadId'] = tid
+                        root = next(x for x in state['messages'][token] if x['id'] == tid)
+                        root['threadReplies'] = root.get('threadReplies', 0) + 1
                     state['messages'][token].append(m)
                     lock.notify_all()
                 return self.ocs(m, 201)
             future = q.get('lookIntoFuture') == '1'
             last = int(q.get('lastKnownMessageId', 0))
             limit = int(q.get('limit', 100))
+            tid = int(q.get('threadId', 0) or 0)
+            if tid:
+                with lock:
+                    older = [m for m in state['messages'][token] if m.get('threadId') == tid and (not last or m['id'] < last)]
+                    msgs = list(reversed(older[-limit:]))
+                return self.ocs(msgs) if msgs else self.send(304)
             with lock:
                 if future:
                     deadline = time.time() + min(int(q.get('timeout', 30)), 60)

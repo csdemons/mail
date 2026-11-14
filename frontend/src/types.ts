@@ -362,7 +362,53 @@ export interface TalkRoom {
   /** Последнее закреплённое сообщение (0 — нет) и скрытое мной. */
   lastPinnedId: number
   hiddenPinnedId: number
+  /** Идёт звонок, с какого времени (unix, с); уведомлять о звонках (0 — нет); я в звонке. */
+  hasCall: boolean
+  callStart: number
+  notifyCalls: number
+  inCall: boolean
+  /** В архиве; «важная» (уведомления и в «Не беспокоить»); «конфиденциальная» (без текста в уведомлениях). */
+  archived: boolean
+  important: boolean
+  sensitive: boolean
 }
+
+/** Ветка беседы (Talk 22). */
+export interface TalkThread {
+  id: number
+  title: string
+  replies: number
+  lastActivity: number
+  /** 0 — как в беседе, 1 — все сообщения, 2 — упоминания, 3 — никогда. */
+  notifyLevel: number
+  first: TalkMessage | null
+  last: TalkMessage | null
+}
+
+/** Отложенное сообщение (Talk 23): видно только автору до отправки. */
+export interface TalkScheduled {
+  id: string
+  text: string
+  sendAt: number
+  silent: boolean
+  threadId: number
+  threadTitle: string
+  parentAuthor: string | null
+  parentText: string | null
+}
+
+/** Возможности Talk на сервере. */
+export interface TalkFeatures {
+  threads: boolean
+  scheduled: boolean
+  archive: boolean
+  important: boolean
+  sensitive: boolean
+  noteToSelf: boolean
+}
+
+/** Куда отправить: в ветку или новой веткой. */
+export interface TalkThreadTarget { threadId?: number; threadTitle?: string }
 
 export interface TalkSearchHit {
   messageId: number
@@ -408,6 +454,11 @@ export interface TalkMessage {
   pinned: boolean
   pinnedBy: string
   pinnedUntil: number
+  /** Ветка: номер (0 — нет), это начало ветки, название, ответов. */
+  threadId: number
+  isThread: boolean
+  threadTitle: string
+  threadReplies: number
 }
 
 export interface TalkReaction {

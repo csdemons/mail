@@ -679,6 +679,10 @@ impl Nc {
 // ---------------------------------------------------------------- Talk
 
 const TALK_ROOM: &str = "ocs/v2.php/apps/spreed/api/v4/room";
+// Ветки, отложенные сообщения, архив и отметки бесед, «Заметки для себя».
+#[path = "nextcloud_talk.rs"]
+mod talk_more;
+pub use talk_more::*;
 const TALK_CHAT: &str = "ocs/v2.php/apps/spreed/api/v1/chat/";
 const TALK_POLL: &str = "ocs/v2.php/apps/spreed/api/v1/poll/";
 /// Порция истории беседы (более ранние — следующим запросом с lastKnownMessageId).
@@ -716,6 +720,15 @@ pub struct TalkRoom {
     /// Последнее закреплённое сообщение (0 — нет) и то, что я скрыл у себя.
     pub last_pinned_id: i64,
     pub hidden_pinned_id: i64,
+    /// Звонок: идёт ли, с какого времени (unix, с), уведомлять ли о звонках (0 — нет), я в звонке.
+    pub has_call: bool,
+    pub call_start: i64,
+    pub notify_calls: i64,
+    pub in_call: bool,
+    /// В архиве, «важная» (уведомления и в «Не беспокоить»), «конфиденциальная» (без текста в уведомлениях).
+    pub archived: bool,
+    pub important: bool,
+    pub sensitive: bool,
 }
 
 /// Найденная карточка Deck — с доской и колонкой, чтобы открыть её на месте.
@@ -826,6 +839,11 @@ pub struct TalkMessage {
     pub pinned: bool,
     pub pinned_by: String,
     pub pinned_until: i64,
+    /// Ветка (Talk 22): к какой относится (0 — ни к какой), это её начало, название, ответов.
+    pub thread_id: i64,
+    pub is_thread: bool,
+    pub thread_title: String,
+    pub thread_replies: i64,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -1131,6 +1149,10 @@ pub fn parse_message(v: &Value, me: &str) -> TalkMessage {
         pinned: v["metaData"]["pinnedAt"].is_number(),
         pinned_by: text(&v["metaData"]["pinnedActorDisplayName"]),
         pinned_until: int(&v["metaData"]["pinnedUntil"]),
+        thread_id: int(&v["threadId"]),
+        is_thread: v["isThread"].as_bool().unwrap_or(false),
+        thread_title: text(&v["threadTitle"]),
+        thread_replies: int(&v["threadReplies"]),
     }
 }
 
@@ -1228,6 +1250,13 @@ impl Nc {
             message_expiration: int(&r["messageExpiration"]),
             last_pinned_id: int(&r["lastPinnedId"]),
             hidden_pinned_id: int(&r["hiddenPinnedId"]),
+            has_call: r["hasCall"].as_bool().unwrap_or(false),
+            call_start: int(&r["callStartTime"]),
+            notify_calls: r["notificationCalls"].as_i64().unwrap_or(1),
+            in_call: int(&r["participantFlags"]) != 0,
+            archived: r["isArchived"].as_bool().unwrap_or(false),
+            important: r["isImportant"].as_bool().unwrap_or(false),
+            sensitive: r["isSensitive"].as_bool().unwrap_or(false),
         }).filter(|r| r.kind != 4).collect()).unwrap_or_default();
         // Как в Talk: избранные сверху, внутри — по последней активности.
         rooms.sort_by_key(|r| (std::cmp::Reverse(r.favorite), std::cmp::Reverse(r.last_activity)));
@@ -1253,13 +1282,15 @@ impl Nc {
         Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d), last_common_read: common_read(&h), more: false })
     }
 
-    /// `silent` — без звука уведомления у получателей («тихая отправка»).
-    pub async fn talk_send(&self, token: &str, message: &str, reply_to: Option<i64>, silent: bool) -> Result<()> {
+    /// `silent` — без звука уведомления у получателей («тихая отправка»); `thread` — в ветку
+    /// (номер) или новая ветка с названием (Talk 22).
+    pub async fn talk_send(&self, token: &str, message: &str, reply_to: Option<i64>, silent: bool, thread: &TalkThreadTarget) -> Result<()> {
         let message = message.trim();
         if message.is_empty() { return Ok(()); }
         let mut body = json!({ "message": message });
         if let Some(r) = reply_to { body["replyTo"] = json!(r); }
         if silent { body["silent"] = json!(true); }
+        thread.apply(&mut body, reply_to.is_some());
         self.ocs(Method::POST, &format!("{TALK_CHAT}{}", seg(token)), &[], Some(body), "Отправка сообщения").await?;
         Ok(())
     }
@@ -1604,6 +1635,12 @@ impl Nc {
                 let secs = value["seconds"].as_i64().filter(|v| (0..=31_536_000).contains(v)).unwrap_or(0);
                 (Method::POST, format!("{room}/message-expiration"), Some(json!({ "seconds": secs })), "Исчезающие сообщения")
             }
+            "archive" | "important" | "sensitive" => {
+                let on = value["on"].as_bool().unwrap_or(false);
+                let what = match action { "archive" => "Архив", "important" => "Важная беседа", _ => "Конфиденциальная беседа" };
+                (if on { Method::POST } else { Method::DELETE }, format!("{room}/{action}"), None, what)
+            }
+            "notify_calls" => (Method::POST, format!("{room}/notify-calls"), Some(json!({ "level": i64::from(value["on"].as_bool().unwrap_or(true)) })), "Уведомления о звонках"),
             "leave" => (Method::DELETE, format!("{room}/participants/self"), None, "Выход из беседы"),
             "delete" => (Method::DELETE, room.clone(), None, "Удаление беседы"),
             other => return Err(AppError::Other(format!("Неизвестное действие с беседой: {other}"))),
@@ -1729,6 +1766,8 @@ pub struct TalkFileOpts {
     pub voice: bool,
     /// Без звука уведомления.
     pub silent: bool,
+    /// В ветку (Talk 22).
+    pub thread_id: Option<i64>,
 }
 
 impl Nc {
@@ -1737,13 +1776,14 @@ impl Nc {
     /// Имя не перезаписывает существующие файлы: «файл (1).pdf», «файл (2).pdf»…
     /// `voice` — голосовое сообщение (Talk показывает проигрыватель), `silent` — без звука уведомления.
     pub async fn talk_send_file(&self, token: &str, name: &str, src: UploadSource, caption: &str, opts: TalkFileOpts) -> Result<String> {
-        let TalkFileOpts { reply_to, voice, silent } = opts;
+        let TalkFileOpts { reply_to, voice, silent, thread_id } = opts;
         let folder = self.talk_attachment_folder().await;
         let path = self.upload_unique_src(&folder, name, src).await?;
         let mut meta = json!({ "messageType": if voice { "voice-message" } else { "comment" } });
         if silent { meta["silent"] = json!(true); }
         if !caption.trim().is_empty() { meta["caption"] = json!(caption.trim()); }
         if let Some(r) = reply_to { meta["replyTo"] = json!(r); }
+        if let Some(t) = thread_id.filter(|t| *t > 0) { meta["threadId"] = json!(t); }
         let body = json!({ "shareType": 10, "shareWith": token, "path": path, "talkMetaData": meta.to_string() });
         self.ocs(Method::POST, "ocs/v2.php/apps/files_sharing/api/v1/shares", &[("format", "json".into())], Some(body), "Публикация файла в беседе").await?;
         Ok(path)

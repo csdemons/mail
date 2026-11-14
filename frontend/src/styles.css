@@ -1695,3 +1695,53 @@ button.talk-author:hover { text-decoration: underline; }
 .compose-header .talk-profile-head { display: flex; flex-direction: row; align-items: center; gap: 12px; }
 .compose-header .talk-profile-head > div { display: flex; flex-direction: column; gap: 2px; }
 .compose-header .talk-profile-head > div strong { font-size: 16px; }
+
+/* Входящий звонок Talk */
+.incoming-call { position: fixed; top: 70px; right: 20px; z-index: 60; display: flex; align-items: center; gap: 12px; width: min(420px, calc(100vw - 32px)); padding: 12px 14px; border-radius: 12px; background: var(--surface); color: inherit; border: 1px solid var(--line); box-shadow: 0 14px 40px #0003; animation: incoming-in .2s ease-out; }
+.incoming-call-icon { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: #16a34a; color: #fff; animation: incoming-ring 1.2s ease-in-out infinite; }
+.incoming-call-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.incoming-call-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.incoming-call-text span { color: var(--muted); font-size: 12px; }
+.incoming-call-join { background: #16a34a; border-color: #16a34a; }
+.incoming-call-decline { color: #dc2626; }
+@keyframes incoming-in { from { opacity: 0; transform: translateY(-8px); } }
+@keyframes incoming-ring { 0%, 100% { box-shadow: 0 0 0 0 #16a34a66; } 50% { box-shadow: 0 0 0 8px #16a34a00; } }
+@media (prefers-reduced-motion: reduce) { .incoming-call, .incoming-call-icon { animation: none; } }
+.talk-call.ongoing { background: #16a34a; border-color: #16a34a; color: #fff; }
+
+/* Беседы: отметки и архив */
+.room-call { color: #16a34a; margin-left: 4px; flex: none; }
+.room-important { color: #dc2626; margin-left: 4px; flex: none; }
+.room-sensitive { color: var(--muted); margin-left: 4px; flex: none; }
+.room-notes { display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-ink); }
+.room-row.archived { opacity: .8; }
+.talk-archive-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 9px 14px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.talk-archive-toggle:hover { background: var(--hover); }
+
+/* Ветки */
+.talk-thread-chip { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 3px 9px; border: 1px solid var(--accent-line); border-radius: 12px; background: var(--accent-soft); color: var(--accent-ink); font: inherit; font-size: 12px; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-thread-chip.reply { border-color: transparent; background: transparent; padding: 0; margin-top: 3px; font-size: 11px; }
+.talk-thread-panel { display: flex; flex-direction: column; min-height: 0; }
+.talk-thread-notify { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.talk-thread-notify select { font: inherit; font-size: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: inherit; padding: 2px 4px; }
+.talk-thread-messages { gap: 10px; }
+.talk-thread-msg { display: flex; gap: 8px; align-items: flex-start; }
+.talk-thread-msg-body { min-width: 0; flex: 1; }
+.talk-thread-msg-head { display: flex; gap: 6px; align-items: baseline; font-size: 12px; }
+.talk-thread-msg-head small { color: var(--muted); }
+.talk-thread-msg-text { font-size: 13px; overflow-wrap: anywhere; }
+.talk-thread-file { font-size: 12px; color: var(--muted); }
+.talk-thread-last { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-thread-compose { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+.talk-thread-compose textarea { flex: 1; resize: none; font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; }
+.talk-thread-rename { flex: 1; min-width: 0; }
+.talk-thread-rename input { width: 100%; font: inherit; font-weight: 600; padding: 3px 6px; border: 1px solid var(--accent-line); border-radius: 6px; background: var(--surface); color: inherit; }
+.talk-new-thread input { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: inherit; }
+.talk-thread-new.active, .talk-schedule.active { color: var(--accent-ink); background: var(--accent-soft); }
+
+/* Отложенные сообщения */
+.talk-scheduled { border-top: 1px solid var(--line); padding: 4px 12px; font-size: 12px; background: var(--panel); }
+.talk-scheduled-head { display: flex; align-items: center; gap: 5px; border: 0; background: transparent; color: inherit; font: inherit; padding: 3px 0; cursor: pointer; }
+.talk-scheduled-item { display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 20px; }
+.talk-scheduled-when { flex: none; color: var(--accent-ink); }
+.talk-scheduled-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

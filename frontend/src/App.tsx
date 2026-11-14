@@ -47,6 +47,7 @@ import { rowMenuItems as rowMenuFor } from './mailRowMenu'
 import { useSavedViews } from './useSavedViews'
 import { useMailSearch } from './useMailSearch'
 import { useProfile } from './useProfile'
+import IncomingCall from './IncomingCall'
 import { useChatNotifications, useDueReminders, useZoomShortcuts } from './useMailBackground'
 import SettingsDialog from './SettingsDialog'
 import ReaderPane from './ReaderPane'
@@ -207,7 +208,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   moduleRef.current = module
   useEffect(() => { api.notifyPollSecs().then((s) => { pollSecs.current = Math.max(5, s) }).catch(() => undefined) }, [])
   useDueReminders(setNotice, pollSecs)
-  useChatNotifications(Boolean(ncStatus?.connected), moduleRef, prefsRef, pollSecs, setChatUnread, setNotice)
+  const { ringing, dismissCall } = useChatNotifications(Boolean(ncStatus?.connected), moduleRef, prefsRef, pollSecs, setChatUnread, setNotice)
   useZoomShortcuts()
   const switchAccount = (key: string, open?: MessageSummary) => { setNotice('Переключение учётной записи…'); void onSwitch(key, open).then((err) => { if (err) setNotice(err) }) }
   const [unified, setUnified] = useState<UnifiedRole | null>(saved?.unified ?? null)
@@ -1037,6 +1038,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
         </>}
       </div>
 
+      {ringing && <IncomingCall call={ringing} onClose={dismissCall} onNotice={setNotice} />}
       {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Закрыть"><X size={16} /></button></div>}
 
       {draft && (

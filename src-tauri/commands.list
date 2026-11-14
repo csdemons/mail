@@ -93,6 +93,17 @@ talk_delete
 talk_mentions
 nc_search_users
 talk_create
+talk_features
+talk_threads
+talk_thread
+talk_thread_history
+talk_thread_notify
+talk_thread_rename
+talk_scheduled
+talk_schedule
+talk_schedule_edit
+talk_schedule_delete
+talk_note_to_self
 open_link               msg
 nc_files_list           msg
 nc_files_mkdir

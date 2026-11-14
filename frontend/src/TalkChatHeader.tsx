@@ -1,4 +1,4 @@
-import { Star, Timer, Phone, ExternalLink, Images, Search, UserRound, Users, MoreHorizontal } from 'lucide-react'
+import { Star, Timer, Phone, ExternalLink, Images, Search, UserRound, Users, MoreHorizontal, MessagesSquare } from 'lucide-react'
 import { expiryLabel } from './talkUtils'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import { personMenu, type PersonActions } from './TalkPeople'
@@ -17,9 +17,12 @@ export interface TalkChatHeaderProps {
   person: PersonActions
   showPeople: boolean
   roomMenu: (r: TalkRoom) => MenuItem[]
+  /** Открыть/закрыть панель веток; нет — сервер веток не поддерживает. */
+  threads?: () => void
+  threadsOpen?: boolean
 }
 
-export default function TalkChatHeader({ room, toggleFavorite, startCall, showMedia, setShowMedia, setShowPeople, searchOpen, setSearchOpen, person, showPeople, roomMenu }: TalkChatHeaderProps) {
+export default function TalkChatHeader({ threads, threadsOpen, room, toggleFavorite, startCall, showMedia, setShowMedia, setShowPeople, searchOpen, setSearchOpen, person, showPeople, roomMenu }: TalkChatHeaderProps) {
   return (
     <div className="calendar-toolbar">
       <strong className="calendar-title">{room.name}</strong>
@@ -28,9 +31,10 @@ export default function TalkChatHeader({ room, toggleFavorite, startCall, showMe
         onClick={() => void toggleFavorite(room)}><Star size={17} fill={room.favorite ? 'currentColor' : 'none'} /></button>
       <div className="reader-toolbar-spacer" />
       {room.messageExpiration > 0 && <span className="talk-expiry-badge" title="Сообщения в этой беседе исчезают"><Timer size={13} /> {expiryLabel(room.messageExpiration)}</span>}
-      <button className="secondary-button talk-call" title="Звонок и демонстрация экрана — в окне программы" onClick={() => void startCall(room)}
-        onContextMenu={(e) => openContextMenu(e, [{ label: 'Звонок в окне программы', icon: <Phone size={15} />, onClick: () => void startCall(room) }, { label: 'Звонок в браузере', icon: <ExternalLink size={15} />, onClick: () => void startCall(room, true) }])}><Phone size={15} /> Звонок</button>
+      <button className={`secondary-button talk-call ${room.hasCall && !room.inCall ? 'ongoing' : ''}`} title={room.hasCall ? 'В беседе идёт звонок — присоединиться' : 'Звонок и демонстрация экрана — в окне программы'} onClick={() => void startCall(room)}
+        onContextMenu={(e) => openContextMenu(e, [{ label: 'Звонок в окне программы', icon: <Phone size={15} />, onClick: () => void startCall(room) }, { label: 'Звонок в браузере', icon: <ExternalLink size={15} />, onClick: () => void startCall(room, true) }])}><Phone size={15} /> {room.hasCall && !room.inCall ? 'Присоединиться' : 'Звонок'}</button>
       <button className={`icon-button soft talk-media-toggle ${showMedia ? 'active' : ''}`} aria-pressed={showMedia} aria-label="Медиа и файлы" title="Медиа и файлы беседы" onClick={() => { setShowMedia(!showMedia); setShowPeople(false) }}><Images size={17} /></button>
+      {threads && <button className={`icon-button soft talk-threads-toggle ${threadsOpen ? 'active' : ''}`} aria-pressed={threadsOpen} aria-label="Ветки" title="Ветки обсуждений беседы" onClick={threads}><MessagesSquare size={17} /></button>}
       <button className={`icon-button soft talk-search-toggle ${searchOpen ? 'active' : ''}`} aria-pressed={searchOpen} aria-label="Поиск по сообщениям" title="Поиск по сообщениям (Ctrl+F)" onClick={() => setSearchOpen(!searchOpen)}><Search size={17} /></button>
       {room.kind === 1 && room.peer && <button className="icon-button soft talk-profile-toggle" aria-label="Профиль собеседника" title="Профиль, доступность, письмо" onClick={(e) => openContextMenu(e, personMenu(room.peer as string, room.name, person, { inDirect: true }))}><UserRound size={17} /></button>}
       <button className={`icon-button soft talk-people-toggle ${showPeople ? 'active' : ''}`} aria-pressed={showPeople} aria-label="Участники" title="Участники беседы" onClick={() => { setShowPeople(!showPeople); setShowMedia(false) }}><Users size={17} /></button>

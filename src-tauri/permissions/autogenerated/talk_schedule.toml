@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-talk-schedule"
+description = "Enables the talk_schedule command without any pre-configured scope."
+commands.allow = ["talk_schedule"]
+
+[[permission]]
+identifier = "deny-talk-schedule"
+description = "Denies the talk_schedule command without any pre-configured scope."
+commands.deny = ["talk_schedule"]

@@ -1400,6 +1400,123 @@ try:
     W(d, 15).until(lambda d: [m for m in d.find_elements(By.CSS_SELECTOR, '.talk-msg') if 'Один раз, а не два' in m.get_attribute('textContent')])
     ok('chat: colleague menu — profile with status, availability from the calendar (free/busy), write an e-mail, open a direct chat')
 
+    # Ветки (Talk 22): новая ветка из поля ввода, ответ в панели ветки, уведомления ветки, список веток.
+    room_of = lambda tok: next(r for r in nc_mock('GET', '/test/state')['rooms'] if r['token'] == tok)
+    d.find_element(By.CSS_SELECTOR, '.talk-compose button.talk-thread-new').click()
+    set_value(d, wait(d, '.talk-new-thread input[aria-label="Название ветки"]'), 'План обновления')
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
+    box.send_keys('Начинаем ветку про обновление'); box.send_keys(Keys.ENTER)
+    root = W(d, 15).until(lambda d: next((m for m in nc_mock('GET', '/test/state')['messages']['abc123'] if m.get('isThread')), None))
+    assert root['threadTitle'] == 'План обновления' and root['message'] == 'Начинаем ветку про обновление', root
+    assert not d.find_elements(By.CSS_SELECTOR, '.talk-new-thread'), 'thread title cleared after sending'
+    chip = W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.talk-thread-chip') if 'План обновления' in c.text])[0]
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'})", chip); time.sleep(0.3); chip.click()
+    panel = wait(d, '.talk-thread-panel')
+    W(d, 10).until(lambda d: 'План обновления' in panel.text and 'Начинаем ветку про обновление' in panel.text)
+    reply = panel.find_element(By.CSS_SELECTOR, 'textarea[aria-label="Ответ в ветке"]')
+    reply.send_keys('Ответ в ветке: готов помочь'); reply.send_keys(Keys.ENTER)
+    W(d, 15).until(lambda d: any(m.get('threadId') == root['id'] and not m.get('isThread') and m['message'] == 'Ответ в ветке: готов помочь' for m in nc_mock('GET', '/test/state')['messages']['abc123']))
+    W(d, 15).until(lambda d: 'Ответ в ветке: готов помочь' in d.find_element(By.CSS_SELECTOR, '.talk-thread-panel').text)
+    Select(d.find_element(By.CSS_SELECTOR, '.talk-thread-panel select[aria-label="Уведомления ветки"]')).select_by_visible_text('Не уведомлять')
+    W(d, 10).until(lambda d: nc_mock('GET', '/test/state')['threads']['abc123'][str(root['id'])].get('notify') == 3)
+    d.save_screenshot(f'{OUT}/talk-thread.png')
+    d.find_element(By.CSS_SELECTOR, '.talk-thread-panel button[aria-label="Все ветки"]').click()
+    W(d, 10).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-thread-panel .talk-thread-row') if 'План обновления' in r.text and '1 ответ' in r.text])
+    d.find_element(By.CSS_SELECTOR, '.talk-thread-panel button[aria-label="Закрыть ветки"]').click()
+    # ветки — и кнопкой в шапке беседы
+    d.find_element(By.CSS_SELECTOR, 'button.talk-threads-toggle').click()
+    wait(d, '.talk-thread-panel .talk-thread-row')
+    d.find_element(By.CSS_SELECTOR, 'button.talk-threads-toggle').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-thread-panel'))
+    ok('chat threads: start a thread from the input, reply inside the thread panel, thread notifications, list of threads')
+
+    # Отложенная отправка (Talk 23): «Завтра утром», перенос, отмена.
+    box = d.find_element(By.CSS_SELECTOR, '.talk-compose textarea')
+    box.send_keys('Напоминаю про планёрку')
+    d.find_element(By.CSS_SELECTOR, '.talk-compose button.talk-schedule').click()
+    wait(d, '.ctx-menu')
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.ctx-menu .ctx-item') if b.text.startswith('Завтра утром')][0].click()
+    sch = W(d, 15).until(lambda d: nc_mock('GET', '/test/state')['scheduled'].get('abc123'))
+    tomorrow9 = datetime.datetime.combine(datetime.date.today() + datetime.timedelta(days=1), datetime.time(9, 0)).timestamp()
+    assert sch[0]['message'] == 'Напоминаю про планёрку' and abs(sch[0]['sendAt'] - tomorrow9) < 5, sch
+    assert not [m for m in nc_mock('GET', '/test/state')['messages']['abc123'] if m['message'] == 'Напоминаю про планёрку'], 'must not be sent now'
+    W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == '')
+    bar = W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-scheduled'))[0]
+    assert 'Отложено: 1' in bar.text, bar.text
+    bar.find_element(By.CSS_SELECTOR, '.talk-scheduled-head').click()
+    W(d, 5).until(lambda d: 'Напоминаю про планёрку' in d.find_element(By.CSS_SELECTOR, '.talk-scheduled').text)
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-scheduled button') if b.text == 'Перенести'][0].click()
+    dlg = wait(d, '[role="dialog"][aria-label="Перенести сообщение"]')
+    [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.text == 'Перенести'][0].click()
+    W(d, 10).until(lambda d: 'уйдёт' in ' '.join(t.text for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    d.find_element(By.CSS_SELECTOR, '.talk-scheduled button[aria-label="Отменить отложенное сообщение"]').click()
+    W(d, 10).until(lambda d: not nc_mock('GET', '/test/state')['scheduled']['abc123'] and not d.find_elements(By.CSS_SELECTOR, '.talk-scheduled'))
+    ok('chat: scheduled message (tomorrow morning) waits on the server, can be moved and cancelled')
+
+    # Порядок в списке бесед: архив, «важная», «конфиденциальная», звонки, «Заметки для себя».
+    def room_row(name):
+        return [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if name in r.get_attribute('textContent')]
+    ctx(room_row('Иванов Иван')[0]); ctx_pick('В архив')
+    W(d, 10).until(lambda d: room_of('dm-ivanov')['isArchived'] and not room_row('Иванов Иван'))
+    toggle = wait(d, '.talk-archive-toggle')
+    assert 'Архив' in toggle.text and '1' in toggle.text, toggle.text
+    toggle.click()
+    W(d, 5).until(lambda d: room_row('Иванов Иван'))
+    ctx(room_row('Иванов Иван')[0]); ctx_pick('Вернуть из архива')
+    W(d, 10).until(lambda d: not room_of('dm-ivanov')['isArchived'] and not d.find_elements(By.CSS_SELECTOR, '.talk-archive-toggle'))
+    ctx(room_row('УИТ — общий')[0]); ctx_pick('Важная беседа')
+    W(d, 10).until(lambda d: room_of('abc123')['isImportant'] and room_row('УИТ — общий')[0].find_elements(By.CSS_SELECTOR, '.room-important'))
+    ctx(room_row('УИТ — общий')[0]); ctx_pick('Конфиденциальная беседа')
+    W(d, 10).until(lambda d: room_of('abc123')['isSensitive'] and 'Конфиденциальная беседа' in room_row('УИТ — общий')[0].find_element(By.CSS_SELECTOR, '.message-preview').text)
+    ctx(room_row('УИТ — общий')[0]); ctx_pick('Снять отметку «Конфиденциальная»')
+    ctx(room_row('УИТ — общий')[0]); ctx_pick('Снять отметку «Важная»')
+    W(d, 10).until(lambda d: not room_of('abc123')['isSensitive'] and not room_of('abc123')['isImportant'])
+    ctx(room_row('УИТ — общий')[0]); ctx_pick('Не сообщать о звонках')
+    W(d, 10).until(lambda d: room_of('abc123')['notificationCalls'] == 0)
+    ctx(room_row('УИТ — общий')[0]); ctx_pick('Сообщать о звонках')
+    W(d, 10).until(lambda d: room_of('abc123')['notificationCalls'] == 1)
+    d.find_element(By.CSS_SELECTOR, '.talk-rooms button[aria-label="Заметки для себя"]').click()
+    W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'Заметки для себя')
+    assert any(r['type'] == 6 for r in nc_mock('GET', '/test/state')['rooms'])
+    room_row('УИТ — общий')[0].click()
+    W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'УИТ — общий')
+    ok('chat conversation list: archive and restore, important and sensitive marks, call notifications on/off, note to self')
+
+    # Входящий звонок: карточка в любом разделе, «Ответить» открывает звонок, «Отклонить» убирает этот звонок.
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Почта']]").click()
+    call_file = os.path.join(os.environ['E2E_HOME'], 'saved', 'call-window.txt')
+    if os.path.exists(call_file): os.remove(call_file)
+    nc_mock('POST', '/test/set?call=dm-ivanov')
+    card = W(d, 30).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.incoming-call'))[0]
+    assert 'Иванов Иван' in card.text and 'Входящий звонок' in card.text, card.text
+    d.save_screenshot(f'{OUT}/talk-incoming-call.png')
+    card.find_element(By.CSS_SELECTOR, '.incoming-call-join').click()
+    W(d, 10).until(lambda d: os.path.exists(call_file) and open(call_file).read().endswith('/index.php/call/dm-ivanov'))
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.incoming-call'))
+    time.sleep(12)
+    assert not d.find_elements(By.CSS_SELECTOR, '.incoming-call'), 'an answered call must not ring again'
+    nc_mock('POST', '/test/set?call_end=dm-ivanov')
+    time.sleep(1.1)
+    nc_mock('POST', '/test/set?call=abc123')
+    card = W(d, 30).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.incoming-call'))[0]
+    assert 'УИТ — общий' in card.text, card.text
+    # в чате — «Присоединиться» в шапке и значок звонка в списке
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-call.ongoing') and 'Присоединиться' in d.find_element(By.CSS_SELECTOR, '.talk-call').text)
+    assert room_row('УИТ — общий')[0].find_elements(By.CSS_SELECTOR, '.room-call')
+    d.find_element(By.CSS_SELECTOR, '.incoming-call-decline').click()
+    W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.incoming-call'))
+    time.sleep(12)
+    assert not d.find_elements(By.CSS_SELECTOR, '.incoming-call'), 'a declined call must not ring again'
+    nc_mock('POST', '/test/set?call_end=abc123')
+    # звонок, в котором я уже участвую, и звонок в беседе без уведомлений о звонках — не звонят
+    nc_mock('POST', '/test/set?call=abc123&in_call=1')
+    time.sleep(12)
+    assert not d.find_elements(By.CSS_SELECTOR, '.incoming-call'), 'no ring for a call I am already in'
+    nc_mock('POST', '/test/set?call_end=abc123')
+    W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-call.ongoing'))
+    ok('incoming Talk call: card in any section, answer opens the call, decline silences it; no ring when already in the call')
+
     # Участники и модерация (как в Talk).
     def members_of(tok='abc123'):
         return {m['actorId']: m['participantType'] for m in nc_mock('GET', '/test/state')['members'][tok]}
