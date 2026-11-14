@@ -69,6 +69,15 @@ jobs:
           cat clippy.txt
       - run: cargo test
         working-directory: src-tauri
+      - name: Разрешения и capabilities совпадают с commands.list
+        run: |
+          if ! git diff --exit-code -- src-tauri/capabilities src-tauri/permissions; then
+            echo "::error::capabilities/permissions не совпадают с src-tauri/commands.list — соберите проект и закоммитьте созданные файлы"
+            exit 1
+          fi
+          if [ -n "$(git ls-files --others --exclude-standard src-tauri/permissions)" ]; then
+            echo "::error::новые файлы в src-tauri/permissions не закоммичены"; git ls-files --others --exclude-standard src-tauri/permissions; exit 1
+          fi
 
   bundle:
     name: Bundle (${{ matrix.name }})

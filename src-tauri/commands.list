@@ -1,0 +1,212 @@
+# Команды приложения — единственный список.
+# Из него build.rs собирает обработчик invoke (обе сборки), разрешения Tauri (allow-<команда>)
+# и capabilities окон: главное окно получает все команды, окна писем (msg-*) — только
+# помеченные `msg`. Сборка не пройдёт, если команда с #[tauri::command] не указана здесь
+# (или указана, но такой функции нет).
+#
+# Формат: <команда> [msg]
+
+get_settings
+login
+auto_login
+logout
+list_folders            msg
+list_messages
+get_message             msg
+set_flag                msg
+save_attachment         msg
+diagnostics
+get_profile             msg
+update_profile
+pick_attachments        msg
+send_message            msg
+mailboxes_get
+send_identities         msg
+deck_create_board
+talk_pin
+talk_unpin
+talk_reminder
+talk_set_reminder
+nc_user_profile
+nc_free_busy
+clipboard_paste_files
+picked_preview
+mailboxes_save
+signatures_save
+signatures_get          msg
+draft_recovery_get
+draft_recovery_set
+draft_discard           msg
+draft_save              msg
+list_contacts           msg
+search_contacts         msg
+contact_details
+browse_contacts
+list_events
+create_event
+update_event
+delete_event
+create_contact          msg
+update_contact
+delete_contact
+nc_status               msg
+nc_connect_start
+nc_connect_poll
+nc_connect_manual
+nc_disconnect
+nc_open
+deck_boards
+deck_stacks
+deck_create_card
+deck_update_card
+deck_move_card
+deck_delete_card
+deck_create_stack
+deck_board_details
+deck_assign
+deck_label
+deck_comments
+deck_comment_add
+deck_comment_delete
+deck_attachments
+talk_rooms
+talk_history
+talk_poll
+talk_send
+talk_poll_create
+talk_poll_get
+talk_poll_vote
+talk_poll_close
+talk_shared
+nc_link_preview
+talk_call_window
+talk_send_file
+talk_react
+talk_favorite
+talk_participants
+talk_search
+nc_search
+mail_by_msgid
+talk_manage
+talk_edit
+talk_delete
+talk_mentions
+nc_search_users
+talk_create
+open_link               msg
+nc_files_list           msg
+nc_files_mkdir
+nc_files_upload
+nc_files_download
+nc_files_delete
+nc_files_rename
+nc_shares
+nc_share_link
+nc_share_user
+nc_share_delete
+nc_link_for             msg
+nc_upload_links         msg
+nc_save_mail_attachment
+app_info
+move_messages           msg
+create_folder           msg
+open_message_window
+attachment_data         msg
+message_html_remote     msg
+nc_avatar
+totp_status
+totp_setup_begin
+totp_setup_confirm
+totp_disable
+lock_app
+totp_unlock
+cached_folders
+cached_messages
+search_mail
+search_server
+offline_status
+set_offline_days
+clear_offline
+signature_get           msg
+signature_save
+send_wait               msg
+send_cancel             msg
+send_now                msg
+scheduled_list
+scheduled_send_now
+scheduled_cancel
+mdn_respond             msg
+desktop_prefs_get
+desktop_prefs_set
+set_unread
+show_main_window
+categories_get          msg
+discover_servers
+exchange_diagnose
+attach_data             msg
+talk_file_preview
+unified_folder
+search_others
+views_get
+views_save
+deck_attachment_add
+deck_attachment_delete
+deck_archive
+deck_activity
+rules_get
+rules_save
+counterparties          msg
+counterparty_timeline
+counterparty_save
+offline_queue
+offline_check
+offline_resolve
+forward_attachments     msg
+calendar_file_preview   msg
+calendar_file_import    msg
+attachment_drag_out     msg
+attachment_open         msg
+talk_file_data
+accounts_list
+account_add
+account_switch
+account_remove
+accounts_unread
+accounts_poll
+unified_inbox
+import_thunderbird
+import_pick_files
+import_pick_folder
+import_start
+job_status
+job_cancel
+backup_start
+contacts_import
+mark_spam               msg
+unsubscribe             msg
+snooze                  msg
+unsnooze
+categories_save
+set_keywords            msg
+set_due                 msg
+due_list
+templates_list          msg
+template_save           msg
+template_delete
+get_policy              msg
+nc_editors
+nc_edit
+nc_create_document
+nc_edit_attachment      msg
+poll_new_mail
+notify
+notify_poll_secs
+close_window            msg
+set_zoom                msg
+mail_filters_get
+mail_filters_save
+delete_messages         msg
+check_update
+update_progress
+install_update
+forget_attachment       msg
