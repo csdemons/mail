@@ -1417,11 +1417,12 @@ try:
     reply.send_keys('Ответ в ветке: готов помочь'); reply.send_keys(Keys.ENTER)
     W(d, 15).until(lambda d: any(m.get('threadId') == root['id'] and not m.get('isThread') and m['message'] == 'Ответ в ветке: готов помочь' for m in nc_mock('GET', '/test/state')['messages']['abc123']))
     W(d, 15).until(lambda d: 'Ответ в ветке: готов помочь' in d.find_element(By.CSS_SELECTOR, '.talk-thread-panel').text)
+    W(d, 15).until(lambda d: [c for c in d.find_elements(By.CSS_SELECTOR, '.talk-thread-chip') if 'План обновления' in c.text and '1 ответ' in c.get_attribute('textContent')])
     Select(d.find_element(By.CSS_SELECTOR, '.talk-thread-panel select[aria-label="Уведомления ветки"]')).select_by_visible_text('Не уведомлять')
     W(d, 10).until(lambda d: nc_mock('GET', '/test/state')['threads']['abc123'][str(root['id'])].get('notify') == 3)
     d.save_screenshot(f'{OUT}/talk-thread.png')
     d.find_element(By.CSS_SELECTOR, '.talk-thread-panel button[aria-label="Все ветки"]').click()
-    W(d, 10).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-thread-panel .talk-thread-row') if 'План обновления' in r.text and '1 ответ' in r.text])
+    W(d, 10).until(lambda d: [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-thread-panel .talk-thread-row') if 'План обновления' in r.get_attribute('textContent') and '1 ответ' in r.get_attribute('textContent')])
     d.find_element(By.CSS_SELECTOR, '.talk-thread-panel button[aria-label="Закрыть ветки"]').click()
     # ветки — и кнопкой в шапке беседы
     d.find_element(By.CSS_SELECTOR, 'button.talk-threads-toggle').click()
@@ -1442,13 +1443,13 @@ try:
     assert not [m for m in nc_mock('GET', '/test/state')['messages']['abc123'] if m['message'] == 'Напоминаю про планёрку'], 'must not be sent now'
     W(d, 5).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-compose textarea').get_attribute('value') == '')
     bar = W(d, 10).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-scheduled'))[0]
-    assert 'Отложено: 1' in bar.text, bar.text
+    assert 'Отложено: 1' in bar.get_attribute('textContent'), bar.get_attribute('textContent')
     bar.find_element(By.CSS_SELECTOR, '.talk-scheduled-head').click()
-    W(d, 5).until(lambda d: 'Напоминаю про планёрку' in d.find_element(By.CSS_SELECTOR, '.talk-scheduled').text)
-    [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-scheduled button') if b.text == 'Перенести'][0].click()
+    W(d, 5).until(lambda d: 'Напоминаю про планёрку' in d.find_element(By.CSS_SELECTOR, '.talk-scheduled').get_attribute('textContent'))
+    [b for b in d.find_elements(By.CSS_SELECTOR, '.talk-scheduled button') if b.get_attribute('textContent') == 'Перенести'][0].click()
     dlg = wait(d, '[role="dialog"][aria-label="Перенести сообщение"]')
-    [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.text == 'Перенести'][0].click()
-    W(d, 10).until(lambda d: 'уйдёт' in ' '.join(t.text for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
+    [b for b in dlg.find_elements(By.TAG_NAME, 'button') if b.get_attribute('textContent') == 'Перенести'][0].click()
+    W(d, 10).until(lambda d: 'уйдёт' in ' '.join(t.get_attribute('textContent') for t in d.find_elements(By.CSS_SELECTOR, '.toast')))
     d.find_element(By.CSS_SELECTOR, '.talk-scheduled button[aria-label="Отменить отложенное сообщение"]').click()
     W(d, 10).until(lambda d: not nc_mock('GET', '/test/state')['scheduled']['abc123'] and not d.find_elements(By.CSS_SELECTOR, '.talk-scheduled'))
     ok('chat: scheduled message (tomorrow morning) waits on the server, can be moved and cancelled')
@@ -1459,7 +1460,7 @@ try:
     ctx(room_row('Иванов Иван')[0]); ctx_pick('В архив')
     W(d, 10).until(lambda d: room_of('dm-ivanov')['isArchived'] and not room_row('Иванов Иван'))
     toggle = wait(d, '.talk-archive-toggle')
-    assert 'Архив' in toggle.text and '1' in toggle.text, toggle.text
+    assert 'Архив' in toggle.get_attribute('textContent') and '1' in toggle.get_attribute('textContent'), toggle.get_attribute('textContent')
     toggle.click()
     W(d, 5).until(lambda d: room_row('Иванов Иван'))
     ctx(room_row('Иванов Иван')[0]); ctx_pick('Вернуть из архива')
@@ -1467,7 +1468,7 @@ try:
     ctx(room_row('УИТ — общий')[0]); ctx_pick('Важная беседа')
     W(d, 10).until(lambda d: room_of('abc123')['isImportant'] and room_row('УИТ — общий')[0].find_elements(By.CSS_SELECTOR, '.room-important'))
     ctx(room_row('УИТ — общий')[0]); ctx_pick('Конфиденциальная беседа')
-    W(d, 10).until(lambda d: room_of('abc123')['isSensitive'] and 'Конфиденциальная беседа' in room_row('УИТ — общий')[0].find_element(By.CSS_SELECTOR, '.message-preview').text)
+    W(d, 10).until(lambda d: room_of('abc123')['isSensitive'] and 'Конфиденциальная беседа' in room_row('УИТ — общий')[0].find_element(By.CSS_SELECTOR, '.message-preview').get_attribute('textContent'))
     ctx(room_row('УИТ — общий')[0]); ctx_pick('Снять отметку «Конфиденциальная»')
     ctx(room_row('УИТ — общий')[0]); ctx_pick('Снять отметку «Важная»')
     W(d, 10).until(lambda d: not room_of('abc123')['isSensitive'] and not room_of('abc123')['isImportant'])
@@ -1486,35 +1487,39 @@ try:
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Почта']]").click()
     call_file = os.path.join(os.environ['E2E_HOME'], 'saved', 'call-window.txt')
     if os.path.exists(call_file): os.remove(call_file)
-    nc_mock('POST', '/test/set?call=dm-ivanov')
+    nc_mock('POST', '/test/set?call=abc123')
     card = W(d, 30).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.incoming-call'))[0]
-    assert 'Иванов Иван' in card.text and 'Входящий звонок' in card.text, card.text
+    assert 'УИТ — общий' in card.get_attribute('textContent') and 'Входящий звонок' in card.get_attribute('textContent'), card.get_attribute('textContent')
     d.save_screenshot(f'{OUT}/talk-incoming-call.png')
     card.find_element(By.CSS_SELECTOR, '.incoming-call-join').click()
-    W(d, 10).until(lambda d: os.path.exists(call_file) and open(call_file).read().endswith('/index.php/call/dm-ivanov'))
+    W(d, 10).until(lambda d: os.path.exists(call_file) and open(call_file).read().endswith('/index.php/call/abc123'))
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.incoming-call'))
     time.sleep(12)
     assert not d.find_elements(By.CSS_SELECTOR, '.incoming-call'), 'an answered call must not ring again'
-    nc_mock('POST', '/test/set?call_end=dm-ivanov')
+    nc_mock('POST', '/test/set?call_end=abc123')
     time.sleep(1.1)
-    nc_mock('POST', '/test/set?call=abc123')
+    nc_mock('POST', '/test/set?call=dm-ivanov')
     card = W(d, 30).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.incoming-call'))[0]
-    assert 'УИТ — общий' in card.text, card.text
+    assert 'Иванов Иван' in card.get_attribute('textContent'), card.get_attribute('textContent')
     # в чате — «Присоединиться» в шапке и значок звонка в списке
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
-    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-call.ongoing') and 'Присоединиться' in d.find_element(By.CSS_SELECTOR, '.talk-call').text)
-    assert room_row('УИТ — общий')[0].find_elements(By.CSS_SELECTOR, '.room-call')
+    W(d, 15).until(lambda d: room_row('Иванов Иван'))
+    room_row('Иванов Иван')[0].click()
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.talk-call.ongoing') and 'Присоединиться' in d.find_element(By.CSS_SELECTOR, '.talk-call').get_attribute('textContent'))
+    assert room_row('Иванов Иван')[0].find_elements(By.CSS_SELECTOR, '.room-call')
     d.find_element(By.CSS_SELECTOR, '.incoming-call-decline').click()
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.incoming-call'))
     time.sleep(12)
     assert not d.find_elements(By.CSS_SELECTOR, '.incoming-call'), 'a declined call must not ring again'
-    nc_mock('POST', '/test/set?call_end=abc123')
+    nc_mock('POST', '/test/set?call_end=dm-ivanov')
     # звонок, в котором я уже участвую, и звонок в беседе без уведомлений о звонках — не звонят
-    nc_mock('POST', '/test/set?call=abc123&in_call=1')
+    nc_mock('POST', '/test/set?call=dm-ivanov&in_call=1')
     time.sleep(12)
     assert not d.find_elements(By.CSS_SELECTOR, '.incoming-call'), 'no ring for a call I am already in'
-    nc_mock('POST', '/test/set?call_end=abc123')
+    nc_mock('POST', '/test/set?call_end=dm-ivanov')
     W(d, 15).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.talk-call.ongoing'))
+    room_row('УИТ — общий')[0].click()
+    W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'УИТ — общий')
     ok('incoming Talk call: card in any section, answer opens the call, decline silences it; no ring when already in the call')
 
     # Участники и модерация (как в Talk).

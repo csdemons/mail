@@ -1,5 +1,5 @@
 import { SkeletonChat } from './Skeleton'
-import { timeOf, isImage, TalkThumb, viewable } from './talkUtils'
+import { repliesLabel, timeOf, isImage, TalkThumb, viewable } from './talkUtils'
 import { openContextMenu, type MenuItem } from './PopupMenu'
 import { personMenu, type PersonActions } from './TalkPeople'
 import Avatar from './Avatar'
@@ -58,7 +58,7 @@ export default function TalkMessageList({ listRef, openThread, stickToBottom, lo
             {!m.own && <button type="button" className="talk-author" onClick={(e) => m.authorId && openContextMenu(e, personMenu(m.authorId, m.author, person, { inDirect: room.kind === 1 }))}>{m.author}</button>}
             {m.parentText && !m.deleted && <div className="talk-quote"><b>{m.parentAuthor}</b> {m.parentText}</div>}
             {m.text && (m.deleted ? <div className="talk-text talk-deleted">{m.text}</div> : <TalkText text={m.text} />)}
-            {openThread && m.isThread && <button type="button" className="talk-thread-chip" onClick={() => openThread(m.threadId || m.id)}><MessagesSquare size={13} /> {m.threadTitle || 'Ветка'} · {m.threadReplies} {m.threadReplies === 1 ? 'ответ' : 'отв.'}</button>}
+            {openThread && m.isThread && <button type="button" className="talk-thread-chip" onClick={() => openThread(m.threadId || m.id)}><MessagesSquare size={13} /> {m.threadTitle || 'Ветка'} · {repliesLabel(Math.max(m.threadReplies, messages.filter((x) => x.threadId === m.id && x.id !== m.id).length))}</button>}
             {openThread && !m.isThread && m.threadId > 0 && <button type="button" className="talk-thread-chip reply" onClick={() => openThread(m.threadId)}><MessagesSquare size={12} /> в ветке{m.threadTitle ? ` «${m.threadTitle}»` : ''}</button>}
             {m.poll && !m.deleted && <PollCard token={room.token} id={m.poll.id} question={m.poll.question} notify={notify} />}
             {m.voice && !m.deleted && m.files[0] && <VoicePlayer file={m.files[0]} load={(f) => api.talkFileData(f.path as string)} />}

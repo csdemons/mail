@@ -6,7 +6,7 @@ import { api, errorText } from './api'
 import Avatar from './Avatar'
 import { SkeletonRows } from './Skeleton'
 import TalkText from './TalkText'
-import { timeOf } from './talkUtils'
+import { repliesLabel, timeOf } from './talkUtils'
 import type { TalkMessage, TalkThread } from './types'
 
 /** Уровни уведомлений ветки — как у беседы в Talk. */
@@ -153,7 +153,7 @@ export default function TalkThreadPanel({ token, threadId, readOnly, onOpen, onC
               <MessagesSquare size={16} />
               <span className="talk-media-meta">
                 <b>{t.title || preview(t.first)}</b>
-                <small>{t.replies} {t.replies % 10 === 1 && t.replies % 100 !== 11 ? 'ответ' : t.replies % 10 >= 2 && t.replies % 10 <= 4 && (t.replies % 100 < 12 || t.replies % 100 > 14) ? 'ответа' : 'ответов'}{t.lastActivity > 0 ? ` · ${timeOf(t.lastActivity)}` : ''}</small>
+                <small>{repliesLabel(t.replies)}{t.lastActivity > 0 ? ` · ${timeOf(t.lastActivity)}` : ''}</small>
                 {t.last && <small className="talk-thread-last">{preview(t.last)}</small>}
               </span>
             </button>

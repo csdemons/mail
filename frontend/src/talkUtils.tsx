@@ -90,3 +90,9 @@ export function sortRooms(list: TalkRoom[]): TalkRoom[] {
 
 /** Возможности Talk, пока сервер не ответил (или старый сервер): ничего нового. */
 export const NO_TALK_FEATURES: TalkFeatures = { threads: false, scheduled: false, archive: false, important: false, sensitive: false, noteToSelf: false }
+
+/** «1 ответ», «3 ответа», «5 ответов». */
+export function repliesLabel(n: number): string {
+  const word = n % 10 === 1 && n % 100 !== 11 ? 'ответ' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'ответа' : 'ответов'
+  return `${n} ${word}`
+}
