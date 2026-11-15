@@ -3433,6 +3433,8 @@ try:
         M = imap(); M.select(f'"{drafts_id}"'); _, ids = M.search(None, 'UNDELETED'); out = []
         for i in ids[0].split():
             _, data = M.fetch(i, '(BODY.PEEK[])')
+            # письмо могли удалить между поиском и чтением (программа заменяет версию черновика)
+            if not data or not isinstance(data[0], tuple): continue
             m = email.message_from_bytes(data[0][1])
             if str(make_header(decode_header(m['Subject'] or ''))) == subj:
                 part = next((p for p in m.walk() if p.get_content_type() == 'text/plain'), None)
