@@ -1456,7 +1456,7 @@ try:
 
     # Порядок в списке бесед: архив, «важная», «конфиденциальная», звонки, «Заметки для себя».
     def room_row(name):
-        return [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if name in r.get_attribute('textContent')]
+        return [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if r.find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent') == name]
     ctx(room_row('Иванов Иван')[0]); ctx_pick('В архив')
     W(d, 10).until(lambda d: room_of('dm-ivanov')['isArchived'] and not room_row('Иванов Иван'))
     toggle = wait(d, '.talk-archive-toggle')
@@ -1604,7 +1604,8 @@ try:
     ok('chat: conversation right-click menu (mute/unmute notifications)')
 
     # Встреча из беседы (Talk 21): календарь Nextcloud, длительность, кого пригласить.
-    room_row2 = lambda name: [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if name in r.get_attribute('textContent')]
+    # по названию беседы, а не по всему тексту строки (в превью бывает имя автора последнего сообщения)
+    room_row2 = lambda name: [r for r in d.find_elements(By.CSS_SELECTOR, '.talk-rooms .room-row') if r.find_element(By.CSS_SELECTOR, '.sender-name').get_attribute('textContent') == name]
     ctx(row()); ctx_pick('Запланировать встречу…')
     md = wait(d, '[role="dialog"][aria-label="Запланировать встречу"]')
     W(d, 10).until(lambda d: [o.text for o in md.find_elements(By.CSS_SELECTOR, 'select[aria-label="Календарь"] option')] == ['Личный', 'Рабочий'])
