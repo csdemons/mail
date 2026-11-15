@@ -131,8 +131,10 @@ export function useChatNotifications(
     let timer: ReturnType<typeof setTimeout> | undefined
     let etag = ''
     let available = true
-    // Приложения уведомлений нет — раз в 10 минут проверить, не появилось ли.
+    // Приложения уведомлений нет — проверить снова через минуту, затем реже (до 10 минут):
+    // его могли временно выключить при обновлении сервера.
     let retryAt = 0
+    let retryMs = 60_000
     async function tick() {
       const front = appInFront()
       let plan = pollPlan(front, moduleRef.current === 'chat', available)
@@ -142,7 +144,7 @@ export function useChatNotifications(
         if (available) {
           const n = await api.ncNotifications(etag)
           available = n.available
-          if (!available) retryAt = Date.now() + 600_000
+          if (!available) { retryAt = Date.now() + retryMs; retryMs = Math.min(retryMs * 2, 600_000) } else retryMs = 60_000
           if (n.changed) {
             changed = true
             etag = n.etag

@@ -1541,9 +1541,12 @@ try:
     st2 = nc_mock('GET', '/test/state')
     W(d, 40).until(lambda d: nc_mock('GET', '/test/state')['room_requests'] >= st2['room_requests'] + 2)
     nc_mock('POST', '/test/set?no_notifications=0')
+    # приложение уведомлений вернулось — через минуту программа снова им пользуется
+    st3 = nc_mock('GET', '/test/state')
+    W(d, 90).until(lambda d: nc_mock('GET', '/test/state')['notif_requests'] > st3['notif_requests'])
     d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
     W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'УИТ — общий')
-    ok(f'Talk load: in 40 s only {notif_n} notification checks (304) and {rooms_n} conversation list reads; a new message re-reads at once; no notifications app — timer fallback')
+    ok(f'Talk load: in 40 s only {notif_n} notification checks (304) and {rooms_n} conversation list reads; a new message re-reads at once; no notifications app — timer fallback, back within a minute')
 
     # Участники и модерация (как в Talk).
     def members_of(tok='abc123'):
