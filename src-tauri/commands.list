@@ -117,6 +117,8 @@ talk_ban
 talk_unban
 talk_lobby
 talk_breakout
+nc_notifications
+nc_notification_dismiss
 open_link               msg
 nc_files_list           msg
 nc_files_mkdir

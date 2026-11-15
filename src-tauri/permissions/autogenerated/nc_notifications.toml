@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nc-notifications"
+description = "Enables the nc_notifications command without any pre-configured scope."
+commands.allow = ["nc_notifications"]
+
+[[permission]]
+identifier = "deny-nc-notifications"
+description = "Denies the nc_notifications command without any pre-configured scope."
+commands.deny = ["nc_notifications"]

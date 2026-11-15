@@ -250,6 +250,8 @@ export const api = {
   talkBan: (token: string, actorType: string, actorId: string, note: string) => invoke<void>('talk_ban', { token, actorType, actorId, note }),
   talkUnban: (token: string, banId: number) => invoke<void>('talk_unban', { token, banId }),
   talkLobby: (token: string, on: boolean, timer: number | null = null) => invoke<void>('talk_lobby', { token, on, timer }),
+  ncNotifications: (etag: string) => invoke<{ available: boolean; changed: boolean; etag: string; talk: { id: number; kind: string; token: string }[] }>('nc_notifications', { etag }),
+  ncNotificationDismiss: (id: number) => invoke<void>('nc_notification_dismiss', { id }),
   talkBreakout: (token: string, action: string, value: Record<string, unknown> = {}) => invoke<void>('talk_breakout', { token, action, value }),
   talkPollCreate: (token: string, question: string, options: string[], maxVotes: number, hidden: boolean) =>
     invoke<TalkPoll>('talk_poll_create', { token, question, options, maxVotes, hidden }),

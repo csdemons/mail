@@ -7,6 +7,7 @@ import { senderLabel } from './mailLabels'
 import { appInFront, notify, type NotifyPrefs } from './notifications'
 import type { ModuleName } from './viewContext'
 import type { TalkRoom } from './types'
+import { currentRooms, refreshRooms, resetRooms, roomsAge, subscribeRooms } from './talkRoomsStore'
 import { zoomStep } from './appearance'
 
 /** Напоминания по флажкам со сроком: проверка раз в 2 минуты (и при запуске). */
@@ -62,61 +63,121 @@ export function chatNotifies(r: TalkRoom): boolean {
   return true
 }
 
+/** Как часто проверять (с): уведомления Nextcloud — дёшево (ответ 304, если ничего не изменилось),
+ *  список бесед — дороже, поэтому редко: только когда изменились уведомления, а для подстраховки
+ *  (новые сообщения без уведомления, например в беседах «при упоминании») — по таймеру. */
+export function pollPlan(front: boolean, chatOpen: boolean, notificationsAvailable: boolean) {
+  if (!notificationsAvailable) return { notifications: 0, rooms: front ? 15 : 60 }
+  return { notifications: front ? 10 : 20, rooms: chatOpen && front ? 30 : front ? 60 : 300 }
+}
+
 /** Чат: счётчик непрочитанного, уведомления о новых сообщениях и входящие звонки (в любом разделе). */
 export function useChatNotifications(
   connected: boolean,
   moduleRef: MutableRefObject<ModuleName>,
   prefsRef: MutableRefObject<NotifyPrefs>,
-  pollSecs: MutableRefObject<number>,
   setChatUnread: (n: number) => void,
   setNotice: (text: string) => void,
 ) {
   const roomSeen = useRef(new Map<string, { unread: number; activity: number }>())
   // Звонки, о которых уже сообщили (беседа:начало) — второй раз не звоним.
   const callsSeen = useRef(new Set<string>())
+  // Уведомления Talk о звонках: по беседе — номер уведомления (отклонённый звонок убираем и с сервера).
+  const callNotes = useRef(new Map<string, number>())
   const [ringing, setRinging] = useState<Ringing | null>(null)
   const ringRef = useRef<Ringing | null>(null)
   ringRef.current = ringing
+
+  // Каждый новый список бесед (из фоновой проверки или из раздела «Чат») — счётчик, уведомления, звонки.
+  useEffect(() => {
+    if (!connected) return
+    resetRooms()
+    roomSeen.current.clear()
+    callsSeen.current.clear()
+    let first = true
+    const unsubscribe = subscribeRooms(() => {
+      const rooms = currentRooms()
+      if (!rooms) return
+      if (moduleRef.current !== 'chat') setChatUnread(rooms.reduce((n, x) => n + x.unread, 0))
+      for (const r of rooms) {
+        const prev = roomSeen.current.get(r.token)
+        roomSeen.current.set(r.token, { unread: r.unread, activity: r.lastActivity })
+        if (first || !prev || r.unread <= prev.unread) continue
+        if (!prefsRef.current.chat || !chatNotifies(r)) continue
+        // «Конфиденциальная» беседа: текст сообщения в уведомлении не показывается.
+        const text = prefsRef.current.preview && !r.sensitive ? (r.lastMessage ?? 'Новое сообщение') : 'Новое сообщение'
+        if (!appInFront()) notify(`Чат: ${r.name}`, text)
+        else if (moduleRef.current !== 'chat') setNotice(`Чат «${r.name}»: ${text}`)
+      }
+      // Входящий звонок: показать (и сообщить системе); закончился или ответили — убрать.
+      const cur = ringRef.current
+      if (cur && (Date.now() / 1000 - cur.since > RING_SECS || !rooms.some((r) => r.token === cur.token && r.hasCall && !r.inCall))) setRinging(null)
+      const fresh = newCalls(rooms, callsSeen.current, first)
+      rooms.filter((r) => r.hasCall).forEach((r) => callsSeen.current.add(`${r.token}:${r.callStart}`))
+      const call = fresh.sort((a, b) => b.callStart - a.callStart)[0]
+      if (call) {
+        setRinging({ token: call.token, name: call.name, since: Date.now() / 1000 })
+        if (prefsRef.current.chat && !appInFront()) notify(`Звонок: ${call.name}`, 'Входящий звонок в Talk — откройте программу, чтобы ответить')
+      }
+      first = false
+    })
+    return () => { unsubscribe(); resetRooms() }
+  }, [connected])
+
+  // Проверка: уведомления часто, беседы — когда уведомления изменились или подошёл срок.
   useEffect(() => {
     if (!connected) return
     let stopped = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    let etag = ''
+    let available = true
+    // Приложения уведомлений нет — раз в 10 минут проверить, не появилось ли.
+    let retryAt = 0
     async function tick() {
+      const front = appInFront()
+      let plan = pollPlan(front, moduleRef.current === 'chat', available)
       try {
-        const rooms = await api.talkRooms()
+        let changed = false
+        if (!available && Date.now() > retryAt) available = true
+        if (available) {
+          const n = await api.ncNotifications(etag)
+          available = n.available
+          if (!available) retryAt = Date.now() + 600_000
+          if (n.changed) {
+            changed = true
+            etag = n.etag
+            callNotes.current = new Map(n.talk.filter((x) => x.kind === 'call').map((x) => [x.token, x.id]))
+          }
+          plan = pollPlan(front, moduleRef.current === 'chat', available)
+        }
         if (stopped) return
-        if (moduleRef.current !== 'chat') setChatUnread(rooms.reduce((n, x) => n + x.unread, 0))
-        const first = roomSeen.current.size === 0
-        for (const r of rooms) {
-          const prev = roomSeen.current.get(r.token)
-          roomSeen.current.set(r.token, { unread: r.unread, activity: r.lastActivity })
-          if (first || !prev || r.unread <= prev.unread) continue
-          if (!prefsRef.current.chat || !chatNotifies(r)) continue
-          // «Конфиденциальная» беседа: текст сообщения в уведомлении не показывается.
-          const text = prefsRef.current.preview && !r.sensitive ? (r.lastMessage ?? 'Новое сообщение') : 'Новое сообщение'
-          if (!appInFront()) notify(`Чат: ${r.name}`, text)
-          else if (moduleRef.current !== 'chat') setNotice(`Чат «${r.name}»: ${text}`)
-        }
-        // Входящий звонок: показать (и сообщить системе); закончился или ответили — убрать.
-        const cur = ringRef.current
-        if (cur && (Date.now() / 1000 - cur.since > RING_SECS || !rooms.some((r) => r.token === cur.token && r.hasCall && !r.inCall))) setRinging(null)
-        const fresh = newCalls(rooms, callsSeen.current, first)
-        rooms.filter((r) => r.hasCall).forEach((r) => callsSeen.current.add(`${r.token}:${r.callStart}`))
-        const call = fresh.sort((a, b) => b.callStart - a.callStart)[0]
-        if (call) {
-          setRinging({ token: call.token, name: call.name, since: Date.now() / 1000 })
-          if (prefsRef.current.chat && !appInFront()) notify(`Звонок: ${call.name}`, 'Входящий звонок в Talk — откройте программу, чтобы ответить')
-        }
+        if (changed || roomsAge() >= plan.rooms * 1000) await refreshRooms(2000)
       } catch { /* сеть — попробуем в следующий раз */ }
       finally {
-        // Чаще, чем почту: о звонке нужно узнать сразу.
-        if (!stopped) timer = setTimeout(tick, Math.min(pollSecs.current, 10) * 1000)
+        if (!stopped) timer = setTimeout(tick, (plan.notifications || plan.rooms) * 1000)
       }
     }
     void tick()
-    return () => { stopped = true; if (timer) clearTimeout(timer) }
+    // Вернулись в программу — сразу проверить, не дожидаясь редкого «фонового» срока.
+    const wake = () => { if (appInFront()) { if (timer) clearTimeout(timer); void tick() } }
+    window.addEventListener('focus', wake)
+    document.addEventListener('visibilitychange', wake)
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+      window.removeEventListener('focus', wake)
+      document.removeEventListener('visibilitychange', wake)
+    }
   }, [connected])
-  return { ringing, dismissCall: () => setRinging(null) }
+
+  /** Звонок отвечен или отклонён: карточку убрать, уведомление о нём — и на сервере (на других устройствах тоже). */
+  function dismissCall() {
+    const cur = ringRef.current
+    setRinging(null)
+    const id = cur && callNotes.current.get(cur.token)
+    if (id) void api.ncNotificationDismiss(id).catch(() => undefined)
+  }
+  return { ringing, dismissCall }
 }
 
 /** Масштаб интерфейса: Ctrl + / Ctrl − / Ctrl 0 (и Ctrl+колесо мыши) — в любом разделе. */

@@ -1509,6 +1509,8 @@ try:
     assert room_row('Иванов Иван')[0].find_elements(By.CSS_SELECTOR, '.room-call')
     d.find_element(By.CSS_SELECTOR, '.incoming-call-decline').click()
     W(d, 5).until(lambda d: not d.find_elements(By.CSS_SELECTOR, '.incoming-call'))
+    # отклонённый звонок убирается и из уведомлений Nextcloud (перестаёт звонить на других устройствах)
+    W(d, 10).until(lambda d: any(1000 <= x < 2000 for x in nc_mock('GET', '/test/state')['dismissed']))
     time.sleep(12)
     assert not d.find_elements(By.CSS_SELECTOR, '.incoming-call'), 'a declined call must not ring again'
     nc_mock('POST', '/test/set?call_end=dm-ivanov')
@@ -1521,6 +1523,27 @@ try:
     room_row('УИТ — общий')[0].click()
     W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'УИТ — общий')
     ok('incoming Talk call: card in any section, answer opens the call, decline silences it; no ring when already in the call')
+
+    # Нагрузка на Nextcloud: часто — только уведомления (ответ 304), список бесед — когда они изменились.
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Почта']]").click()
+    time.sleep(3)
+    st0 = nc_mock('GET', '/test/state')
+    time.sleep(40)
+    st1 = nc_mock('GET', '/test/state')
+    notif_n, rooms_n = st1['notif_requests'] - st0['notif_requests'], st1['room_requests'] - st0['room_requests']
+    assert notif_n >= 2 and rooms_n <= 1, (notif_n, rooms_n)
+    # новое сообщение — уведомление изменилось — беседы перечитаны сразу, счётчик чата растёт
+    nc_mock('POST', '/test/inject?token=abc123&text=' + urllib.parse.quote('Проверка нагрузки'))
+    W(d, 30).until(lambda d: nc_mock('GET', '/test/state')['room_requests'] > st1['room_requests'])
+    W(d, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, '.module-rail .rail-badge'))
+    # сервер без приложения уведомлений — беседы проверяются по-старому, по таймеру
+    nc_mock('POST', '/test/set?no_notifications=1')
+    st2 = nc_mock('GET', '/test/state')
+    W(d, 40).until(lambda d: nc_mock('GET', '/test/state')['room_requests'] >= st2['room_requests'] + 2)
+    nc_mock('POST', '/test/set?no_notifications=0')
+    d.find_element(By.XPATH, "//nav[@class='module-rail']//button[.//span[text()='Чат']]").click()
+    W(d, 15).until(lambda d: d.find_element(By.CSS_SELECTOR, '.talk-view .calendar-title').text == 'УИТ — общий')
+    ok(f'Talk load: in 40 s only {notif_n} notification checks (304) and {rooms_n} conversation list reads; a new message re-reads at once; no notifications app — timer fallback')
 
     # Участники и модерация (как в Talk).
     def members_of(tok='abc123'):

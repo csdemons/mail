@@ -208,7 +208,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   moduleRef.current = module
   useEffect(() => { api.notifyPollSecs().then((s) => { pollSecs.current = Math.max(5, s) }).catch(() => undefined) }, [])
   useDueReminders(setNotice, pollSecs)
-  const { ringing, dismissCall } = useChatNotifications(Boolean(ncStatus?.connected), moduleRef, prefsRef, pollSecs, setChatUnread, setNotice)
+  const { ringing, dismissCall } = useChatNotifications(Boolean(ncStatus?.connected), moduleRef, prefsRef, setChatUnread, setNotice)
   useZoomShortcuts()
   const switchAccount = (key: string, open?: MessageSummary) => { setNotice('Переключение учётной записи…'); void onSwitch(key, open).then((err) => { if (err) setNotice(err) }) }
   const [unified, setUnified] = useState<UnifiedRole | null>(saved?.unified ?? null)

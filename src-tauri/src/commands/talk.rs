@@ -347,3 +347,16 @@ pub async fn talk_breakout(state: State<'_, AppState>, token: String, action: St
     let ctx = state.ctx().await?;
     nc(&ctx).await?.talk_breakout(&token, &action, &value).await
 }
+
+/// Уведомления Nextcloud с проверкой «изменилось ли» (ETag): часто и дёшево вместо списка бесед.
+#[tauri::command]
+pub async fn nc_notifications(state: State<'_, AppState>, etag: Option<String>) -> Result<nextcloud::NcNotifications> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.nc_notifications(etag.as_deref().unwrap_or("")).await
+}
+
+#[tauri::command]
+pub async fn nc_notification_dismiss(state: State<'_, AppState>, id: i64) -> Result<()> {
+    let ctx = state.ctx().await?;
+    nc(&ctx).await?.nc_notification_dismiss(id).await
+}

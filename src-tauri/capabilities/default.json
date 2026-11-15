@@ -118,6 +118,8 @@
     "allow-talk-unban",
     "allow-talk-lobby",
     "allow-talk-breakout",
+    "allow-nc-notifications",
+    "allow-nc-notification-dismiss",
     "allow-open-link",
     "allow-nc-files-list",
     "allow-nc-files-mkdir",

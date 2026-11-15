@@ -7,7 +7,7 @@ python3 tests/servers/nextcloud_mock.py <cert> <key> [port=8443]
                                              &read=1 — коллега сначала прочитал всё (для «✓✓»)
   GET  /test/state                         — состояние для проверок
 """
-import json, ssl, sys, threading, time, base64, itertools
+import json, ssl, sys, threading, time, base64, itertools, hashlib
 import re as _re_mod, urllib.parse
 _re_fb = _re_mod.compile(r"ATTENDEE[^:]*:mailto:([^\r\n]+)")
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -294,7 +294,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- обновления (без авторизации, как GitHub Releases)
         if method == 'GET' and p in ('/updates/latest.json', '/updates/latest.json.sig'):
-            import hashlib, subprocess, os, base64 as b64
+            import subprocess, os, base64 as b64
             body = json.dumps({'version': '9.9.9', 'notes': '- Проверка обновлений\n- Ещё пункт', 'assets': {
                 'test': {'name': 'rrcki-mail_9.9.9_amd64.deb', 'url': f'{base}/updates/rrcki-mail_9.9.9_amd64.deb',
                          'sha256': hashlib.sha256(UPDATE_BLOB).hexdigest(), 'size': len(UPDATE_BLOB)}}}, ensure_ascii=False).encode()
@@ -314,12 +314,13 @@ class H(BaseHTTPRequestHandler):
 
         # --- тестовые ручки
         if p == '/test/state':
-            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares', 'boards')} | {k: state.get(k, d) for k, d in (('pins', []), ('unpins', []), ('reminders', {}), ('freebusy', []), ('pin_hidden', {}), ('scheduled', {}), ('threads', {}), ('meetings', []), ('bans', {}), ('broadcasts', []), ('tasks', {}))} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
+            return self.send(200, {k: state[k] for k in ('polls', 'revoked', 'cards', 'stacks', 'comments', 'shares', 'boards')} | {k: state.get(k, d) for k, d in (('pins', []), ('unpins', []), ('reminders', {}), ('freebusy', []), ('pin_hidden', {}), ('scheduled', {}), ('threads', {}), ('meetings', []), ('bans', {}), ('broadcasts', []), ('tasks', {}), ('dismissed', []), ('notif_requests', 0), ('room_requests', 0))} | {'dirs': sorted(state['dirs']), 'remote_png': state.get('remote_png', 0), 'previews': state.get('previews', 0), 'attachments': state['attachments'], 'unsubscribed': state.get('unsubscribed', [])} | {'messages': state['messages'], 'rooms': [room_view(r) for r in state['rooms']], 'members': {r['token']: members(r) for r in state['rooms']}, 'talk_polls': {str(k): poll_view(v) | {'allVotes': v['votes']} for k, v in state['talk_polls'].items()},
                              'files': {k: v['data'].decode(errors='replace') for k, v in state['files'].items()}})
         if method == 'POST' and p == '/test/set':
             for k in ('slow_send',):
                 if k in q: state[k] = q[k]
             if 'old_talk' in q: state['old_talk'] = q['old_talk'] == '1'
+            if 'no_notifications' in q: state['no_notifications'] = q['no_notifications'] == '1'
             # Звонок в беседе: call=<token> начинает (call_ago — сколько секунд назад), call_end=<token> завершает.
             for r in state['rooms']:
                 if q.get('call') == r['token']: r['call_start'] = int(time.time()) - int(q.get('call_ago', 0)); r['in_call'] = q.get('in_call') == '1'
@@ -562,6 +563,27 @@ class H(BaseHTTPRequestHandler):
             self.send_response(207); self.send_header('Content-Type', 'application/xml; charset=utf-8')
             self.send_header('Content-Length', str(len(out))); self.end_headers(); self.wfile.write(out)
             return
+        # --- Уведомления Nextcloud (ETag, 304): звонки и непрочитанное в беседах
+        if p == '/ocs/v2.php/apps/notifications/api/v2/notifications':
+            if method == 'GET':
+                state['notif_requests'] = state.get('notif_requests', 0) + 1
+                if state.get('no_notifications'): return self.send(404, {})
+                notes = []
+                for r in state['rooms']:
+                    if r.get('call_start') and not r.get('in_call') and r.get('notify_calls', 1):
+                        notes.append({'notification_id': 1000 + len(notes), 'app': 'spreed', 'object_type': 'call', 'object_id': r['token'], 'subject': 'call', 'datetime': r['call_start']})
+                    unread = [m for m in state['messages'].get(r['token'], []) if m['id'] > state['read'].get(r['token'], 0) and m['actorId'] != UID and m['messageType'] != 'system']
+                    if unread:
+                        notes.append({'notification_id': 2000 + unread[-1]['id'], 'app': 'spreed', 'object_type': 'chat', 'object_id': f"{r['token']}/{unread[-1]['id']}", 'subject': 'chat'})
+                body = json.dumps({'ocs': {'meta': {'status': 'ok', 'statuscode': 200}, 'data': notes}}, ensure_ascii=False).encode()
+                tag = '"' + hashlib.md5(body).hexdigest() + '"'
+                if self.headers.get('If-None-Match') == tag:
+                    self.send_response(304); self.send_header('ETag', tag); self.send_header('Content-Length', '0'); self.end_headers(); return
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('ETag', tag); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+                return
+        mnd = _re_mod.match(r'^/ocs/v2\.php/apps/notifications/api/v2/notifications/(\d+)$', p)
+        if mnd and method == 'DELETE':
+            state.setdefault('dismissed', []).append(int(mnd.group(1))); return self.ocs(None)
         # --- Календари Nextcloud (для «Запланировать встречу»)
         if method == 'PROPFIND' and p == f'/remote.php/dav/calendars/{UID}/':
             cal = lambda uri, name, comp, write: (f'<d:response><d:href>/remote.php/dav/calendars/{UID}/{uri}/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
@@ -721,6 +743,7 @@ class H(BaseHTTPRequestHandler):
 
         # --- Talk
         if method == 'GET' and p == '/ocs/v2.php/apps/spreed/api/v4/room':
+            state['room_requests'] = state.get('room_requests', 0) + 1
             return self.ocs([room_view(r) for r in state['rooms']])
         if method == 'POST' and p == '/ocs/v2.php/apps/spreed/api/v4/room':
             b = self.body()

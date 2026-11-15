@@ -14,6 +14,7 @@ import { PinDialog, ProfileDialog, ReminderDialog, type PersonActions } from './
 
 import { CardFromMessage, NewChat } from './TalkDialogs'
 import { useTalkAttachments } from './useTalkAttachments'
+import { patchRooms, refreshRooms, useTalkRooms } from './talkRoomsStore'
 import { messageMenu as messageMenuFor, roomMenu as roomMenuFor } from './talkMenus'
 import { cached, contents, merge, NO_TALK_FEATURES, sortRooms, TalkThumb, viewable } from './talkUtils'
 import TalkThreadPanel from './TalkThreadPanel'
@@ -37,7 +38,9 @@ onSessionReset(() => { drafts.clear(); lastRoom = null })
 let talkFocusSeen = 0
 
 export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnread: (n: number) => void; onNotice?: (t: string) => void; focus?: { token: string; messageId: number | null; n: number } | null; onWrite?: (address: string) => void }) {
-  const [rooms, setRooms] = useState<TalkRoom[] | null>(null)
+  // Беседы — общий список программы (его же читает фоновая проверка): без своего опроса сервера.
+  const rooms = useTalkRooms()
+  const setRooms = patchRooms
   /** Беседа, история которой уже загружена (для перехода к сообщению из поиска). */
   const historyFor = useRef<string | null>(null)
   const [token, setToken] = useState<string | null>(() => lastRoom)
@@ -182,19 +185,17 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
 
   const loadRooms = useCallback(async () => {
     try {
-      const list = await api.talkRooms()
-      setRooms(list)
+      const list = await refreshRooms()
       setToken((t) => t ?? list[0]?.token ?? null)
     } catch (e) {
       setError(errorText(e))
     }
   }, [])
 
+  // Открыли раздел — список свежее 5 секунд не перечитывается; дальше его обновляет фоновая проверка.
   useEffect(() => {
-    void loadRooms()
-    const t = setInterval(() => void loadRooms(), 30000)
-    return () => clearInterval(t)
-  }, [loadRooms])
+    refreshRooms(5000).then((list) => setToken((t) => t ?? list[0]?.token ?? null)).catch((e) => setError(errorText(e)))
+  }, [])
 
   useEffect(() => {
     if (!token) return

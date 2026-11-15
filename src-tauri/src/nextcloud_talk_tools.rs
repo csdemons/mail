@@ -89,6 +89,37 @@ pub struct TalkBan {
     pub note: String,
 }
 
+/// Уведомления Nextcloud: что изменилось с прошлого раза (по ETag) и есть ли уведомления Talk.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NcNotifications {
+    /// Приложение уведомлений есть на сервере (иначе — проверять беседы по-старому).
+    pub available: bool,
+    /// Список изменился с `etag` (тогда стоит перечитать беседы).
+    pub changed: bool,
+    pub etag: String,
+    /// Уведомления Talk сейчас: (номер, вид — call/chat/…, беседа).
+    pub talk: Vec<NcTalkNotification>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NcTalkNotification {
+    pub id: i64,
+    pub kind: String,
+    pub token: String,
+}
+
+/// Уведомления Talk из ответа `notifications/api/v2/notifications`.
+fn parse_talk_notifications(d: &Value) -> Vec<NcTalkNotification> {
+    d.as_array()
+        .map(|a| a.iter()
+            .filter(|n| n["app"].as_str() == Some("spreed"))
+            .map(|n| NcTalkNotification { id: int(&n["notification_id"]), kind: text(&n["object_type"]), token: text(&n["object_id"]).split('/').next().unwrap_or("").to_string() })
+            .collect())
+        .unwrap_or_default()
+}
+
 /// Календари из ответа PROPFIND `calendars/<uid>/`: только те, куда можно записать события.
 pub fn parse_calendars(xml: &str) -> Vec<NcCalendar> {
     let Ok(doc) = roxmltree::Document::parse(xml) else { return Vec::new() };
@@ -130,6 +161,39 @@ fn parse_absence(d: &Value) -> Option<NcAbsence> {
 }
 
 impl Nc {
+    /// Уведомления с проверкой «изменилось ли»: с прежним `etag` сервер отвечает 304 без тела —
+    /// это намного дешевле, чем список бесед, поэтому так можно спрашивать часто.
+    pub async fn nc_notifications(&self, etag: &str) -> Result<NcNotifications> {
+        let url = self.creds.base.join("ocs/v2.php/apps/notifications/api/v2/notifications").map_err(|e| AppError::Other(e.to_string()))?;
+        let mut req = self.client.get(url).basic_auth(&self.creds.login, Some(&self.creds.app_password))
+            .header("OCS-APIRequest", "true").header("Accept", "application/json").query(&[("format", "json")]);
+        if !etag.is_empty() {
+            req = req.header("If-None-Match", etag);
+        }
+        let resp = req.send().await.map_err(super::net_error)?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(NcNotifications { available: true, changed: false, etag: etag.to_string(), talk: Vec::new() });
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(NcNotifications { available: false, changed: true, etag: String::new(), talk: Vec::new() });
+        }
+        if !status.is_success() {
+            return Err(super::status_error(status, "Уведомления Nextcloud"));
+        }
+        let new_etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let body = crate::netio::text_limited(resp, crate::netio::API_LIMIT).await?;
+        let v: Value = serde_json::from_str(&body).map_err(|_| AppError::Other("Уведомления Nextcloud: не JSON".into()))?;
+        let talk = parse_talk_notifications(v.pointer("/ocs/data").unwrap_or(&Value::Null));
+        Ok(NcNotifications { available: true, changed: new_etag.is_empty() || new_etag != etag, etag: new_etag, talk })
+    }
+
+    /// Убрать уведомление (отклонённый звонок перестаёт звонить и на других устройствах).
+    pub async fn nc_notification_dismiss(&self, id: i64) -> Result<()> {
+        self.ocs(Method::DELETE, &format!("ocs/v2.php/apps/notifications/api/v2/notifications/{id}"), &[], None, "Уведомление").await?;
+        Ok(())
+    }
+
     /// Календари пользователя в Nextcloud, куда можно записать встречу.
     pub async fn nc_calendars(&self) -> Result<Vec<NcCalendar>> {
         let url = self.creds.base.join(&format!("remote.php/dav/calendars/{}/", seg(&self.me))).map_err(|e| AppError::Other(e.to_string()))?;
@@ -324,6 +388,19 @@ mod tests {
 <d:response><d:href>/remote.php/dav/calendars/test/shared_ro/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>Чужой</d:displayname><d:current-user-privilege-set><d:privilege><d:read/></d:privilege></d:current-user-privilege-set></d:prop></d:propstat></d:response>
 </d:multistatus>"#;
         assert_eq!(parse_calendars(xml), vec![NcCalendar { uri: "personal".into(), name: "Личный".into(), color: "#0082c9".into() }]);
+    }
+
+    #[test]
+    fn talk_notifications_only() {
+        let d = json!([
+            { "notification_id": 5, "app": "spreed", "object_type": "call", "object_id": "abc123" },
+            { "notification_id": 6, "app": "spreed", "object_type": "chat", "object_id": "abc123/77" },
+            { "notification_id": 7, "app": "files_sharing", "object_type": "remote_share", "object_id": "9" }
+        ]);
+        let n = parse_talk_notifications(&d);
+        assert_eq!(n.len(), 2);
+        assert_eq!((n[0].id, n[0].kind.as_str(), n[0].token.as_str()), (5, "call", "abc123"));
+        assert_eq!(n[1].token, "abc123", "chat notifications name token/message");
     }
 
     #[test]
