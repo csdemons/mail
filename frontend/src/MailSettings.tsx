@@ -162,7 +162,7 @@ export function MailboxesSettings({ onChanged, onNotice }: { onChanged: () => vo
       <span className="settings-hint">Общие и делегированные ящики Exchange показываются в списке папок в разделе «Подключённые ящики». Ящики с полным доступом подключаются сами, как в Outlook, — если администратор включил для них автоподключение. Если доступ выдан без автоподключения, найдите ящик по имени или адресу ниже.</span>
       {set.discovered.length > 0 && (
         <ul className="mailbox-list" aria-label="Подключены автоматически">
-          {set.discovered.map((m) => <li key={m.address}><span>{m.name !== m.address ? <>{m.name} <small>{m.address}</small></> : m.address}</span><small>автоматически</small></li>)}
+          {set.discovered.map((m) => <li key={m.address}><span>{m.name !== m.address ? <>{m.name} <small>{m.address}</small></> : m.address}</span><small>{set.unavailable.some((u) => u.address === m.address) ? 'нет доступа' : 'автоматически'}</small></li>)}
         </ul>
       )}
       <div className="mailbox-discovery">

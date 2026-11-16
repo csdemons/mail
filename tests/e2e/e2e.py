@@ -1865,7 +1865,9 @@ try:
         _, ids = M.search(None, 'ALL'); out = []
         for i in ids[0].split():
             _, data = M.fetch(i, '(BODY.PEEK[HEADER.FIELDS (SUBJECT)])')
-            out.append(str(make_header(decode_header(email.message_from_bytes(data[0][1])['Subject'] or ''))))
+            # Письмо могли удалить между поиском и чтением — тогда в ответе нет заголовков.
+            for part in [x for x in data if isinstance(x, tuple)][:1]:
+                out.append(str(make_header(decode_header(email.message_from_bytes(part[1])['Subject'] or ''))))
         M.logout(); return out
     M = imap()
     for subj in ('E2E перенос A', 'E2E перенос B', 'E2E удалить C', 'E2E тащить D'):
@@ -4018,7 +4020,7 @@ try:
     W(d, 20).until(lambda d: [b for b in ms.find_elements(By.TAG_NAME, 'button') if 'Проверить снова' in b.text][0].is_enabled())
     assert 'полным доступом: 3' in ms.find_element(By.CSS_SELECTOR, '[aria-label="Автопоиск ящиков"]').get_attribute('textContent')
     ok('Exchange mailboxes: Autodiscover asked on the EWS server, LegacyDN-only mailbox resolved via the address book, result and no-access mailbox shown in settings, re-check works')
-    add_box = lambda a: (set_value(d, ms.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес подключаемого ящика"]'), a), [b for b in ms.find_elements(By.TAG_NAME, 'button') if 'Подключить' in b.text][0].click())
+    add_box = lambda a: (set_value(d, ms.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес подключаемого ящика"]'), a), W(d, 10).until(lambda d: [b for b in ms.find_elements(By.CSS_SELECTOR, '.mailbox-add button') if b.is_enabled() and b.is_displayed()])[0]), d.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click()", ms.find_element(By.CSS_SELECTOR, '.mailbox-add button')))
     add_box('nobody@exch.test')
     W(d, 20).until(lambda d: 'Ящика nobody@exch.test нет' in ms.find_element(By.CSS_SELECTOR, '.login-error').text)
     add_box('boss@exch.test')
@@ -4026,7 +4028,7 @@ try:
     # По имени из адресной книги — адрес знать не нужно.
     set_value(d, ms.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес подключаемого ящика"]'), 'Отдел кад')
     hit = W(d, 20).until(lambda d: [li for li in ms.find_elements(By.CSS_SELECTOR, 'ul[aria-label="Найдено в адресной книге"] li') if 'kadry@exch.test' in li.get_attribute('textContent')])[0]
-    hit.find_element(By.TAG_NAME, 'button').click()
+    d.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click()", hit.find_element(By.TAG_NAME, 'button'))
     W(d, 20).until(lambda d: 'kadry@exch.test' in ms.find_element(By.CSS_SELECTOR, 'ul[aria-label="Подключены вручную"]').get_attribute('textContent'))
     acc_file = lambda: [a for a in json.load(open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/accounts.json')) if a.get('ewsUrl')][0]
     W(d, 5).until(lambda d: acc_file().get('mailboxes') == ['kadry@exch.test'])
