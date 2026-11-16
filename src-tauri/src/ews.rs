@@ -27,6 +27,10 @@ use url::Url;
 use crate::error::{AppError, Result};
 use crate::imap::{FlagKind, FlagState, Folder, FolderRole, MessagePage, MessageSummary};
 
+#[path = "ews_mailboxes.rs"]
+mod mailboxes;
+pub use mailboxes::*;
+
 const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 const NS_M: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
 /// Большие ответы (исходники писем в base64).
@@ -697,77 +701,6 @@ fn segment(name: &str) -> String {
 /// Корень подключённых ящиков в дереве папок — как `shared/<ящик>/…` у IMAP.
 const SHARED_ROOT: &str = "shared";
 
-/// Сколько ящиков подключаем самое большее (и найденных Autodiscover, и вручную).
-pub const MAX_MAILBOXES: usize = 30;
-
-/// Повторить Autodiscover, если в прошлый раз сервер не ответил.
-const DISCOVER_RETRY: Duration = Duration::from_secs(30 * 60);
-
-#[derive(Default)]
-struct Mailboxes {
-    /// Свой адрес почты: для Autodiscover и чтобы не подключить свой ящик второй раз.
-    email: String,
-    /// Добавленные пользователем.
-    manual: Vec<String>,
-    /// Найденные Autodiscover (ящики с полным доступом — Outlook подключает их сам):
-    /// (адрес, имя). `None` — ещё не спрашивали.
-    discovered: Option<Vec<(String, String)>>,
-    discovered_at: Option<std::time::Instant>,
-    /// Ответ Autodiscover был (а не ошибка сети) — тогда не повторяем.
-    discovered_ok: bool,
-}
-
-fn mailbox_registry() -> &'static Mutex<HashMap<String, Mailboxes>> {
-    static R: OnceLock<Mutex<HashMap<String, Mailboxes>>> = OnceLock::new();
-    R.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Ящик учётной записи и подключённые вручную ящики (при входе и после изменения в настройках).
-pub fn set_mailboxes(key: &str, email: &str, manual: &[String]) {
-    let mut reg = lock(mailbox_registry());
-    let m = reg.entry(key.to_string()).or_default();
-    if !m.email.eq_ignore_ascii_case(email) {
-        m.discovered = None;
-        m.discovered_at = None;
-        m.discovered_ok = false;
-    }
-    m.email = email.trim().to_lowercase();
-    m.manual = manual.iter().map(|a| a.trim().to_lowercase()).filter(|a| valid_mailbox(a)).collect();
-}
-
-/// Найденные Autodiscover ящики — для настроек.
-pub fn discovered_mailboxes(key: &str) -> Vec<(String, String)> {
-    lock(mailbox_registry()).get(key).and_then(|m| m.discovered.clone()).unwrap_or_default()
-}
-
-/// Адрес ящика: имя@домен, без пробелов и угловых скобок.
-pub fn valid_mailbox(a: &str) -> bool {
-    let a = a.trim();
-    a.len() <= 254
-        && a.split_once('@').is_some_and(|(l, d)| !l.is_empty() && d.contains('.') && !d.starts_with('.') && !d.ends_with('.'))
-        && !a.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | '"' | ',' | ';' | '/' | '\\'))
-}
-
-/// Ящики из ответа Autodiscover (`AlternativeMailbox`): делегированные и общие
-/// (Delegate, TeamMailbox); архив (Archive) — это часть своего ящика, не подключаем.
-fn alternative_mailboxes(text: &str, own: &str) -> Vec<(String, String)> {
-    let Ok(d) = roxmltree::Document::parse(text) else { return Vec::new() };
-    let mut out: Vec<(String, String)> = Vec::new();
-    for n in d.descendants().filter(|n| n.is_element() && n.tag_name().name() == "AlternativeMailbox") {
-        let ty = text_of(n, "Type").unwrap_or_default();
-        if !matches!(ty.as_str(), "Delegate" | "TeamMailbox") {
-            continue;
-        }
-        let Some(smtp) = text_of(n, "SmtpAddress").or_else(|| text_of(n, "OwnerSmtpAddress")).map(|a| a.trim().to_lowercase()) else { continue };
-        if !valid_mailbox(&smtp) || smtp.eq_ignore_ascii_case(own) || out.iter().any(|(a, _)| *a == smtp) {
-            continue;
-        }
-        let name = text_of(n, "DisplayName").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| smtp.clone());
-        out.push((smtp, name));
-    }
-    out.truncate(MAX_MAILBOXES);
-    out
-}
 
 /// Адреса Autodiscover для домена почты (только https в самом домене).
 fn autodiscover_candidates(domain: &str) -> Vec<String> {
@@ -802,27 +735,6 @@ fn probe_session(url: Url, login: &str, password: &str) -> EwsSession {
         root: None,
         map: Arc::new(Mutex::new(AccountMap::default())),
     }
-}
-
-/// Ящики с полным доступом по Autodiscover; `None` — сервер Autodiscover не ответил.
-async fn discover_alternative(email: &str, login: &str, password: &str) -> Option<Vec<(String, String)>> {
-    let domain = email.rsplit_once('@').map(|(_, d)| d.trim().to_lowercase()).filter(|d| d.contains('.'))?;
-    let body = autodiscover_request(email);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
-    for c in autodiscover_candidates(&domain) {
-        let Ok(url) = Url::parse(&c) else { continue };
-        let mut s = probe_session(url, login, password);
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if left.is_zero() {
-            break;
-        }
-        if let Ok(Ok(text)) = tokio::time::timeout(left, s.post_raw(&body, crate::netio::SMALL_LIMIT)).await {
-            if ews_url_of(&text).is_some() || text.contains("AlternativeMailbox") {
-                return Some(alternative_mailboxes(&text, email));
-            }
-        }
-    }
-    None
 }
 
 /// Строка FindFolder: (id, родитель, имя, класс, всего, непрочитанных, вложенных).
@@ -994,39 +906,6 @@ impl EwsSession {
         self.mailbox_roots(Some(address)).await.map(|_| ())
     }
 
-    /// Подключённые ящики: найденные Autodiscover (как у Outlook) и добавленные вручную.
-    async fn mailbox_list(&mut self) -> Vec<(String, String)> {
-        let (email, manual, need) = {
-            let reg = lock(mailbox_registry());
-            match reg.get(&self.key) {
-                Some(m) => (
-                    m.email.clone(),
-                    m.manual.clone(),
-                    m.discovered.is_none() || (!m.discovered_ok && m.discovered_at.is_none_or(|t| t.elapsed() > DISCOVER_RETRY)),
-                ),
-                None => return Vec::new(),
-            }
-        };
-        if need && email.contains('@') {
-            let found = discover_alternative(&email, &self.login, &self.password).await;
-            let mut reg = lock(mailbox_registry());
-            if let Some(m) = reg.get_mut(&self.key) {
-                m.discovered_ok = found.is_some();
-                m.discovered = Some(found.unwrap_or_default());
-                m.discovered_at = Some(std::time::Instant::now());
-            }
-        }
-        let discovered = discovered_mailboxes(&self.key);
-        let mut out: Vec<(String, String)> = Vec::new();
-        for (a, n) in discovered.into_iter().chain(manual.into_iter().map(|a| (a.clone(), a))) {
-            if !a.eq_ignore_ascii_case(&email) && !out.iter().any(|(x, _)| x.eq_ignore_ascii_case(&a)) {
-                out.push((a, n));
-            }
-        }
-        out.truncate(MAX_MAILBOXES);
-        out
-    }
-
     /// Список почтовых папок (дерево, как у IMAP): свой ящик, затем подключённые — `shared/<адрес>/…`.
     pub async fn list_folders(&mut self) -> Result<Vec<Folder>> {
         let (_, roles, _) = self.mailbox_roots(None).await?;
@@ -1054,12 +933,14 @@ impl EwsSession {
 
         let boxes = self.mailbox_list().await;
         let mut shared: Vec<Folder> = Vec::new();
+        let mut unavailable: Vec<(String, String)> = Vec::new();
         for (address, name) in boxes {
             let prefix = format!("{SHARED_ROOT}/{}", segment(&address));
             let (root, roles, known) = match self.mailbox_roots(Some(&address)).await {
                 Ok(r) => r,
                 Err(e) => {
                     log::warn!("mailbox {address}: {e}");
+                    unavailable.push((address, e.to_string()));
                     continue;
                 }
             };
@@ -1073,6 +954,7 @@ impl EwsSession {
                 }
             };
             if raw.is_empty() {
+                unavailable.push((address, "нет доступа ни к одной почтовой папке".into()));
                 continue;
             }
             let (mut folders, ews): (Vec<Folder>, Vec<EwsFolder>) = build_folders(&raw, &roles, &root, Some(&prefix)).into_iter().unzip();
@@ -1084,6 +966,7 @@ impl EwsSession {
             shared.extend(folders);
             cache.extend(ews);
         }
+        set_unavailable(&self.key, unavailable);
         if !shared.is_empty() {
             out.push(node_folder(SHARED_ROOT, "Подключённые ящики", 0));
             out.extend(shared);
@@ -2496,16 +2379,6 @@ fn ews_url_of(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn alternative_mailboxes_from_autodiscover() {
-        let ad = r#"<?xml version="1.0"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"><Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"><Account><Protocol><Type>EXCH</Type><EwsUrl>https://mail.corp.ru/EWS/Exchange.asmx</EwsUrl></Protocol><AlternativeMailbox><Type>Archive</Type><DisplayName>Архив</DisplayName><SmtpAddress>archive@corp.ru</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Канцелярия</DisplayName><LegacyDN>/o=corp/ou=x</LegacyDN><Server>mbx1</Server><SmtpAddress>Office@Corp.ru</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Я</DisplayName><SmtpAddress>me@corp.ru</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>TeamMailbox</Type><OwnerSmtpAddress>team@corp.ru</OwnerSmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Дубль</DisplayName><SmtpAddress>office@corp.ru</SmtpAddress></AlternativeMailbox></Account></Response></Autodiscover>"#;
-        assert_eq!(
-            alternative_mailboxes(ad, "me@corp.ru"),
-            vec![("office@corp.ru".to_string(), "Канцелярия".to_string()), ("team@corp.ru".to_string(), "team@corp.ru".to_string())]
-        );
-        assert!(alternative_mailboxes("not xml", "me@corp.ru").is_empty());
-    }
 
     #[test]
     fn mailbox_addresses_are_checked() {

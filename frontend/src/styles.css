@@ -1611,6 +1611,9 @@ html[data-density="compact"] .message-group { padding: 4px 10px 3px; }
 .mailbox-list li small { color: var(--muted); margin-left: 6px; }
 .mailbox-add { display: flex; gap: 8px; align-items: center; }
 .mailbox-add input { flex: 1; min-width: 0; }
+.mailbox-discovery { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0; }
+.mailbox-discovery .text-button { display: inline-flex; align-items: center; gap: 4px; }
+.mailbox-list.unavailable li { border-style: dashed; color: var(--muted); }
 
 /* «От кого» в окне письма */
 .from-pick { display: inline-flex; align-items: center; gap: 4px; }

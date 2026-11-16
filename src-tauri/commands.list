@@ -32,6 +32,7 @@ nc_free_busy
 clipboard_paste_files
 picked_preview
 mailboxes_save
+mailboxes_rediscover
 signatures_save
 signatures_get          msg
 draft_recovery_get

@@ -33,6 +33,7 @@
     "allow-clipboard-paste-files",
     "allow-picked-preview",
     "allow-mailboxes-save",
+    "allow-mailboxes-rediscover",
     "allow-signatures-save",
     "allow-signatures-get",
     "allow-draft-recovery-get",

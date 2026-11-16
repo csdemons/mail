@@ -779,6 +779,12 @@ export interface NcSearch {
 export interface MailboxSet {
   manual: string[]
   discovered: { address: string; name: string }[]
+  /** Сервер ответил на автопоиск ящиков. */
+  discoveryOk: boolean
+  /** Итог автопоиска понятными словами (пусто — ещё не спрашивали). */
+  discoveryNote: string
+  /** Не открылись: адрес и причина (в name). */
+  unavailable: { address: string; name: string }[]
 }
 
 /** Профиль сотрудника в Nextcloud (поля, которые он открыл) и статус. */

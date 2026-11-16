@@ -313,6 +313,7 @@ export const api = {
   signaturesGet: () => invoke<SignatureSet>('signatures_get'),
   mailboxesGet: () => invoke<MailboxSet>('mailboxes_get'),
   mailboxesSave: (list: string[]) => invoke<void>('mailboxes_save', { list }),
+  mailboxesRediscover: () => invoke<MailboxSet>('mailboxes_rediscover'),
   signaturesSave: (set: SignatureSet) => invoke<string | null>('signatures_save', { set }),
   ncAvatar: (kind: 'user' | 'room', id: string) => invoke<string | null>('nc_avatar', { kind, id }),
   messageHtmlRemote: (folder: string, uid: number) => invoke<string>('message_html_remote', { folder, uid }),

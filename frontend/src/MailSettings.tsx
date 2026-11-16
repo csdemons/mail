@@ -99,16 +99,32 @@ function size(bytes: number): string {
 }
 
 /**
- * Подключённые ящики Exchange (общие, делегированные). Ящики, к которым у сотрудника полный
- * доступ, сервер сообщает сам (Autodiscover) — они подключаются, как в Outlook; остальные можно
- * добавить по адресу.
+ * Подключённые ящики Exchange (общие, делегированные). Ящики с полным доступом сервер сообщает
+ * сам (Autodiscover), если администратор включил автоподключение — как в Outlook; остальные
+ * добавляются по имени или адресу. Здесь же видно, что ответил сервер и какие ящики не открылись.
  */
 export function MailboxesSettings({ onChanged, onNotice }: { onChanged: () => void; onNotice: (text: string) => void }) {
   const [set, setSet] = useState<MailboxSet | null>(null)
   const [address, setAddress] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [found, setFound] = useState<{ name: string; email: string }[]>([])
   useEffect(() => { api.mailboxesGet().then(setSet).catch(() => undefined) }, [])
+  // Поиск ящика по имени в адресной книге организации (адрес можно не знать).
+  useEffect(() => {
+    const q = address.trim()
+    if (q.length < 2 || q.includes('@')) { setFound([]); return }
+    let alive = true
+    const t = window.setTimeout(() => {
+      api.searchContacts(q).then((list) => {
+        if (!alive) return
+        const seen = new Set<string>()
+        setFound(list.flatMap((c) => c.emails.slice(0, 1).map((email) => ({ name: c.fullName, email: email.toLowerCase() })))
+          .filter((x) => !seen.has(x.email) && seen.add(x.email)).slice(0, 6))
+      }).catch(() => { if (alive) setFound([]) })
+    }, 300)
+    return () => { alive = false; window.clearTimeout(t) }
+  }, [address])
   if (!set) return null
 
   async function save(list: string[], done: string) {
@@ -122,21 +138,37 @@ export function MailboxesSettings({ onChanged, onNotice }: { onChanged: () => vo
     } catch (e) { setError(errorText(e)) } finally { setBusy(false) }
   }
 
-  const add = () => {
-    const a = address.trim().toLowerCase()
+  async function recheck() {
+    setBusy(true); setError('')
+    try {
+      const next = await api.mailboxesRediscover()
+      setSet(next)
+      onNotice(next.discoveryOk ? `Найдено ящиков с полным доступом: ${next.discovered.length}` : 'Сервер не ответил на автопоиск ящиков')
+      onChanged()
+    } catch (e) { setError(errorText(e)) } finally { setBusy(false) }
+  }
+
+  const add = (value = address) => {
+    const a = value.trim().toLowerCase()
     if (!a) return
+    setFound([])
     void save([...set.manual, a], `Ящик ${a} подключён.`)
   }
+  const connected = new Set([...set.manual, ...set.discovered.map((m) => m.address)])
 
   return (
     <div className="settings-section mailboxes-settings">
       <strong><Inbox size={15} /> Подключённые ящики</strong>
-      <span className="settings-hint">Общие и делегированные ящики Exchange показываются в списке папок в разделе «Подключённые ящики». Ящики, к которым у вас полный доступ, подключаются сами — как в Outlook; другой ящик можно добавить по адресу.</span>
+      <span className="settings-hint">Общие и делегированные ящики Exchange показываются в списке папок в разделе «Подключённые ящики». Ящики с полным доступом подключаются сами, как в Outlook, — если администратор включил для них автоподключение. Если доступ выдан без автоподключения, найдите ящик по имени или адресу ниже.</span>
       {set.discovered.length > 0 && (
         <ul className="mailbox-list" aria-label="Подключены автоматически">
-          {set.discovered.map((m) => <li key={m.address}><span>{m.name !== m.address ? <>{m.name} <small>{m.address}</small></> : m.address}</span><small>автоматически</small></li>)}
+          {set.discovered.map((m) => <li key={m.address}><span>{m.name !== m.address ? <>{m.name} <small>{m.address}</small></> : m.address}</span><small>{set.unavailable.some((u) => u.address === m.address) ? 'нет доступа' : 'автоматически'}</small></li>)}
         </ul>
       )}
+      <div className="mailbox-discovery">
+        {set.discoveryNote && <span className={set.discoveryOk ? 'settings-hint' : 'inline-warning'} aria-label="Автопоиск ящиков">{set.discoveryNote}</span>}
+        <button type="button" className="text-button" disabled={busy} onClick={() => void recheck()}><RefreshCw size={13} /> Проверить снова</button>
+      </div>
       {set.manual.length > 0 && (
         <ul className="mailbox-list" aria-label="Подключены вручную">
           {set.manual.map((a) => (
@@ -146,11 +178,25 @@ export function MailboxesSettings({ onChanged, onNotice }: { onChanged: () => vo
           ))}
         </ul>
       )}
+      {set.unavailable.length > 0 && (
+        <ul className="mailbox-list unavailable" aria-label="Не открылись">
+          {set.unavailable.map((m) => <li key={m.address}><span>{m.address} <small>{m.name}</small></span></li>)}
+        </ul>
+      )}
       <div className="mailbox-add">
-        <input aria-label="Адрес подключаемого ящика" placeholder="office@организация.ru" value={address} disabled={busy}
+        <input aria-label="Адрес подключаемого ящика" placeholder="Имя ящика или office@организация.ru" value={address} disabled={busy}
           onChange={(e) => setAddress(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }} />
-        <button className="secondary-button" disabled={busy || !address.trim()} onClick={add}><Plus size={15} /> Подключить</button>
+        <button className="secondary-button" disabled={busy || !address.trim()} onClick={() => add()}><Plus size={15} /> Подключить</button>
       </div>
+      {found.length > 0 && (
+        <ul className="mailbox-list mailbox-found" aria-label="Найдено в адресной книге">
+          {found.map((c) => (
+            <li key={c.email}><span>{c.name} <small>{c.email}</small></span>
+              {connected.has(c.email) ? <small>подключён</small> : <button type="button" className="text-button" disabled={busy} onClick={() => add(c.email)}>Подключить</button>}
+            </li>
+          ))}
+        </ul>
+      )}
       {error && <span className="login-error" role="alert">{error}</span>}
     </div>
   )

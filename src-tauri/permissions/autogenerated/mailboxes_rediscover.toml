@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mailboxes-rediscover"
+description = "Enables the mailboxes_rediscover command without any pre-configured scope."
+commands.allow = ["mailboxes_rediscover"]
+
+[[permission]]
+identifier = "deny-mailboxes-rediscover"
+description = "Denies the mailboxes_rediscover command without any pre-configured scope."
+commands.deny = ["mailboxes_rediscover"]
