@@ -128,6 +128,12 @@ pub struct MailboxSet {
     pub(crate) manual: Vec<String>,
     /// Найденные Autodiscover — подключаются сами, как в Outlook.
     pub(crate) discovered: Vec<FoundMailbox>,
+    /// Автопоиск удался (сервер ответил).
+    pub(crate) discovery_ok: bool,
+    /// Итог автопоиска понятными словами (пусто — ещё не спрашивали).
+    pub(crate) discovery_note: String,
+    /// Ящики, которые не открылись: адрес и причина (в `name`).
+    pub(crate) unavailable: Vec<FoundMailbox>,
 }
 
 /// От чьего имени можно отправить письмо: свой адрес и подключённые ящики.
@@ -187,9 +193,26 @@ pub async fn send_identities(state: State<'_, AppState>) -> Result<Vec<Identity>
 #[tauri::command]
 pub async fn mailboxes_get(state: State<'_, AppState>) -> Result<MailboxSet> {
     let ctx = state.ctx().await?;
-    let p = ctx.profile().await;
-    let discovered = crate::ews::discovered_mailboxes(&settings::account_key(&p)).into_iter().map(|(address, name)| FoundMailbox { address, name }).collect();
-    Ok(MailboxSet { manual: p.mailboxes.clone(), discovered })
+    Ok(mailbox_set(&ctx.profile().await))
+}
+
+fn mailbox_set(p: &settings::Settings) -> MailboxSet {
+    let key = settings::account_key(p);
+    let found = |l: Vec<(String, String)>| l.into_iter().map(|(address, name)| FoundMailbox { address, name }).collect();
+    let (discovery_ok, discovery_note, unavailable) = crate::ews::mailbox_status(&key);
+    MailboxSet { manual: p.mailboxes.clone(), discovered: found(crate::ews::discovered_mailboxes(&key)), discovery_ok, discovery_note, unavailable: found(unavailable) }
+}
+
+/// Спросить сервер Exchange о ящиках с полным доступом заново (кнопка «Проверить снова»).
+#[tauri::command]
+pub async fn mailboxes_rediscover(state: State<'_, AppState>) -> Result<MailboxSet> {
+    let ctx = state.ctx().await?;
+    if !exchange(&ctx) {
+        return Err(AppError::Other("Подключать ящики можно только для учётной записи Exchange".into()));
+    }
+    crate::ews::forget_discovered(&settings::account_key(&ctx.profile().await));
+    with_ctx!(once ctx, c => async { ews_of(c)?.list_folders().await })?;
+    Ok(mailbox_set(&ctx.profile().await))
 }
 
 /// Сохранить список ящиков, подключённых вручную; новые адреса сначала проверяются

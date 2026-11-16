@@ -3967,6 +3967,8 @@ try:
     sp = [p for p in paths if p.startswith('shared/')]
     assert 'shared/office@exch.test/INBOX' in paths and 'shared/office@exch.test/INBOX/Заявки' in paths and 'shared/office@exch.test/Удаленные' in paths, sp
     assert not any('boss@' in p or 'archive-ivanov' in p for p in paths), sp
+    # Exchange в своей сети сообщает о ящике без адреса (только LegacyDN) — адрес находится в адресной книге.
+    assert 'shared/buh@exch.test/INBOX' in paths, sp
     assert paths['shared/office@exch.test/INBOX']['role'] == 'inbox' and paths['shared/office@exch.test/INBOX']['system'] and paths['shared/office@exch.test/INBOX']['unseen'] == 1
     assert paths['shared/office@exch.test/Удаленные']['role'] == 'trash' and paths['INBOX']['role'] == 'inbox'
     node = lambda text: [b for b in d.find_elements(By.CSS_SELECTOR, '.folder-item.folder-node') if text in b.get_attribute('textContent')]
@@ -4003,13 +4005,28 @@ try:
     # Ящик вручную по адресу: проверка, что он есть и доступен; права только на «Входящие» — видны они.
     d.find_element(By.CSS_SELECTOR, 'button[aria-label="Настройки"]').click()
     ms = wait(d, '.mailboxes-settings')
-    assert 'Канцелярия' in ms.find_element(By.CSS_SELECTOR, 'ul[aria-label="Подключены автоматически"]').get_attribute('textContent')
+    auto = ms.find_element(By.CSS_SELECTOR, 'ul[aria-label="Подключены автоматически"]').get_attribute('textContent')
+    assert 'Канцелярия' in auto and 'buh@exch.test' in auto, auto
+    # Что ответил сервер и какой ящик не открылся — видно в настройках; «Проверить снова» спрашивает заново.
+    note = ms.find_element(By.CSS_SELECTOR, '[aria-label="Автопоиск ящиков"]').get_attribute('textContent')
+    assert 'localhost' in note and 'полным доступом: 3' in note, note
+    bad = ms.find_element(By.CSS_SELECTOR, 'ul[aria-label="Не открылись"]').get_attribute('textContent')
+    assert 'boss@exch.test' in bad and 'Нет доступа' in bad, bad
+    n_ad = ews_state()['stats'].get('autodiscover', 0)
+    [b for b in ms.find_elements(By.TAG_NAME, 'button') if 'Проверить снова' in b.text][0].click()
+    W(d, 20).until(lambda d: ews_state()['stats'].get('autodiscover', 0) > n_ad)
+    W(d, 20).until(lambda d: [b for b in ms.find_elements(By.TAG_NAME, 'button') if 'Проверить снова' in b.text][0].is_enabled())
+    assert 'полным доступом: 3' in ms.find_element(By.CSS_SELECTOR, '[aria-label="Автопоиск ящиков"]').get_attribute('textContent')
+    ok('Exchange mailboxes: Autodiscover asked on the EWS server, LegacyDN-only mailbox resolved via the address book, result and no-access mailbox shown in settings, re-check works')
     add_box = lambda a: (set_value(d, ms.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес подключаемого ящика"]'), a), [b for b in ms.find_elements(By.TAG_NAME, 'button') if 'Подключить' in b.text][0].click())
     add_box('nobody@exch.test')
     W(d, 20).until(lambda d: 'Ящика nobody@exch.test нет' in ms.find_element(By.CSS_SELECTOR, '.login-error').text)
     add_box('boss@exch.test')
     W(d, 20).until(lambda d: 'Нет доступа к ящику boss@exch.test' in ms.find_element(By.CSS_SELECTOR, '.login-error').text)
-    add_box('Kadry@exch.test')
+    # По имени из адресной книги — адрес знать не нужно.
+    set_value(d, ms.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес подключаемого ящика"]'), 'Отдел кад')
+    hit = W(d, 20).until(lambda d: [li for li in ms.find_elements(By.CSS_SELECTOR, 'ul[aria-label="Найдено в адресной книге"] li') if 'kadry@exch.test' in li.get_attribute('textContent')])[0]
+    hit.find_element(By.TAG_NAME, 'button').click()
     W(d, 20).until(lambda d: 'kadry@exch.test' in ms.find_element(By.CSS_SELECTOR, 'ul[aria-label="Подключены вручную"]').get_attribute('textContent'))
     acc_file = lambda: [a for a in json.load(open(os.environ['XDG_CONFIG_HOME'] + '/ru.rrcki.mail/accounts.json')) if a.get('ewsUrl')][0]
     W(d, 5).until(lambda d: acc_file().get('mailboxes') == ['kadry@exch.test'])

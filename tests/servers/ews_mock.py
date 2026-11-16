@@ -159,9 +159,14 @@ FOLDERS = {
     'K-root': {'name': 'Top of Information Store', 'parent': None, 'class': 'IPF.Note', 'dist': 'msgfolderroot', 'mbox': 'kadry@exch.test'},
     'K-inbox': {'name': 'Входящие', 'parent': 'K-root', 'class': 'IPF.Note', 'dist': 'inbox', 'mbox': 'kadry@exch.test'},
     'K-sent': {'name': 'Отправленные', 'parent': 'K-root', 'class': 'IPF.Note', 'dist': 'sentitems', 'mbox': 'kadry@exch.test'},
+    # «Бухгалтерия» — полный доступ; Exchange в своей сети сообщает о ней без адреса, только LegacyDN.
+    'B-root': {'name': 'Top of Information Store', 'parent': None, 'class': 'IPF.Note', 'dist': 'msgfolderroot', 'mbox': 'buh@exch.test'},
+    'B-inbox': {'name': 'Входящие', 'parent': 'B-root', 'class': 'IPF.Note', 'dist': 'inbox', 'mbox': 'buh@exch.test'},
 }
 # Права на чужие ящики: full — весь ящик, inbox — только «Входящие», none — ящик есть, доступа нет.
-MAILBOXES = {'office@exch.test': 'full', 'kadry@exch.test': 'inbox', 'boss@exch.test': 'none'}
+MAILBOXES = {'office@exch.test': 'full', 'kadry@exch.test': 'inbox', 'boss@exch.test': 'none', 'buh@exch.test': 'full'}
+# LegacyDN → (имя, адрес): ResolveNames находит ящик и по нему.
+LEGACY = {'/o=corp/ou=exchange/cn=recipients/cn=buh': ('Бухгалтерия', 'buh@exch.test')}
 # Право «Отправить как» — только на «Канцелярию».
 SEND_AS = {'office@exch.test'}
 
@@ -210,6 +215,7 @@ add_item('F-proj', mime_of('Петров Пётр <petrov@exch.test>', ADDRESS, 
 add_item('F-sent', mime_of(ADDRESS, 'petrov@exch.test', 'EWS: ответ по отчёту', 'Спасибо'), T0 - 300, read=True)
 add_item('S-inbox', mime_of('Петров Пётр <petrov@exch.test>', 'office@exch.test', 'EWS: письмо в канцелярию', 'Прошу зарегистрировать'), T0 - 900)
 add_item('S-req', mime_of('Сидорова <sidorova@partner.ru>', 'office@exch.test', 'EWS: заявка на пропуск', 'Пропуск на 12 ноября'), T0 - 1800)
+add_item('B-inbox', mime_of('Петров Пётр <petrov@exch.test>', 'buh@exch.test', 'EWS: счёт на оплату', 'Счёт во вложении'), T0 - 2400)
 add_item('K-inbox', mime_of('Петров Пётр <petrov@exch.test>', 'kadry@exch.test', 'EWS: заявление на отпуск', 'Прошу предоставить отпуск'), T0 - 1200)
 
 
@@ -443,7 +449,8 @@ CAL = {}       # id -> {start, end, allday, subject, location, body, organizer, 
 CONTACTS = {}  # id -> {name, emails{key:v}, phones{key:v}, company, title, body}
 CANCELLED = []
 GAL = [{'name': 'Петров Пётр Петрович', 'email': 'petrov@exch.test', 'dept': 'Отдел ИТ', 'title': 'Ведущий инженер', 'phone': '+7 495 100-00-01'},
-       {'name': 'Петрова Ольга', 'email': 'petrova@exch.test', 'dept': 'Бухгалтерия', 'title': 'Бухгалтер', 'phone': '+7 495 100-00-02'}]
+       {'name': 'Петрова Ольга', 'email': 'petrova@exch.test', 'dept': 'Бухгалтерия', 'title': 'Бухгалтер', 'phone': '+7 495 100-00-02'},
+       {'name': 'Отдел кадров', 'email': 'kadry@exch.test', 'dept': '', 'title': '', 'phone': ''}]
 TZ = {'hours': 0}   # TimeZoneContext текущего запроса (Russian Standard Time → +3)
 
 
@@ -631,6 +638,8 @@ def pim(op, el):
     if op == 'ResolveNames':
         q = (el.findtext('m:UnresolvedEntry', '', NS) or '').lower()
         hits = [g for g in GAL if q in g['name'].lower() or q in g['email']]
+        if q in LEGACY:
+            hits = [{'name': LEGACY[q][0], 'email': LEGACY[q][1], 'phone': '', 'dept': '', 'title': ''}]
         if not hits:
             return [resp(op, '', 'Error', 'ErrorNameResolutionNoResults', 'No results were found.')]
         res = ''.join(f'<t:Resolution><t:Mailbox><t:Name>{esc(g["name"])}</t:Name><t:EmailAddress>{g["email"]}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:Mailbox><t:Contact><t:DisplayName>{esc(g["name"])}</t:DisplayName><t:PhoneNumbers><t:Entry Key="BusinessPhone">{g["phone"]}</t:Entry></t:PhoneNumbers><t:Department>{esc(g["dept"])}</t:Department><t:JobTitle>{esc(g["title"])}</t:JobTitle></t:Contact></t:Resolution>' for g in hits)
@@ -639,7 +648,7 @@ def pim(op, el):
     return None
 
 
-AUTODISCOVER = '''<?xml version="1.0" encoding="utf-8"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"><Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"><User><DisplayName>Иванов</DisplayName></User><Account><AccountType>email</AccountType><Action>settings</Action><Protocol><Type>EXCH</Type><EwsUrl>https://localhost:{port}/EWS/Exchange.asmx</EwsUrl></Protocol><AlternativeMailbox><Type>Archive</Type><DisplayName>Архив</DisplayName><SmtpAddress>archive-ivanov@exch.test</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Канцелярия</DisplayName><LegacyDN>/o=CORP/ou=Exchange/cn=Recipients/cn=office</LegacyDN><Server>mbx01</Server><SmtpAddress>office@exch.test</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Директор</DisplayName><SmtpAddress>boss@exch.test</SmtpAddress></AlternativeMailbox></Account></Response></Autodiscover>'''
+AUTODISCOVER = '''<?xml version="1.0" encoding="utf-8"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"><Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"><User><DisplayName>Иванов</DisplayName></User><Account><AccountType>email</AccountType><Action>settings</Action><Protocol><Type>EXCH</Type><EwsUrl>https://localhost:{port}/EWS/Exchange.asmx</EwsUrl></Protocol><AlternativeMailbox><Type>Archive</Type><DisplayName>Архив</DisplayName><SmtpAddress>archive-ivanov@exch.test</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Канцелярия</DisplayName><LegacyDN>/o=CORP/ou=Exchange/cn=Recipients/cn=office</LegacyDN><Server>mbx01</Server><SmtpAddress>office@exch.test</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Директор</DisplayName><SmtpAddress>boss@exch.test</SmtpAddress></AlternativeMailbox><AlternativeMailbox><Type>Delegate</Type><DisplayName>Бухгалтерия</DisplayName><LegacyDN>/o=CORP/ou=Exchange/cn=Recipients/cn=buh</LegacyDN><Server>mbx01</Server></AlternativeMailbox></Account></Response></Autodiscover>'''
 
 
 class H(BaseHTTPRequestHandler):
@@ -700,6 +709,7 @@ class H(BaseHTTPRequestHandler):
         if not self.authed():
             return
         if u.path.lower() == '/autodiscover/autodiscover.xml':
+            with lock: STATS['autodiscover'] = STATS.get('autodiscover', 0) + 1
             return self.send(200, AUTODISCOVER.format(port=self.server.server_address[1]))
         if u.path.lower() != '/ews/exchange.asmx':
             return self.send(404, 'not found', 'text/plain')
