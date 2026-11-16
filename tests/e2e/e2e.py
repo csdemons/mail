@@ -4020,7 +4020,10 @@ try:
     W(d, 20).until(lambda d: [b for b in ms.find_elements(By.TAG_NAME, 'button') if 'Проверить снова' in b.text][0].is_enabled())
     assert 'полным доступом: 3' in ms.find_element(By.CSS_SELECTOR, '[aria-label="Автопоиск ящиков"]').get_attribute('textContent')
     ok('Exchange mailboxes: Autodiscover asked on the EWS server, LegacyDN-only mailbox resolved via the address book, result and no-access mailbox shown in settings, re-check works')
-    add_box = lambda a: (set_value(d, ms.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес подключаемого ящика"]'), a), W(d, 10).until(lambda d: [b for b in ms.find_elements(By.CSS_SELECTOR, '.mailbox-add button') if b.is_enabled() and b.is_displayed()])[0]), d.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click()", ms.find_element(By.CSS_SELECTOR, '.mailbox-add button')))
+    def add_box(a):
+        set_value(d, ms.find_element(By.CSS_SELECTOR, 'input[aria-label="Адрес подключаемого ящика"]'), a)
+        b = W(d, 10).until(lambda d: [b for b in ms.find_elements(By.CSS_SELECTOR, '.mailbox-add button') if b.is_enabled()])[0]
+        d.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click()", b)
     add_box('nobody@exch.test')
     W(d, 20).until(lambda d: 'Ящика nobody@exch.test нет' in ms.find_element(By.CSS_SELECTOR, '.login-error').text)
     add_box('boss@exch.test')
