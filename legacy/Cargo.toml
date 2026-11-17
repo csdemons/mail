@@ -2,6 +2,7 @@
 name = "rrcki-mail-legacy"
 version = "0.0.0"  # версия приложения берётся из tauri.conf.json
 description = "RRCKI Mail для Astra Linux SE 1.7 (Debian 10, WebKitGTK 4.0): та же программа на Tauri 1"
+license = "Apache-2.0"
 edition = "2021"
 publish = false
 

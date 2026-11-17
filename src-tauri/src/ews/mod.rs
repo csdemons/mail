@@ -34,7 +34,7 @@ use url::Url;
 use crate::error::{AppError, Result};
 use crate::imap::FolderRole;
 
-#[path = "ews_mailboxes.rs"]
+#[path = "../ews_mailboxes.rs"]
 mod mailboxes;
 pub use mailboxes::*;
 
