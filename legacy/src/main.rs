@@ -51,7 +51,7 @@ mod offline;
 mod clipboard;
 #[path = "../../src-tauri/src/dragout.rs"]
 mod dragout;
-#[path = "../../src-tauri/src/ews.rs"]
+#[path = "../../src-tauri/src/ews/mod.rs"]
 mod ews;
 #[path = "../../src-tauri/src/ntlm.rs"]
 mod ntlm;
