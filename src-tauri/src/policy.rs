@@ -343,6 +343,7 @@ mod tests {
         // Файл обычного пользователя (в тестах — не root) не считается политикой администратора.
         let good = dir.join("good.json");
         std::fs::write(&good, br#"{"remoteImages": "proxy", "exchangeHosts": ["corp.ru"]}"#).unwrap();
+        #[allow(unused_variables)]
         let p = from_file(&good);
         #[cfg(unix)]
         {
