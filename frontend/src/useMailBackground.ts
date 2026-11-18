@@ -102,7 +102,13 @@ export function useChatNotifications(
       for (const r of rooms) {
         const prev = roomSeen.current.get(r.token)
         roomSeen.current.set(r.token, { unread: r.unread, activity: r.lastActivity })
-        if (first || !prev || r.unread <= prev.unread) continue
+        // Уведомление — только если на самом деле пришло новое сообщение (выросла
+        // lastActivity), а не просто счётчик unread вырос из-за устаревшего ответа сервера
+        // (например, сервер ещё не подтвердил нашу отметку прочтения и вернул unread=1
+        // для уже просмотренной беседы). Если lastActivity не изменилась — нового
+        // сообщения нет, уведомлять не о чем.
+        if (first || !prev || r.lastActivity <= prev.activity) continue
+        if (r.unread <= 0) continue
         if (!prefsRef.current.chat || !chatNotifies(r)) continue
         // «Конфиденциальная» беседа: текст сообщения в уведомлении не показывается.
         const text = prefsRef.current.preview && !r.sensitive ? (r.lastMessage ?? 'Новое сообщение') : 'Новое сообщение'

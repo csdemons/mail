@@ -13,6 +13,14 @@ let inflight: Promise<TalkRoom[]> | null = null
 let generation = 0
 const listeners = new Set<() => void>()
 
+// Ожидающие подтверждения сервером отметки прочтения.
+// Когда пользователь открыл беседу, мы локально ставим unread=0 и просим сервер отметить
+// прочитанным. Сервер может ответить устаревшим списком (ещё не обработал отметку) — пока
+// lastActivity не вырос, мы не даём этому ответу вернуть счётчик.
+// `until` — когда отметка должна устареть сама (мс от эпохи), чтобы не висела вечно.
+const pendingReads = new Map<string, { lastActivity: number; until: number }>()
+const PENDING_READ_TTL_MS = 60_000
+
 function emit() {
   listeners.forEach((l) => l())
 }
@@ -24,6 +32,19 @@ export function refreshRooms(maxAgeMs = 0): Promise<TalkRoom[]> {
   const gen = generation
   inflight = api.talkRooms().then((list) => {
     if (gen === generation) {
+      const now = Date.now()
+      // Применить ожидающие отметки: если сервер ещё не «увидел» прочитанное и не принёс
+      // новых сообщений с той же lastActivity — счётчик unread остаётся нулевым локально.
+      if (pendingReads.size > 0) {
+        list = list.map((r) => {
+          const p = pendingReads.get(r.token)
+          if (!p || now > p.until) return r
+          if (r.lastActivity <= p.lastActivity) return { ...r, unread: 0 }
+          return r
+        })
+        // Чистим истёкшие.
+        for (const [tok, p] of pendingReads) if (now > p.until) pendingReads.delete(tok)
+      }
       rooms = list
       fetchedAt = Date.now()
       emit()
@@ -39,12 +60,27 @@ export function patchRooms(fn: (list: TalkRoom[] | null) => TalkRoom[] | null) {
   emit()
 }
 
+/**
+ * Записать, что беседа `token` прочитана пользователем до сообщения с `lastActivity`.
+ * Пока отметка не подтверждена сервером (или не истёк TTL), фоновые опросы не возвращают
+ * устаревший счётчик unread для этой беседы — если lastActivity не вырос.
+ */
+export function markRead(token: string, lastActivity: number) {
+  pendingReads.set(token, { lastActivity, until: Date.now() + PENDING_READ_TTL_MS })
+}
+
+/** Снять ожидающую отметку прочтения (например, при уходе из открытой беседы без подтверждения). */
+export function clearPendingRead(token: string) {
+  pendingReads.delete(token)
+}
+
 /** Забыть список (выход, другая учётная запись, Nextcloud отключён). */
 export function resetRooms() {
   generation += 1
   rooms = null
   fetchedAt = 0
   inflight = null
+  pendingReads.clear()
   emit()
 }
 

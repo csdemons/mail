@@ -14,7 +14,7 @@ import { PinDialog, ProfileDialog, ReminderDialog, type PersonActions } from './
 
 import { CardFromMessage, NewChat } from './TalkDialogs'
 import { useTalkAttachments } from './useTalkAttachments'
-import { patchRooms, refreshRooms, useTalkRooms } from './talkRoomsStore'
+import { patchRooms, refreshRooms, markRead, useTalkRooms } from './talkRoomsStore'
 import { messageMenu as messageMenuFor, roomMenu as roomMenuFor } from './talkMenus'
 import { cached, contents, merge, NO_TALK_FEATURES, sortRooms, TalkThumb, viewable } from './talkUtils'
 import TalkThreadPanel from './TalkThreadPanel'
@@ -225,6 +225,28 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
         setReadUpTo((r) => Math.max(r, hist.lastCommonRead ?? 0))
         lastId = hist.lastId
         setRooms((list) => list?.map((r) => (r.token === token ? { ...r, unread: 0 } : r)) ?? list)
+        // Подтвердить прочитанное на сервере сразу после загрузки истории:
+        // локально unread=0 — но сервер ещё не знает. Шлём talkManage('read') с lastId
+        // фактически загруженного последнего сообщения, с повтором при сбое (3 попытки,
+        // нарастающая задержка). Параллельно — отмечаем в store, что беседа прочитана,
+        // чтобы устаревший ответ фоновой проверки не вернул счётчик до подтверждения.
+        const room = rooms?.find((r) => r.token === token)
+        if (room) markRead(token, room.lastActivity)
+        if (hist.lastId > 0) {
+          void (async function confirmRead(attempt = 0): Promise<void> {
+            try {
+              await api.talkManage(token, 'read', { lastId: hist.lastId })
+            } catch (e) {
+              if (pollSession.current !== session) return
+              if (attempt < 2) {
+                await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
+                if (pollSession.current !== session) return
+                return confirmRead(attempt + 1)
+              }
+              console.warn('talk: не подтвердить прочитанное для', room?.name ?? token, ':', errorText(e))
+            }
+          })()
+        }
       } catch (e) {
         setError(errorText(e))
       } finally {
@@ -237,7 +259,14 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
           // начатый до ухода в другую беседу, не должен «прочитать» пришедшее после ухода.
           const fresh = await api.talkPoll(token, lastId, false)
           if (pollSession.current !== session) return
-          if (fresh.lastId > lastId) void api.talkManage(token, 'read', { lastId: fresh.lastId }).catch(() => undefined)
+          if (fresh.lastId > lastId) {
+            void api.talkManage(token, 'read', { lastId: fresh.lastId }).catch((e: unknown) => {
+              console.warn('talk: не отметить прочитанным', fresh.lastId, 'для', token, ':', errorText(e))
+            })
+            // Обновить ожидающую отметку: новая lastActivity — серверу нужно подтвердить.
+            const room2 = rooms?.find((r) => r.token === token)
+            if (room2) markRead(token, room2.lastActivity)
+          }
           if (fresh.messages.length > 0) setMessages((list) => merge(list, fresh.messages))
           if (fresh.lastCommonRead) setReadUpTo((r) => Math.max(r, fresh.lastCommonRead))
           if (fresh.lastId > lastId) lastId = fresh.lastId
@@ -246,7 +275,11 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
         }
       }
     })()
-    return () => { pollSession.current += 1 }
+    return () => {
+      pollSession.current += 1
+      // Не снимаем ожидающую отметку при уходе: если пользователь ушёл, но сервер ещё
+      // не подтвердил — защита от устаревшего ответа должна работать до истечения TTL.
+    }
   }, [token])
 
   useEffect(() => {
