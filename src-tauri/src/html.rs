@@ -40,6 +40,30 @@ fn content_type(part: &mail_parser::MessagePart<'_>) -> String {
         .to_ascii_lowercase()
 }
 
+/// Only passive raster formats may enter the HTML email frame as data URLs.
+/// SVG/XML and unknown image types are not needed for mail rendering and have
+/// a larger active-content attack surface across WebView implementations.
+fn safe_image_mime(mime: &str) -> bool {
+    matches!(
+        mime.trim().to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            | "image/bmp" | "image/avif" | "image/x-icon"
+    )
+}
+
+fn safe_image_data_url(value: &str) -> bool {
+    let Some((header, _payload)) = value.trim().split_once(',') else {
+        return false;
+    };
+    let Some(meta) = header.strip_prefix("data:").or_else(|| header.strip_prefix("DATA:")) else {
+        return false;
+    };
+    let mut parts = meta.split(';');
+    let mime = parts.next().unwrap_or("");
+    safe_image_mime(mime)
+        && parts.all(|part| part.eq_ignore_ascii_case("base64"))
+}
+
 fn is_remote(url: &str) -> bool {
     let u = url.trim_start().to_ascii_lowercase();
     u.starts_with("http://") || u.starts_with("https://") || u.starts_with("//")
@@ -58,7 +82,7 @@ pub fn render(msg: &Message<'_>, html: &str, remote: Option<&HashMap<String, Str
     for (index, part) in msg.attachments().enumerate() {
         let Some(id) = part.content_id() else { continue };
         let ct = content_type(part);
-        if !ct.starts_with("image/") || total + part.contents().len() > MAX_INLINE_TOTAL {
+        if !safe_image_mime(&ct) || total + part.contents().len() > MAX_INLINE_TOTAL {
             continue;
         }
         total += part.contents().len();
@@ -108,7 +132,7 @@ pub fn render(msg: &Message<'_>, html: &str, remote: Option<&HashMap<String, Str
                         return None;
                     }
                     // data:image/... оставляем, всё остальное — нет.
-                    return v.to_ascii_lowercase().starts_with("data:image/").then(|| value.into());
+                    return safe_image_data_url(v).then(|| value.into());
                 }
                 if attribute == "href" {
                     let v = value.trim().to_ascii_lowercase();
@@ -249,7 +273,7 @@ async fn fetch_one(url: String, allow_local: bool, policy: std::sync::Arc<crate:
             .and_then(|v| v.to_str().ok())
             .map(|v| v.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
             .unwrap_or_default();
-        if !ct.starts_with("image/") || resp.content_length().is_some_and(|n| n as usize > MAX_REMOTE_BYTES) {
+        if !safe_image_mime(&ct) || resp.content_length().is_some_and(|n| n as usize > MAX_REMOTE_BYTES) {
             return None;
         }
         // Каждый принятый кусок сразу списывается с общего бюджета письма: в памяти
@@ -288,6 +312,30 @@ pub async fn fetch_remote(urls: &[String], allow_local: bool, policy: &crate::po
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_passive_image_types_are_embedded() {
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/avif", "image/x-icon"] {
+            assert!(safe_image_mime(mime), "{mime}");
+            assert!(safe_image_data_url(&format!("data:{mime};base64,AAAA")), "{mime}");
+        }
+        for mime in ["image/svg+xml", "image/svg", "image/xml", "image/tiff", "text/html", "application/xhtml+xml"] {
+            assert!(!safe_image_mime(mime), "{mime}");
+            assert!(!safe_image_data_url(&format!("data:{mime};base64,AAAA")), "{mime}");
+        }
+        assert!(!safe_image_data_url("data:image/png"));
+        assert!(!safe_image_data_url("data:image/png;evil=1,AAAA"));
+        assert!(!safe_image_data_url("data:image/png,AAAA"));
+    }
+
+    #[test]
+    fn sanitization_drops_svg_data_images() {
+        let msg = MessageParser::default().parse(b"From: a@b.ru\r\nSubject: t\r\n\r\nbody\r\n".as_slice()).expect("parse");
+        let input = r#"<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="><img src="data:image/png;base64,AAAA">"#;
+        let rendered = render(&msg, input, None);
+        assert!(!rendered.html.contains("image/svg+xml"), "{}", rendered.html);
+        assert!(rendered.html.contains("data:image/png;base64,AAAA"), "{}", rendered.html);
+    }
 
     #[test]
     fn image_budget_is_never_exceeded_by_parallel_downloads() {
