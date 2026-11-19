@@ -14,7 +14,8 @@ import { PinDialog, ProfileDialog, ReminderDialog, type PersonActions } from './
 
 import { CardFromMessage, NewChat } from './TalkDialogs'
 import { useTalkAttachments } from './useTalkAttachments'
-import { patchRooms, refreshRooms, useTalkRooms } from './talkRoomsStore'
+import { patchRooms, refreshRooms, setRoomRead, useTalkRooms } from './talkRoomsStore'
+import { useTalkReadMarker, type TalkReadCursor } from './useTalkReadMarker'
 import { messageMenu as messageMenuFor, roomMenu as roomMenuFor } from './talkMenus'
 import { cached, contents, merge, NO_TALK_FEATURES, sortRooms, TalkThumb, viewable } from './talkUtils'
 import TalkThreadPanel from './TalkThreadPanel'
@@ -45,6 +46,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   const historyFor = useRef<string | null>(null)
   const [token, setToken] = useState<string | null>(() => lastRoom)
   const [messages, setMessages] = useState<TalkMessage[]>([])
+  const [readCursor, setReadCursor] = useState<TalkReadCursor | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [draft, setDraft] = useState('')
@@ -123,6 +125,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   // Номер «сессии» опроса: при смене беседы старый цикл останавливается.
   const pollSession = useRef(0)
   const stickToBottom = useRef(true)
+  const autoReadSuspended = useRef<string | null>(null)
   // Куда поставить курсор после программной правки текста (упоминание, эмодзи).
   const pendingCaret = useRef<number | null>(null)
   useLayoutEffect(() => {
@@ -202,6 +205,8 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
     const session = ++pollSession.current
     let lastId = 0
     setMessages([])
+    setReadCursor(null)
+    autoReadSuspended.current = null
     setReadUpTo(0)
     setHasOlder(false)
     setReplyTo(null)
@@ -224,11 +229,11 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
         setHasOlder(hist.more)
         setReadUpTo((r) => Math.max(r, hist.lastCommonRead ?? 0))
         lastId = hist.lastId
-        setRooms((list) => list?.map((r) => (r.token === token ? { ...r, unread: 0 } : r)) ?? list)
+        setReadCursor({ token, session, lastId })
       } catch (e) {
-        setError(errorText(e))
+        if (pollSession.current === session) setError(errorText(e))
       } finally {
-        setLoading(false)
+        if (pollSession.current === session) setLoading(false)
       }
       // Long-poll: сервер держит запрос до 30 с и отвечает, как только что-то изменится.
       while (pollSession.current === session) {
@@ -237,10 +242,12 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
           // начатый до ухода в другую беседу, не должен «прочитать» пришедшее после ухода.
           const fresh = await api.talkPoll(token, lastId, false)
           if (pollSession.current !== session) return
-          if (fresh.lastId > lastId) void api.talkManage(token, 'read', { lastId: fresh.lastId }).catch(() => undefined)
           if (fresh.messages.length > 0) setMessages((list) => merge(list, fresh.messages))
           if (fresh.lastCommonRead) setReadUpTo((r) => Math.max(r, fresh.lastCommonRead))
-          if (fresh.lastId > lastId) lastId = fresh.lastId
+          if (fresh.lastId > lastId) {
+            lastId = fresh.lastId
+            setReadCursor({ token, session, lastId })
+          }
         } catch {
           await new Promise((r) => setTimeout(r, 5000))
         }
@@ -253,10 +260,12 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
     if (stickToBottom.current) listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
   }, [messages])
 
-  // Значок на панели: непрочитанное во всех беседах, кроме открытой (её мы читаем).
+  useTalkReadMarker(token, readCursor, !loading && Boolean(rooms?.some((r) => r.token === token)), listRef, pollSession, stickToBottom, autoReadSuspended)
+
+  // Открытая беседа тоже может содержать ещё не просмотренные сообщения.
   useEffect(() => {
-    onUnread((rooms ?? []).filter((r) => r.token !== token).reduce((n, r) => n + r.unread, 0))
-  }, [rooms, token, onUnread])
+    onUnread((rooms ?? []).reduce((n, r) => n + r.unread, 0))
+  }, [rooms, onUnread])
 
   // Подсказка упоминаний: «@текст» перед курсором.
   // Запрос к серверу — только когда человек перестал печатать; устаревшие ответы отбрасываются.
@@ -414,10 +423,10 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
     const el = listRef.current
     if (!token || !first || olderBusy) return
     setOlderBusy(true)
+    stickToBottom.current = false
     const fromBottom = el ? el.scrollHeight - el.scrollTop : 0
     try {
       const chunk = await api.talkHistory(token, first.id)
-      stickToBottom.current = false
       setMessages((list) => merge(list, chunk.messages))
       setHasOlder(chunk.more && chunk.messages.length > 0)
       // Лента остаётся на том же месте, ранние сообщения появляются выше.
@@ -478,6 +487,7 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
   /** Перейти к сообщению: догрузить историю до него, прокрутить и подсветить. */
   async function jumpTo(id: number) {
     if (!token) return
+    stickToBottom.current = false
     let list = messages
     for (let i = 0; i < 30 && !list.some((m) => m.id === id) && list.length > 0 && list[0].id > id; i++) {
       const chunk = await api.talkHistory(token, list[0].id).catch(() => null)
@@ -485,7 +495,6 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
       list = merge(list, chunk.messages)
       setHasOlder(chunk.more)
     }
-    stickToBottom.current = false
     setMessages(list)
     setFlash(id)
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -580,11 +589,22 @@ export default function TalkView({ onUnread, onNotice, focus, onWrite }: { onUnr
     openTool: (kind, r) => setTool(kind === 'summary' ? { kind, room: r, from: r.lastRead, count: r.unread } : { kind, room: r }) })
 
   async function manageRoom(r: TalkRoom, action: string, value: Record<string, unknown>, done: string) {
+    const closeUnread = action === 'unread' && token === r.token
+    if (closeUnread) autoReadSuspended.current = r.token
     try {
-      await api.talkManage(r.token, action, value)
+      if (action === 'read' || action === 'unread') {
+        await setRoomRead(r.token, action === 'read')
+        if (closeUnread) {
+          if (lastRoom === r.token) lastRoom = null
+          setToken((current) => current === r.token ? null : current)
+        }
+      } else {
+        await api.talkManage(r.token, action, value)
+        await loadRooms()
+      }
       notify(done)
-      await loadRooms()
     } catch (e) {
+      if (closeUnread && autoReadSuspended.current === r.token) autoReadSuspended.current = null
       notify(`Не удалось: ${errorText(e)}`)
     }
   }

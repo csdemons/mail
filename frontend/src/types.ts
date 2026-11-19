@@ -341,6 +341,7 @@ export interface TalkRoom {
   unreadMention: boolean
   lastActivity: number
   lastMessage: string | null
+  lastMessageId: number // 0, если сервер не вернул lastMessage.
   readOnly: boolean
   /** Личная беседа: ID собеседника. */
   peer: string | null

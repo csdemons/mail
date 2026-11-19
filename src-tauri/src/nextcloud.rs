@@ -1185,9 +1185,10 @@ fn hidden_system(v: &Value) -> bool {
 
 impl Nc {
 
-    /// История: последние сообщения (или более старые, чем `before`). Помечает беседу прочитанной.
+    /// История: последние сообщения (или более старые, чем `before`). Отметку ставит видимая лента.
     pub async fn talk_history(&self, token: &str, before: Option<i64>) -> Result<TalkChunk> {
-        let mut q = vec![("lookIntoFuture", "0".to_string()), ("limit", TALK_PAGE.to_string()), ("setReadMarker", "1".to_string())];
+        let mut q = vec![("lookIntoFuture", "0".to_string()), ("limit", TALK_PAGE.to_string()),
+            ("setReadMarker", "0".to_string()), ("markNotificationsAsRead", "0".to_string())];
         if let Some(b) = before { q.push(("lastKnownMessageId", b.to_string())); }
         let (status, h, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Сообщения").await?;
         if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0, last_common_read: common_read(&h), more: false }); }
@@ -1199,7 +1200,9 @@ impl Nc {
     /// `mark_read` — сразу отметить прочитанным (программа отмечает сама, только если беседа ещё открыта).
     pub async fn talk_poll(&self, token: &str, last_known: i64, mark_read: bool) -> Result<TalkChunk> {
         let q = vec![("lookIntoFuture", "1".to_string()), ("lastKnownMessageId", last_known.to_string()),
-            ("timeout", "30".to_string()), ("limit", "100".to_string()), ("setReadMarker", if mark_read { "1" } else { "0" }.to_string())];
+            ("timeout", "30".to_string()), ("limit", "100".to_string()),
+            ("setReadMarker", if mark_read { "1" } else { "0" }.to_string()),
+            ("markNotificationsAsRead", if mark_read { "1" } else { "0" }.to_string())];
         let (status, h, d) = self.ocs(Method::GET, &format!("{TALK_CHAT}{}", seg(token)), &q, None, "Новые сообщения").await?;
         if status == StatusCode::NOT_MODIFIED { return Ok(TalkChunk { messages: Vec::new(), last_id: 0, last_common_read: common_read(&h), more: false }); }
         Ok(TalkChunk { messages: parse_chat(&d, &self.me), last_id: max_id(&d), last_common_read: common_read(&h), more: false })

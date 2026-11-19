@@ -7,7 +7,8 @@ import { senderLabel } from './mailLabels'
 import { appInFront, notify, type NotifyPrefs } from './notifications'
 import type { ModuleName } from './viewContext'
 import type { TalkRoom } from './types'
-import { currentRooms, refreshRooms, resetRooms, roomsAge, subscribeRooms } from './talkRoomsStore'
+import { currentRooms, currentServerRooms, refreshRooms, resetRooms, roomsAge, subscribeRooms } from './talkRoomsStore'
+import { observeTalkRoom, type TalkRoomSeen } from './talkNotificationState'
 import { zoomStep } from './appearance'
 
 /** Напоминания по флажкам со сроком: проверка раз в 2 минуты (и при запуске). */
@@ -79,7 +80,7 @@ export function useChatNotifications(
   setChatUnread: (n: number) => void,
   setNotice: (text: string) => void,
 ) {
-  const roomSeen = useRef(new Map<string, { unread: number; activity: number }>())
+  const roomSeen = useRef(new Map<string, TalkRoomSeen>())
   // Звонки, о которых уже сообщили (беседа:начало) — второй раз не звоним.
   const callsSeen = useRef(new Set<string>())
   // Уведомления Talk о звонках: по беседе — номер уведомления (отклонённый звонок убираем и с сервера).
@@ -99,10 +100,11 @@ export function useChatNotifications(
       const rooms = currentRooms()
       if (!rooms) return
       if (moduleRef.current !== 'chat') setChatUnread(rooms.reduce((n, x) => n + x.unread, 0))
-      for (const r of rooms) {
-        const prev = roomSeen.current.get(r.token)
-        roomSeen.current.set(r.token, { unread: r.unread, activity: r.lastActivity })
-        if (first || !prev || r.unread <= prev.unread) continue
+      const unread = new Map(rooms.map((r) => [r.token, r.unread]))
+      for (const r of currentServerRooms() ?? []) {
+        const { seen, isNew } = observeTalkRoom(roomSeen.current.get(r.token), r)
+        roomSeen.current.set(r.token, seen)
+        if (first || !isNew || (unread.get(r.token) ?? 0) <= 0) continue
         if (!prefsRef.current.chat || !chatNotifies(r)) continue
         // «Конфиденциальная» беседа: текст сообщения в уведомлении не показывается.
         const text = prefsRef.current.preview && !r.sensitive ? (r.lastMessage ?? 'Новое сообщение') : 'Новое сообщение'

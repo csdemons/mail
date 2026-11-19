@@ -20,6 +20,8 @@ pub struct TalkRoom {
     pub unread_mention: bool,
     pub last_activity: i64,
     pub last_message: Option<String>,
+    /// ID последнего сообщения; 0, если сервер скрыл lastMessage (например, конфиденциальная беседа).
+    pub last_message_id: i64,
     pub read_only: bool,
     /// Личная беседа: ID собеседника (для аватара).
     pub peer: Option<String>,
@@ -198,6 +200,7 @@ impl Nc {
             unread: int(&r["unreadMessages"]),
             unread_mention: r["unreadMention"].as_bool().unwrap_or(false),
             last_activity: int(&r["lastActivity"]),
+            last_message_id: int(&r["lastMessage"]["id"]),
             last_message: r["lastMessage"].is_object().then(|| {
                 let (t, f) = render_message(&r["lastMessage"]);
                 let t = match f.first() { Some(file) if t.is_empty() => format!("📎 {}", file.name), _ => t };
