@@ -7,6 +7,7 @@ import { VoiceRecorder } from './TalkExtras'
 import DuePicker from './DuePicker'
 import { snoozePresets } from './mailTools'
 import { openContextMenu } from './PopupMenu'
+import { useAutoGrow } from './useAutoGrow'
 import type { PickedFile, TalkFeatures, TalkMessage, TalkMention } from './types'
 
 /** Поле ввода сообщения: вложения, ответ и правка, упоминания, эмодзи, опрос, голосовое. */
@@ -49,6 +50,8 @@ export interface TalkComposeProps {
 
 export default function TalkCompose({ features, threadTitle, setThreadTitle, onSchedule, send, files, previews, sending, dropFile, replyTo, setReplyTo, editing, cancelEdit, pickFiles, mentions, mentionSel, pickMention, emojiOpen, insertEmoji, inputRef, draft, onDraftChange, onPaste, setMentionSel, setMentions, setEmojiOpen, setPollOpen, silent, setSilent, notify, sendVoice }: TalkComposeProps) {
   const [pickTime, setPickTime] = useState(false)
+  // Поле ввода растёт под текст: длинное сообщение видно целиком, выше предела — прокрутка.
+  useAutoGrow(inputRef, draft)
   const canSchedule = features.scheduled && !editing && files.length === 0 && Boolean(draft.trim()) && !sending
   function scheduleMenu(e: React.MouseEvent) {
     openContextMenu(e, [

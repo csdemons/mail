@@ -6,11 +6,15 @@ import { api, errorText } from './api'
 import Avatar from './Avatar'
 import { SkeletonRows } from './Skeleton'
 import TalkText from './TalkText'
+import { useAutoGrow } from './useAutoGrow'
 import { repliesLabel, timeOf } from './talkUtils'
 import type { TalkMessage, TalkThread } from './types'
 
 /** Уровни уведомлений ветки — как у беседы в Talk. */
 const NOTIFY_LEVELS: [number, string][] = [[0, 'Как в беседе'], [1, 'Все сообщения'], [2, 'Только упоминания'], [3, 'Не уведомлять']]
+
+/** Предел высоты поля ответа в ветке: панель уже беседы, растягивать сильнее незачем. */
+const THREAD_MAX_PX = 180
 
 function preview(m: TalkMessage | null): string {
   if (!m) return ''
@@ -50,6 +54,9 @@ export default function TalkThreadPanel({ token, threadId, readOnly, onOpen, onC
   /** Новое название ветки (правка в шапке панели). */
   const [title, setTitle] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  // Ответ в ветке — узкая панель, поэтому предел ниже, чем в беседе.
+  const draftRef = useRef<HTMLTextAreaElement>(null)
+  useAutoGrow(draftRef, draft, THREAD_MAX_PX)
   // Ответ сервера для прежней ветки (или беседы) не показывается в новой.
   const current = useRef('')
   current.current = `${token}:${threadId ?? ''}`
@@ -171,7 +178,7 @@ export default function TalkThreadPanel({ token, threadId, readOnly, onOpen, onC
             {messages?.map((m) => <ThreadMessage key={m.id} m={m} />)}
           </div>
           {!readOnly && <form className="talk-thread-compose" onSubmit={(e) => { e.preventDefault(); void send() }}>
-            <textarea rows={2} aria-label="Ответ в ветке" placeholder="Ответить в ветке… (Enter — отправить)" value={draft}
+            <textarea ref={draftRef} rows={2} aria-label="Ответ в ветке" placeholder="Ответить в ветке… (Enter — отправить)" value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} />
             <button className="primary-button" type="submit" aria-label="Отправить в ветку" disabled={sending || !draft.trim()}><Send size={15} /></button>
