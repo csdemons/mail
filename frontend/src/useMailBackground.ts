@@ -9,6 +9,7 @@ import type { ModuleName } from './viewContext'
 import type { TalkRoom } from './types'
 import { currentRooms, refreshRooms, resetRooms, roomsAge, subscribeRooms } from './talkRoomsStore'
 import { zoomStep } from './appearance'
+import { createPollLoop } from './pollLoop'
 
 /** Напоминания по флажкам со сроком: проверка раз в 2 минуты (и при запуске). */
 export function useDueReminders(setNotice: (text: string) => void, pollSecs: MutableRefObject<number>) {
@@ -125,21 +126,22 @@ export function useChatNotifications(
   }, [connected])
 
   // Проверка: уведомления часто, беседы — когда уведомления изменились или подошёл срок.
+  // Цикл один на всё окно: одна проверка за раз, один владелец таймера, не больше одного повтора
+  // после неё. Иначе возврат фокуса во время сетевого запроса запускал второй цикл опроса.
   useEffect(() => {
     if (!connected) return
     let stopped = false
-    let timer: ReturnType<typeof setTimeout> | undefined
     let etag = ''
     let available = true
     // Приложения уведомлений нет — проверить снова через минуту, затем реже (до 10 минут):
     // его могли временно выключить при обновлении сервера.
     let retryAt = 0
     let retryMs = 60_000
-    async function tick() {
+    const loop = createPollLoop(async () => {
       const front = appInFront()
       let plan = pollPlan(front, moduleRef.current === 'chat', available)
+      let changed = false
       try {
-        let changed = false
         if (!available && Date.now() > retryAt) available = true
         if (available) {
           const n = await api.ncNotifications(etag)
@@ -152,21 +154,21 @@ export function useChatNotifications(
           }
           plan = pollPlan(front, moduleRef.current === 'chat', available)
         }
-        if (stopped) return
-        if (changed || roomsAge() >= plan.rooms * 1000) await refreshRooms(2000)
+        if (!stopped && (changed || roomsAge() >= plan.rooms * 1000)) await refreshRooms(2000)
       } catch { /* сеть — попробуем в следующий раз */ }
-      finally {
-        if (!stopped) timer = setTimeout(tick, (plan.notifications || plan.rooms) * 1000)
-      }
-    }
-    void tick()
+      return (plan.notifications || plan.rooms) * 1000
+    }, {
+      setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+      clearTimeout: (id) => window.clearTimeout(id),
+    })
+    loop.wake()
     // Вернулись в программу — сразу проверить, не дожидаясь редкого «фонового» срока.
-    const wake = () => { if (appInFront()) { if (timer) clearTimeout(timer); void tick() } }
+    const wake = () => { if (appInFront()) loop.wake() }
     window.addEventListener('focus', wake)
     document.addEventListener('visibilitychange', wake)
     return () => {
       stopped = true
-      if (timer) clearTimeout(timer)
+      loop.stop()
       window.removeEventListener('focus', wake)
       document.removeEventListener('visibilitychange', wake)
     }
