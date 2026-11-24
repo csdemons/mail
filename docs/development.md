@@ -91,6 +91,11 @@ npx tauri build --debug --no-bundle
 dbus-run-session -- tests/e2e/run.sh tests/e2e/e2e.py /tmp/shots   # ~10 минут
 ```
 
+Проверки интерфейса без сборки, браузера и серверов (раннер Node и компилятор TypeScript проекта):
+```bash
+cd frontend && npm run test:poll    # цикл фоновой проверки чата
+```
+
 E2E (Xvfb, GNOME Keyring, tauri-driver) проходит всю программу: вход, почту, редактор,
 календарь, контакты, Nextcloud, правила, поиск, работу без сети (через iptables), несколько
 учётных записей, Exchange (NTLM с проверкой MIC и привязки к TLS), XSS в письмах; снимки экранов —
