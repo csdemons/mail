@@ -85,11 +85,14 @@ interface Props {
   onNotice?: (text: string) => void
   /** Текст изменился (для автосохранения черновика). */
   onChange?: () => void
+  /** Вставка файлов и картинок из буфера: обработчик сам делает их вложениями.
+   *  Без него вставка файлов отклоняется с подсказкой про кнопку «Вложить файл». */
+  onPasteFiles?: (e: React.ClipboardEvent<HTMLDivElement>) => void
 }
 
 /** Редактор письма на contentEditable: шрифт, размер, начертание, цвет, списки,
  *  выравнивание, цитата, ссылки. Итоговый HTML дополнительно чистится в бэкенде. */
-const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initialText, initialHtml, autoFocus, onNotice, onChange }, ref) {
+const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initialText, initialHtml, autoFocus, onNotice, onChange, onPasteFiles }, ref) {
   const editor = useRef<HTMLDivElement>(null)
   const saved = useRef<Range | null>(null)
   const [state, setState] = useState({ bold: false, italic: false, underline: false, strike: false, ul: false, ol: false, font: '', size: '' })
@@ -250,11 +253,10 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
     }
   }
 
-  function onPaste(e: React.ClipboardEvent<HTMLDivElement>) {
-    if (e.clipboardData.files.length > 0) {
-      e.preventDefault()
-      onNotice?.('Картинки и файлы добавьте кнопкой «Вложить файл».')
-    }
+  function blockFiles(e: React.ClipboardEvent<HTMLDivElement>) {
+    if (e.clipboardData.files.length === 0) return
+    e.preventDefault()
+    onNotice?.('Картинки и файлы добавьте кнопкой «Вложить файл».')
   }
 
   // mousedown + preventDefault: кнопка не забирает фокус и выделение у текста.
@@ -309,7 +311,7 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
         aria-multiline="true"
         aria-label="Текст письма"
         data-placeholder="Напишите сообщение…"
-        onPaste={onPaste}
+        onPaste={onPasteFiles ?? blockFiles}
         onInput={() => onChange?.()}
         onKeyUp={refresh}
         onMouseUp={refresh}

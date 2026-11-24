@@ -1,6 +1,8 @@
 import { useEffect, useState, type ClipboardEvent } from 'react'
 
 import { api, errorText } from './api'
+import { attachmentsFromPaste } from './pasteAttachments'
+import { isFilePaste, type PasteData } from './pasteClipboard'
 import type { PickedFile } from './types'
 
 /** Вложения сообщения чата: выбор файлов, вставка из буфера обмена (картинки — с превью). */
@@ -52,33 +54,20 @@ export function useTalkAttachments(editing: boolean, notify: (text: string) => v
   async function onPaste(e: ClipboardEvent<HTMLTextAreaElement>) {
     if (editing) return
     const dt = e.clipboardData
-    const direct = [...dt.files]
-    const types = [...dt.types]
-    const text = dt.getData('text/plain')
-    const uris = dt.getData('text/uri-list')
-    const fileUris = /^file:\/\//im.test(uris) || /^(\/|file:\/\/)\S+$/m.test(text) && types.includes('text/uri-list')
-    if (direct.length === 0 && text && !fileUris) return // обычный текст — вставляется как есть
+    const data: PasteData = {
+      files: [...dt.files],
+      types: [...dt.types],
+      text: dt.getData('text/plain'),
+      uris: dt.getData('text/uri-list'),
+    }
+    if (!isFilePaste(data)) return // обычный текст — вставляется как есть
     e.preventDefault()
     const target = e.currentTarget
     try {
-      if (direct.length > 0) {
-        const picked: PickedFile[] = []
-        for (const f of direct) {
-          const buf = new Uint8Array(await f.arrayBuffer())
-          let bin = ''
-          for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000))
-          const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '')
-          const stamp = new Date().toLocaleString('ru-RU').replace(/[^\d]+/g, '-').replace(/-$/, '')
-          const name = f.name && f.name !== 'image.png' ? f.name : `Снимок ${stamp}.${ext}`
-          picked.push(await api.attachData(name, btoa(bin)))
-        }
-        await addPasted(picked)
-        return
-      }
-      const fromOs = await api.clipboardPasteFiles()
-      if (fromOs.length > 0) { await addPasted(fromOs); return }
+      const picked = await attachmentsFromPaste(data)
+      if (picked.length > 0) { await addPasted(picked); return }
       // В буфере всё-таки текст (например, путь к файлу, которого уже нет) — вставить его.
-      if (text) { target.focus(); document.execCommand('insertText', false, text) }
+      if (data.text) { target.focus(); document.execCommand('insertText', false, data.text) }
     } catch (err) {
       notify(`Не вставлено: ${errorText(err)}`)
     }
