@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty",
     "test:poll": "node --test scripts/test-mail-poll.mjs",
+    "test:talk": "node --test scripts/test-talk-read.mjs",
     "build:legacy": "node scripts/pdfjs-assets.mjs && tsc -b && vite build --mode legacy"
   },
   "dependencies": {
