@@ -154,6 +154,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .compose-field { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); padding: 12px 2px; }
 .compose-field span { width: 48px; color: var(--muted); }
 .compose-field input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: inherit; }
+.compose-field textarea { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: inherit; resize: none; line-height: 1.45; overflow-y: hidden; }
+.compose-field.recipient-field { align-items: flex-start; }
+.compose-field.recipient-field > span { padding-top: 2px; }
 .compose-body { min-height: 200px; resize: vertical; border: 0; outline: 0; padding: 16px 2px; background: transparent; color: inherit; }
 .compose-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); padding-top: 13px; }
 .compose-footer span { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px; }
@@ -638,10 +641,10 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 /* Окно письма в тёмной теме — светлее фона и с рамкой, чтобы не сливалось. */
 .theme-dark .modal-backdrop { background: rgba(0, 0, 0, .6); }
 .theme-dark .compose-modal, .theme-dark .settings-modal { background: #252f40; border-color: #41506a; box-shadow: 0 24px 80px #000a, 0 0 0 1px #4a5b78; }
-.theme-dark .compose-field input, .theme-dark .rt-content { color: #f4f7fc; }
+.theme-dark .compose-field input, .theme-dark .compose-field textarea, .theme-dark .rt-content { color: #f4f7fc; }
 /* Адреса в «Кому» и «Копия» — почти чёрным, легко читаются. */
-.compose-field input { color: #0f172a; font-weight: 500; }
-.compose-field input::placeholder { color: #9aa5b5; font-weight: 400; }
+.compose-field input, .compose-field textarea { color: #0f172a; font-weight: 500; }
+.compose-field input::placeholder, .compose-field textarea::placeholder { color: #9aa5b5; font-weight: 400; }
 .compose-field span { color: #4b5566; }
 .theme-dark .compose-field span { color: #b4c0d3; }
 .compose-header small { color: #4b5566; }
