@@ -126,10 +126,39 @@ mod tests {
     }
 
     #[test]
-    fn connectors_and_clients_are_built_without_extra_roots() {
-        // Во вшитом файле пока пусто — механизм не должен менять поведение.
+    fn connectors_and_clients_are_built() {
         assert!(connector().is_ok());
         assert!(client_builder().is_ok());
         assert!(smtp_tls("mail.example.test").is_ok());
+    }
+
+    #[test]
+    fn bundled_roots_are_valid_certificates() {
+        // Вшитые сертификаты должны читаться как X.509 на всех платформах: испорченный
+        // PEM ловится здесь, а не у пользователя при подключении к серверу.
+        let roots = extra_der();
+        assert!(!roots.is_empty(), "certs/extra-ca.pem пуст — сертификаты УЦ не вшиты");
+        for der in roots {
+            native_tls::Certificate::from_der(der)
+                .expect("сертификат в certs/extra-ca.pem не читается как X.509");
+        }
+    }
+
+    #[test]
+    #[ignore = "нужен доступ в сеть к серверу с сертификатом УЦ Минцифры"]
+    fn extra_roots_alone_trust_russian_ca_site() {
+        // Доверяем ТОЛЬКО вшитым корням. zakupki.gov.ru выбран потому, что системное
+        // хранилище его не доверяет (проверено: SELF_SIGNED_CERT_IN_CHAIN), а сертификат
+        // выпущен УЦ Минцифры — значит успех соединения доказывает работу вшитых корней.
+        let mut builder = native_tls::TlsConnector::builder();
+        builder.disable_built_in_roots(true);
+        for der in extra_der() {
+            builder.add_root_certificate(native_tls::Certificate::from_der(der).expect("X.509"));
+        }
+        let connector = builder.build().expect("connector");
+        let host = "zakupki.gov.ru";
+        let tcp = std::net::TcpStream::connect((host, 443)).expect("TCP");
+        tcp.set_read_timeout(Some(std::time::Duration::from_secs(20))).ok();
+        connector.connect(host, tcp).expect("TLS по вшитым корням");
     }
 }
