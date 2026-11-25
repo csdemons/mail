@@ -441,12 +441,35 @@ pub(crate) async fn append_sent_as(ctx: &AccountCtx, raw: &[u8]) -> Result<Strin
     result
 }
 
+/// Встроенная картинка письма: файл, выбранный или вставленный в окне, и её Content-ID в HTML.
+#[derive(Debug, serde::Deserialize)]
+pub struct InlineImage {
+    pub id: String,
+    pub cid: String,
+}
+
+/// Content-ID попадает в заголовок MIME — только безопасные символы.
+pub(crate) fn valid_cid(cid: &str) -> bool {
+    (1..=64).contains(&cid.len())
+        && cid.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'@'))
+}
+
 /// Вложения письма: файлы, выбранные в диалоге (по их id), — не больше предела сервера.
-pub(crate) async fn read_picked(ctx: &AccountCtx, attachments: &[String]) -> Result<Vec<smtp::OutgoingAttachment>> {
+/// Картинки из `inline` приходят с Content-ID и уходят внутрь письма, а не отдельным файлом.
+pub(crate) async fn read_picked(ctx: &AccountCtx, attachments: &[String], inline: &[InlineImage]) -> Result<Vec<smtp::OutgoingAttachment>> {
     let mut files = Vec::new();
     let mut total = 0u64;
     let picked = ctx.picked.lock().await;
-    for id in attachments {
+    let items = attachments
+        .iter()
+        .map(|id| (id.as_str(), None))
+        .chain(inline.iter().map(|i| (i.id.as_str(), Some(i.cid.as_str()))));
+    for (id, cid) in items {
+        if let Some(cid) = cid {
+            if !valid_cid(cid) {
+                return Err(AppError::Other("Некорректный идентификатор встроенной картинки".into()));
+            }
+        }
         let path = picked
             .get(id)
             .ok_or_else(|| AppError::Other("Вложение не найдено, выберите файл заново".into()))?;
@@ -458,7 +481,7 @@ pub(crate) async fn read_picked(ctx: &AccountCtx, attachments: &[String]) -> Res
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
         let content_type = mime_guess::from_path(path).first_or_octet_stream().to_string();
         let data = tokio::fs::read(path).await?;
-        files.push(smtp::OutgoingAttachment { name, content_type, data });
+        files.push(smtp::OutgoingAttachment { name, content_type, data, content_id: cid.map(str::to_string) });
     }
     Ok(files)
 }
@@ -477,6 +500,7 @@ pub async fn draft_save(
     in_reply_to: Option<String>,
     references: Option<String>,
     attachments: Vec<String>,
+    inline: Option<Vec<InlineImage>>,
     read_receipt: Option<bool>,
     replace_folder: Option<String>,
     replace_uid: Option<u32>,
@@ -487,7 +511,7 @@ pub async fn draft_save(
         return Err(AppError::Other("Некорректный ключ черновика".into()));
     }
     let (from_name, from_address) = sender(&ctx, from.as_deref()).await?;
-    let files = read_picked(&ctx, &attachments).await?;
+    let files = read_picked(&ctx, &attachments, &inline.unwrap_or_default()).await?;
     let message = smtp::build(smtp::Outgoing {
         from_name,
         from_address,
@@ -549,6 +573,7 @@ pub async fn send_message(
     in_reply_to: Option<String>,
     references: Option<String>,
     attachments: Vec<String>,
+    inline: Option<Vec<InlineImage>>,
     read_receipt: Option<bool>,
     delay_secs: Option<u32>,
     send_at: Option<String>,
@@ -568,7 +593,7 @@ pub async fn send_message(
         None => None,
     };
 
-    let files = read_picked(&ctx, &attachments).await?;
+    let files = read_picked(&ctx, &attachments, &inline.unwrap_or_default()).await?;
 
     let message = smtp::build(smtp::Outgoing {
         from_name,

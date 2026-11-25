@@ -13,6 +13,9 @@ pub struct OutgoingAttachment {
     pub name: String,
     pub content_type: String,
     pub data: Vec<u8>,
+    /// `Some(...)` — картинка внутри текста письма (multipart/related, Content-ID);
+    /// `None` — обычное вложение (Content-Disposition: attachment).
+    pub content_id: Option<String>,
 }
 
 pub struct Outgoing {
@@ -82,14 +85,42 @@ fn clean_header_value(v: &str) -> Option<String> {
     (!v.is_empty()).then_some(v)
 }
 
+/// Убрать картинки, которых нет внутри письма: `<img src="https://…">` из вставленного
+/// чужого HTML или из `data:`-ссылки. Оставляем только встроенные `cid:` — у них есть
+/// соответствующая часть письма. Так получатель не увидит битую картинку, а письмо
+/// не потянет чужой сервер (трекер) при открытии.
+fn strip_foreign_images(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        let Some(start) = lower.find("<img") else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..start]);
+        let tag_start = &rest[start..];
+        let end = tag_start.find('>').map(|i| i + 1).unwrap_or(tag_start.len());
+        let tag = &tag_start[..end];
+        let inner = tag.to_ascii_lowercase();
+        let cid = inner.contains("src=\"cid:") || inner.contains("src='cid:") || inner.contains("src=cid:");
+        if cid {
+            out.push_str(tag);
+        }
+        rest = &tag_start[end..];
+    }
+}
+
 /// Чистит HTML из редактора: только оформление текста, без скриптов,
-/// обработчиков, форм, внешних картинок и `data:`-ссылок.
+/// обработчиков, форм и внешних картинок. Картинки допускаются только встроенные —
+/// с адресом `cid:` и соответствующей частью письма (multipart/related).
 pub fn sanitize_html(html: &str) -> String {
     use std::collections::HashSet;
+    use std::borrow::Cow;
     let tags: HashSet<&str> = [
         "a", "b", "strong", "i", "em", "u", "s", "strike", "del", "sub", "sup", "br", "p", "div", "span", "font",
         "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4", "pre", "code", "hr", "table", "thead", "tbody",
-        "tr", "td", "th",
+        "tr", "td", "th", "img",
     ]
     .into_iter()
     .collect();
@@ -99,11 +130,19 @@ pub fn sanitize_html(html: &str) -> String {
         .generic_attributes(generic)
         .add_tag_attributes("font", &["face", "size", "color"])
         .add_tag_attributes("a", &["href", "title"])
+        .add_tag_attributes("img", &["src", "alt", "width", "height", "title"])
         .add_tag_attributes("td", &["colspan", "rowspan"])
         .add_tag_attributes("th", &["colspan", "rowspan"])
-        .url_schemes(["http", "https", "mailto", "tel"].into_iter().collect())
+        .url_schemes(["http", "https", "mailto", "tel", "cid"].into_iter().collect())
+        // `cid` разрешён общей схемой, но нужен только встроенным картинкам:
+        // внешняя картинка (http, data) в письме — это трекер или чужой запрос из
+        // программы получателя, поэтому у `img` остаётся лишь `cid:`.
+        .attribute_filter(|element, attribute, value| match (element, attribute) {
+            ("img", "src") if !value.to_ascii_lowercase().starts_with("cid:") => None,
+            _ => Some(Cow::Borrowed(value)),
+        })
         .link_rel(Some("noopener noreferrer"));
-    b.clean(html).to_string()
+    b.clean(&strip_foreign_images(html)).to_string()
 }
 
 /// Обёртка письма: кодировка и базовый шрифт, как в веб-клиентах.
@@ -154,18 +193,49 @@ pub fn build(msg: Outgoing) -> Result<Message> {
 
     let text = SinglePart::plain(msg.body.replace("\r\n", "\n"));
     let html = msg.html.filter(|h| !h.trim().is_empty()).map(|h| SinglePart::html(html_document(&h)));
-    let message = match (html, msg.attachments.is_empty()) {
-        (None, true) => builder.singlepart(text),
-        (Some(html), true) => builder.multipart(MultiPart::alternative().singlepart(text).singlepart(html)),
-        (html, false) => {
-            let mut mixed = match html {
-                Some(html) => MultiPart::mixed().multipart(MultiPart::alternative().singlepart(text).singlepart(html)),
-                None => MultiPart::mixed().singlepart(text),
-            };
-            for a in msg.attachments {
-                let ct = ContentType::parse(&a.content_type)
-                    .unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("valid"));
-                mixed = mixed.singlepart(Attachment::new(a.name).body(a.data, ct));
+    let ct_of = |raw: &str| ContentType::parse(raw).unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("valid"));
+    // Встроенные картинки (cid) идут рядом с HTML; остальное — обычные вложения.
+    let mut inline = Vec::new();
+    let mut files = Vec::new();
+    for a in msg.attachments {
+        if let Some(cid) = a.content_id {
+            inline.push(Attachment::new_inline_with_name(cid, a.name).body(a.data, ct_of(&a.content_type)));
+        } else {
+            files.push(Attachment::new(a.name).body(a.data, ct_of(&a.content_type)));
+        }
+    }
+    let message = match (html, inline.is_empty(), files.is_empty()) {
+        (None, _, true) => builder.singlepart(text),
+        (Some(html), true, true) => builder.multipart(MultiPart::alternative().singlepart(text).singlepart(html)),
+        // Картинка в тексте: multipart/related внутри alternative, как в Outlook.
+        (Some(html), false, no_files) => {
+            let mut related = MultiPart::related().singlepart(html);
+            for part in inline {
+                related = related.singlepart(part);
+            }
+            let alternative = MultiPart::alternative().singlepart(text).multipart(related);
+            if no_files {
+                builder.multipart(alternative)
+            } else {
+                let mut mixed = MultiPart::mixed().multipart(alternative);
+                for f in files {
+                    mixed = mixed.singlepart(f);
+                }
+                builder.multipart(mixed)
+            }
+        }
+        // HTML без встроенных картинок, но с обычными вложениями.
+        (Some(html), true, false) => {
+            let mut mixed = MultiPart::mixed().multipart(MultiPart::alternative().singlepart(text).singlepart(html));
+            for f in files {
+                mixed = mixed.singlepart(f);
+            }
+            builder.multipart(mixed)
+        }
+        (None, _, false) => {
+            let mut mixed = MultiPart::mixed().singlepart(text);
+            for f in files {
+                mixed = mixed.singlepart(f);
             }
             builder.multipart(mixed)
         }
@@ -338,6 +408,53 @@ mod tests {
     }
 
     #[test]
+    fn embeds_inline_image_as_related_part() {
+        let msg = build(Outgoing {
+            from_name: None,
+            from_address: "me@inst.test".into(),
+            to: vec!["you@inst.test".into()],
+            cc: vec![],
+            subject: "С картинкой".into(),
+            body: "Смотрите схему".into(),
+            html: Some(r#"<p>Смотрите схему <img src="cid:img1" alt="схема"><img src="https://track/x.png"></p>"#.into()),
+            in_reply_to: None,
+            references: None,
+            read_receipt: false,
+            extra_headers: vec![],
+            attachments: vec![
+                OutgoingAttachment {
+                    name: "схема.png".into(),
+                    content_type: "image/png".into(),
+                    data: vec![0x89, b'P', b'N', b'G'],
+                    content_id: Some("img1".into()),
+                },
+                OutgoingAttachment {
+                    name: "Отчёт.txt".into(),
+                    content_type: "text/plain".into(),
+                    data: b"data".to_vec(),
+                    content_id: None,
+                },
+            ],
+        })
+        .expect("message");
+        let raw = String::from_utf8(msg.formatted()).expect("utf8");
+        assert!(raw.contains("multipart/related"), "{raw}");
+        assert!(raw.contains("Content-ID: <img1>"), "{raw}");
+        assert!(raw.contains("Content-Disposition: inline"), "{raw}");
+        // Обычное вложение — отдельно от related, в mixed.
+        assert!(raw.contains("multipart/mixed") && raw.contains("Content-Disposition: attachment"), "{raw}");
+    }
+
+    #[test]
+    fn keeps_only_embedded_images_in_html() {
+        let clean = sanitize_html(r#"<p>схема <img src="cid:img1" alt="схема"></p><p><img src="https://track/x.png"></p><p><img src="data:image/png;base64,AAA"></p>"#);
+        assert!(clean.contains(r#"src="cid:img1""#), "встроенная картинка должна остаться: {clean}");
+        assert!(!clean.contains("track/x.png"), "внешняя картинка не должна остаться: {clean}");
+        assert!(!clean.contains("data:image"), "data:-картинка не должна остаться: {clean}");
+        assert_eq!(clean.matches("<img").count(), 1, "{clean}");
+    }
+
+    #[test]
     fn builds_reply_with_attachment() {
         let msg = build(Outgoing {
             from_name: Some("Юшков Дмитрий".into()),
@@ -355,6 +472,7 @@ mod tests {
                 name: "Отчёт.txt".into(),
                 content_type: "text/plain".into(),
                 data: "данные".as_bytes().to_vec(),
+                content_id: None,
             }],
         })
         .expect("message");

@@ -12,6 +12,7 @@
     "test:talk": "node --test scripts/test-talk-read.mjs",
     "test:autogrow": "node --test scripts/test-auto-grow.mjs",
     "test:paste": "node --test scripts/test-paste-clipboard.mjs",
+    "test:inline": "node --test scripts/test-inline-images.mjs",
     "build:legacy": "node scripts/pdfjs-assets.mjs && tsc -b && vite build --mode legacy"
   },
   "dependencies": {
