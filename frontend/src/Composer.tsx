@@ -10,6 +10,8 @@ import { composeWrap } from './appearance'
 import { checkRecipients, fillTemplate, newDraftKey, signatureById, signatureHtml, TEMPLATE_VARS, templateValues, type ExternalCheck } from './drafting'
 import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './sending'
 import { fileToBase64 } from './mailTools'
+import { attachmentsFromPaste } from './pasteAttachments'
+import { isFilePaste } from './pasteClipboard'
 
 interface Props {
   from: string
@@ -200,6 +202,22 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
       }
     }
   }
+
+  /** Ctrl+V: картинки и файлы из буфера — вложениями письма, как кнопкой «Вложить файл».
+   *  Обычный текст вставляется в письмо как есть. */
+  async function pasteFiles(e: React.ClipboardEvent<HTMLDivElement>) {
+    const dt = e.clipboardData
+    const data = { files: [...dt.files], types: [...dt.types], text: dt.getData('text/plain'), uris: dt.getData('text/uri-list') }
+    if (!isFilePaste(data)) return
+    e.preventDefault()
+    try {
+      const picked = await attachmentsFromPaste(data)
+      if (picked.length === 0) { setError('В буфере обмена нет файла — приложите его кнопкой «Вложить файл».'); return }
+      setFiles((list) => [...list, ...picked])
+      setError('')
+    } catch (err) { setError(errorText(err)) }
+  }
+
   const [tplOpen, setTplOpen] = useState(false)
   const [templates, setTemplates] = useState<MailTemplate[] | null>(null)
   const [tplName, setTplName] = useState('')
@@ -436,7 +454,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
           ? <RecipientField label="Копия" value={cc} onChange={setCc} contacts={contacts} />
           : <button type="button" className="text-button add-cc" onClick={() => setShowCc(true)}>+ Копия</button>}
         <label className="compose-field"><span>Тема</span><input value={subject} spellCheck lang="ru" onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
-        <RichEditor ref={editor} initialText={draft.body} initialHtml={draft.html} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} onChange={markChanged} />
+        <RichEditor ref={editor} initialText={draft.body} initialHtml={draft.html} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} onChange={markChanged} onPasteFiles={(e) => void pasteFiles(e)} />
         {files.length > 0 && (
           <div className="compose-files">
             {files.map((f) => (
