@@ -1,5 +1,3 @@
-import type { InlineImage } from './inlineImages'
-
 export type MailFilter = 'Все' | 'Непрочитанные' | 'Важные' | 'С флажком' | 'С вложениями'
 
 export type FolderRole = 'inbox' | 'drafts' | 'sent' | 'archive' | 'junk' | 'trash' | 'other'
@@ -246,13 +244,10 @@ export interface Draft {
   body: string
   inReplyTo: string | null
   references: string | null
-  /** Возврат в редактор после отмены отправки: оформленный текст, вложения, запрос о прочтении.
-   *  HTML хранится в редактируемом виде (картинки — `data:`), а встроенные картинки лежат
-   *  рядом в `inline`; транспортные `cid:`-ссылки делает только outboundInline перед отправкой. */
+  /** Снимок отмены: HTML в редактируемом виде и сами картинки (`inline`), а не только cid:. */
   html?: string
   files?: PickedFile[]
-  /** Встроенные картинки черновика: файл, его Content-ID и адрес для редактора. */
-  inline?: InlineImage[]
+  inline?: { id: string; cid: string; url: string }[]
   readReceipt?: boolean
   /** Ключ автосохранения: по нему в «Черновиках» заменяются прежние версии. */
   key?: string
