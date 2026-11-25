@@ -12,7 +12,7 @@ import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './s
 import { fileToBase64 } from './mailTools'
 import { attachmentsFromPaste } from './pasteAttachments'
 import { isFilePaste } from './pasteClipboard'
-import { newCid, outboundInline, type InlineImage } from './inlineImages'
+import { newCid, outboundInline, restoreInline, type InlineImage } from './inlineImages'
 import { useAutoGrow } from './useAutoGrow'
 
 interface Props {
@@ -208,21 +208,29 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   const [schedOpen, setSchedOpen] = useState(false)
   const [dropping, setDropping] = useState(false)
   // Картинки внутри текста письма: файл, data:-адрес для редактора и Content-ID для письма.
-  const [inline, setInline] = useState<InlineImage[]>([])
+  // Из снимка отмены приходят готовыми (иначе повторная отправка теряла картинку).
+  const [inline, setInline] = useState<InlineImage[]>(draft.inline ?? [])
+
+  // Текст в редакторе: снимок отмены может прийти в транспортном виде (cid:) — показываем
+  // картинки снова как data:, чтобы их было видно и они ушли со следующей отправкой.
+  const initialHtml = useMemo(() => (draft.html ? restoreInline(draft.html, draft.inline ?? []) : draft.html), [])
 
   // Черновик с встроенными картинками: в HTML они приходят как data:-адреса (бэкенд
   // разворачивает cid из related-частей). Прикрепляем их файлами заново, иначе при
   // следующей отправке картинка не уйдёт — внешние data:-ссылки вырезаются санитайзером.
   useEffect(() => {
-    const html = draft.html
+    const html = initialHtml
     if (!html || !html.includes('src="data:image/')) return
     void (async () => {
+      const known = new Set(inline.map((i) => i.url))
       const found: InlineImage[] = []
       const re = /src="(data:image\/([a-z0-9.+-]+);base64,([^"]+))"/gi
       for (const m of html.matchAll(re)) {
+        if (known.has(m[1])) continue
         try {
           const ext = m[2].replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '') || 'png'
           const picked = await api.attachData(`Встроенная картинка.${ext}`, m[3])
+          known.add(m[1])
           found.push({ id: picked.id, cid: newCid(), url: m[1] })
         } catch { /* картинку не удалось сохранить — при отправке её не будет */ }
       }
@@ -476,7 +484,9 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
       if (everSaved.current || replace.current) void api.draftDiscard(key.current, replace.current).catch(() => undefined)
       forgetLocal()
       if (ticket.id !== null && onQueued) {
-        onQueued(ticket.id, { ...draft, to, cc, subject, body, html: html ?? undefined, files, readReceipt: receipt, key: newDraftKey(), replace: null, signatureId: sigId, from: sender }, delaySecs)
+        // Снимок для «Отменить» и повторной отправки: редактируемый HTML и картинки рядом,
+      // иначе после отмены картинка терялась (в HTML оставались ссылки cid: без частей).
+      onQueued(ticket.id, { ...draft, to, cc, subject, body, html: editor.current?.html() ?? draft.html, inline, files, readReceipt: receipt, key: newDraftKey(), replace: null, signatureId: sigId, from: sender }, delaySecs)
       } else if (ticket.scheduledAt) {
         onSent(`Письмо будет отправлено ${formatWhen(ticket.scheduledAt)}. Оно ждёт в «Черновиках».`)
       } else {
@@ -537,7 +547,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
           ? <RecipientField label="Копия" value={cc} onChange={setCc} contacts={contacts} />
           : <button type="button" className="text-button add-cc" onClick={() => setShowCc(true)}>+ Копия</button>}
         <label className="compose-field"><span>Тема</span><input value={subject} spellCheck lang="ru" onChange={(e) => setSubject(e.target.value)} placeholder="Тема письма" /></label>
-        <RichEditor ref={editor} initialText={draft.body} initialHtml={draft.html} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} onChange={markChanged} onPasteFiles={(e) => void pasteFiles(e)} />
+        <RichEditor ref={editor} initialText={draft.body} initialHtml={initialHtml} autoFocus={draft.mode === 'reply' || draft.mode === 'replyAll'} onNotice={setError} onChange={markChanged} onPasteFiles={(e) => void pasteFiles(e)} />
         {files.length > 0 && (
           <div className="compose-files">
             {files.map((f) => (

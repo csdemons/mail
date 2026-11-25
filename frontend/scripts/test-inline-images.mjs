@@ -10,11 +10,42 @@ const code = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   fileName: 'inlineImages.ts',
 }).outputText
-const { newCid, outboundInline } =
+const { newCid, outboundInline, restoreInline } =
   await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 
 const URL_A = 'data:image/png;base64,AAAA'
 const URL_B = 'data:image/jpeg;base64,BBBB'
+
+test('Send → Undo → Send: картинка не теряется', () => {
+  // В редакторе картинка видна как data:-адрес.
+  const editable = `<p>схема <img src="${URL_A}" alt="схема"></p>`
+  const inline = [{ id: '1', cid: 'img-a', url: URL_A }]
+
+  // Первая отправка: в письме cid:-ссылка, картинка — отдельной частью.
+  const first = outboundInline(editable, inline)
+  assert.equal(first.inline.length, 1, 'первая отправка: картинка уходит частью письма')
+
+  // «Отменить»: снимок хранит редактируемый HTML и сами картинки — единый формат черновика.
+  const snapshot = { html: editable, inline }
+
+  // Новый Composer после отмены: картинка снова видна в редакторе и известна ему.
+  const reopened = restoreInline(snapshot.html, snapshot.inline)
+  assert.equal(reopened, editable, 'после отмены картинка на месте')
+  assert.equal(snapshot.inline.length, 1, 'после отмены картинка известна редактору')
+
+  // Повторная отправка: снова cid: и снова часть письма.
+  const second = outboundInline(reopened, snapshot.inline)
+  assert.equal(second.html, `<p>схема <img src="cid:img-a" alt="схема"></p>`)
+  assert.deepEqual(second.inline, [{ id: '1', cid: 'img-a' }], 'повторная отправка не теряет картинку')
+})
+
+test('снимок в транспортном виде (сделанный до исправления) тоже восстанавливается', () => {
+  const snapshot = { html: '<p><img src="cid:img-a"></p>', inline: [{ id: '1', cid: 'img-a', url: URL_A }] }
+  const reopened = restoreInline(snapshot.html, snapshot.inline)
+  assert.equal(reopened, `<p><img src="${URL_A}"></p>`)
+  // cid снова превращается в ссылку, а картинка остаётся в списке частей.
+  assert.equal(outboundInline(reopened, snapshot.inline).inline.length, 1)
+})
 
 test('адрес картинки заменяется на cid: — по нему письмо находит related-часть', () => {
   const html = `<p>схема <img src="${URL_A}" alt="схема"></p>`

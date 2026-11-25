@@ -27,3 +27,15 @@ export function outboundInline(html: string, inline: InlineImage[]): { html: str
   const used = inline.filter((img) => img.url && out.includes(`cid:${img.cid}`))
   return { html: out, inline: used.map(({ id, cid }) => ({ id, cid })) }
 }
+
+/** Обратное к outboundInline: транспортный HTML (с `cid:`) снова показывает картинки
+ *  в редакторе. Нужно для черновика, сохранённого в транспортном виде, — например,
+ *  снимка для отмены отправки, сделанного до этого исправления. */
+export function restoreInline(html: string, inline: InlineImage[]): string {
+  let out = html
+  for (const img of inline) {
+    if (!img.url || !img.cid) continue
+    out = out.split(`cid:${img.cid}`).join(img.url)
+  }
+  return out
+}
