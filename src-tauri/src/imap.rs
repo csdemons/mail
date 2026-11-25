@@ -69,10 +69,8 @@ pub async fn connect(creds: &Credentials) -> Result<Connection> {
     .map_err(|_| AppError::Timeout)?
     .map_err(|e| AppError::Connect(format!("{}:{}", creds.host, creds.port), e.to_string()))?;
 
-    let connector = native_tls::TlsConnector::builder()
-        .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
-        .build()
-        .map_err(|e| AppError::Tls(e.to_string()))?;
+    // Системные корни плюс вшитые (внутренний УЦ, например Минцифры) — см. tls.rs.
+    let connector = crate::tls::connector()?;
     let connector = tokio_native_tls::TlsConnector::from(connector);
 
     let tls = tokio::time::timeout(CONNECT_TIMEOUT, connector.connect(&creds.host, tcp))

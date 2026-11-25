@@ -146,6 +146,8 @@ pub struct Progress {
 }
 
 fn http(timeout: Duration) -> Result<reqwest::Client> {
+    // Только системные корни, намеренно: вшитый УЦ (certs/extra-ca.pem) не должен влиять
+    // на доверие к обновлениям — иначе он смог бы подменить релиз. См. tls.rs.
     reqwest::Client::builder()
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(15))

@@ -21,6 +21,7 @@ mod ews;
 mod ntlm;
 mod totp;
 mod netio;
+mod tls;
 mod winacl;
 mod mbox;
 mod pst;

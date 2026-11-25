@@ -286,7 +286,13 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>, reset_totp: Opti
 #[tauri::command]
 pub async fn diagnostics(state: State<'_, AppState>, folder: Option<String>) -> Result<String> {
     let ctx = state.ctx().await?;
-    let header = format!("Сервер: {}:{}, пользователь: {}\n", ctx.creds.host, ctx.creds.port, ctx.creds.username);
+    let header = format!(
+        "Сервер: {}:{}, пользователь: {}\nВшитые корневые сертификаты: {}\n",
+        ctx.creds.host,
+        ctx.creds.port,
+        ctx.creds.username,
+        if crate::tls::has_extra_roots() { "есть (certs/extra-ca.pem)" } else { "нет — доверяем только системному хранилищу" }
+    );
     // Отдельное соединение: диагностика не должна повлиять на рабочую сессию.
     let creds = ctx.creds.clone();
     let mut conn = imap::connect(&creds).await?;

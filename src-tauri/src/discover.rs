@@ -61,7 +61,7 @@ fn known(domain: &str, email: &str) -> Option<Discovered> {
 }
 
 fn http() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::tls::client_builder()?
         .timeout(Duration::from_secs(8))
         .connect_timeout(Duration::from_secs(5))
         .https_only(true)
@@ -130,7 +130,7 @@ async fn autoconfig(domain: &str, email: &str) -> Option<Discovered> {
 async fn tls_ok(host: &str, port: u16) -> bool {
     let attempt = async {
         let tcp = tokio::net::TcpStream::connect((host, port)).await.ok()?;
-        let connector = native_tls::TlsConnector::builder().min_protocol_version(Some(native_tls::Protocol::Tlsv12)).build().ok()?;
+        let connector = crate::tls::connector().ok()?;
         tokio_native_tls::TlsConnector::from(connector).connect(host, tcp).await.ok()
     };
     matches!(tokio::time::timeout(Duration::from_secs(5), attempt).await, Ok(Some(_)))

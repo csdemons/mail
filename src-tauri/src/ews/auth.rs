@@ -28,7 +28,7 @@ async fn open_pinned(url: &Url) -> Result<Pinned> {
         .map_err(|_| AppError::Timeout)?
         .map_err(|e| AppError::Unreachable(host.clone(), e.to_string()))?;
     let _ = tcp.set_nodelay(true);
-    let connector = native_tls::TlsConnector::builder().build().map_err(|e| tls_error(&e, &host))?;
+    let connector = crate::tls::connector().map_err(|e| tls_error(&e, &host))?;
     let tls = tokio::time::timeout(Duration::from_secs(15), tokio_native_tls::TlsConnector::from(connector).connect(&host, tcp))
         .await
         .map_err(|_| AppError::Timeout)?

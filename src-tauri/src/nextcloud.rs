@@ -43,7 +43,7 @@ pub fn normalize_base(raw: &str) -> Result<Url> {
 }
 
 fn http(timeout: Duration) -> Result<Client> {
-    Client::builder()
+    crate::tls::client_builder()?
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(15))
         .user_agent(concat!("RRCKI Mail/", env!("CARGO_PKG_VERSION"), " (Desktop)"))

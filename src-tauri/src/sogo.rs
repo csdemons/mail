@@ -28,7 +28,7 @@ impl std::fmt::Debug for SogoSession {
 }
 
 fn http() -> Result<Client> {
-    Client::builder()
+    crate::tls::client_builder()?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(15))
