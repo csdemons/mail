@@ -244,17 +244,14 @@ pub fn build(msg: Outgoing) -> Result<Message> {
 }
 
 fn transport(host: &str, port: u16, user: &str, pass: &str) -> Result<AsyncSmtpTransport<Tokio1Executor>> {
+    use lettre::transport::smtp::client::Tls;
     let creds = Credentials::new(user.to_string(), pass.to_string());
-    // 465 — SMTPS (TLS сразу), иначе STARTTLS (обычно 587). Проверка сертификата
-    // через системное хранилище, как и для IMAP.
-    let builder = if port == 465 {
-        AsyncSmtpTransport::<Tokio1Executor>::relay(host)
-    } else {
-        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-    }
-    .map_err(|e| AppError::Other(format!("SMTP {host}:{port}: {e}")))?;
-    Ok(builder
+    // 465 — SMTPS (TLS сразу, Wrapper), иначе STARTTLS (Required, обычно 587). Корни —
+    // системные и вшитые (tls.rs): внутренний УЦ работает без установки в ОС.
+    let tls = if port == 465 { Tls::Wrapper(crate::tls::smtp_tls(host)?) } else { Tls::Required(crate::tls::smtp_tls(host)?) };
+    Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
         .port(port)
+        .tls(tls)
         .credentials(creds)
         .timeout(Some(Duration::from_secs(60)))
         .build())

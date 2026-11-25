@@ -160,7 +160,7 @@ fn parse_multistatus(xml: &str) -> Result<Vec<DavResponse>> {
 impl DavClient {
     /// `base` — адрес сервера календаря/контактов из настроек: только ему отправляется пароль.
     pub fn new(user: &str, pass: &str, base: &Url) -> Result<Self> {
-        let http = Client::builder()
+        let http = crate::tls::client_builder()?
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(45))
             .connect_timeout(Duration::from_secs(15))
