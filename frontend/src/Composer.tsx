@@ -12,6 +12,7 @@ import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './s
 import { fileToBase64 } from './mailTools'
 import { attachmentsFromPaste } from './pasteAttachments'
 import { isFilePaste } from './pasteClipboard'
+import { useAutoGrow } from './useAutoGrow'
 
 interface Props {
   from: string
@@ -67,6 +68,9 @@ function replaceToken(value: string, replacement: string): string {
   return `${head}${replacement}, `
 }
 
+/** Предел высоты поля адресатов: около пяти строк, дальше список прокручивается. */
+const ADDRESSES_MAX_PX = 110
+
 function RecipientField({ label, value, onChange, contacts, autoFocus }: {
   label: string
   value: string
@@ -77,6 +81,9 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
   const [focused, setFocused] = useState(false)
   const [remote, setRemote] = useState<{ q: string; list: Contact[] }>({ q: '', list: [] })
   const [searching, setSearching] = useState(false)
+  // Список адресатов виден целиком: поле растёт до пяти строк, дальше прокручивается.
+  const fieldRef = useRef<HTMLTextAreaElement>(null)
+  useAutoGrow(fieldRef, value, ADDRESSES_MAX_PX)
   const token = currentToken(value).toLowerCase()
 
   // Поиск на сервере (корпоративная книга не отдаёт список целиком), с паузой после ввода.
@@ -116,10 +123,20 @@ function RecipientField({ label, value, onChange, contacts, autoFocus }: {
   return (
     <label className="compose-field recipient-field">
       <span>{label}</span>
-      <input
+      <textarea
+        ref={fieldRef}
+        rows={1}
         autoFocus={autoFocus}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(e.target.value.replace(/[\r\n]+/g, ', '))}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return
+          // Адреса разделяются запятой: Enter переносит к следующему, а не вставляет
+          // перевод строки — такой список разбор адресов не принял бы.
+          e.preventDefault()
+          const at = e.currentTarget.selectionStart ?? value.length
+          onChange(`${value.slice(0, at)}, ${value.slice(e.currentTarget.selectionEnd ?? at)}`)
+        }}
         onFocus={() => setFocused(true)}
         onBlur={() => setTimeout(() => setFocused(false), 150)}
         placeholder="user@организация.ru, Иванов Иван <ivanov@организация.ru>"
@@ -333,10 +350,18 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
     setAskClose(false)
     onClose()
   }
+  /** Закрыть, не сохраняя: выход из окна не должен зависеть от ответа сервера.
+   *  Версия, уже сохранённая в «Черновики», остаётся там нетронутой. */
+  function closeWithoutSaving() {
+    forgetLocal()
+    setAskClose(false)
+    onClose()
+  }
   // Esc — то же, что «Закрыть».
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (minimized) return
+      if (e.key === 'Escape' && askClose) { e.preventDefault(); setAskClose(false); return }
       if (e.key === 'Escape' && !e.defaultPrevented && !askClose && !extWarn && !tplOpen && !schedOpen && !ncPicker) { e.preventDefault(); requestClose() }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); openTemplates() }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); void saveDraft() }
@@ -541,6 +566,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
             <div className="settings-actions">
               <button className="text-button danger-text" onClick={closeDiscarding}><Trash2 size={14} /> Удалить черновик</button>
               <div className="reader-toolbar-spacer" />
+              <button className="secondary-button" onClick={closeWithoutSaving}>Закрыть без сохранения</button>
               <button className="secondary-button" onClick={() => setAskClose(false)}>Вернуться к письму</button>
               <button className="primary-button" autoFocus disabled={save.state === 'saving'} onClick={() => void closeSaving()}>Сохранить в черновики</button>
             </div>
