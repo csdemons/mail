@@ -79,6 +79,7 @@ export const api = {
   sendMessage: (m: {
     to: string; cc: string; subject: string; body: string; html: string | null
     inReplyTo: string | null; references: string | null; attachments: string[]
+    inline?: { id: string; cid: string }[]
     readReceipt?: boolean; delaySecs?: number; sendAt?: string | null; from?: string | null
   }) => invoke<SendTicket>('send_message', { ...m }),
   sendIdentities: () => invoke<Identity[]>('send_identities'),
@@ -304,7 +305,7 @@ export const api = {
   ncCreateDocument: (dir: string, name: string, kind: 'docx' | 'xlsx' | 'pptx') => invoke<EditResult>('nc_create_document', { dir, name, kind }),
   ncEditAttachment: (folder: string, uid: number, index: number, dir: string) => invoke<EditResult>('nc_edit_attachment', { folder, uid, index, dir }),
   getPolicy: () => invoke<UiPolicy>('get_policy'),
-  draftSave: (d: { key: string; to: string; cc: string; subject: string; body: string; html: string | null; inReplyTo: string | null; references: string | null; attachments: string[]; readReceipt: boolean; replaceFolder: string | null; replaceUid: number | null; from?: string | null }) =>
+  draftSave: (d: { key: string; to: string; cc: string; subject: string; body: string; html: string | null; inReplyTo: string | null; references: string | null; attachments: string[]; inline?: { id: string; cid: string }[]; readReceipt: boolean; replaceFolder: string | null; replaceUid: number | null; from?: string | null }) =>
     invoke<string>('draft_save', d),
   draftDiscard: (key: string, replace: { folder: string; uid: number } | null = null) =>
     invoke<void>('draft_discard', { key, replaceFolder: replace?.folder ?? null, replaceUid: replace?.uid ?? null }),

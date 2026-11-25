@@ -21,6 +21,8 @@ export interface RichEditorHandle {
   insertLinks: (links: { name: string; url: string }[]) => void
   /** Вставляет готовый фрагмент (шаблон) в место курсора или в начало письма. */
   insertHtml: (html: string) => void
+  /** Подставить адрес картинке, которая уже вставлена в текст (по её data-cid). */
+  setImageSrc: (cid: string, src: string) => void
   /** Заменить подпись (блок «-- …») другой; пустая — убрать. */
   setSignature: (html: string) => void
 }
@@ -118,6 +120,10 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ ini
       if (!el) return
       placeCursor(el)
       document.execCommand('insertHTML', false, html)
+    },
+    setImageSrc: (cid: string, src: string) => {
+      const img = editor.current?.querySelector<HTMLImageElement>(`img[data-cid="${cid}"]`)
+      if (img) img.src = src
     },
     setSignature: (html: string) => {
       const el = editor.current

@@ -12,6 +12,7 @@ import { formatWhen, loadSendPrefs, localInputValue, schedulePresets } from './s
 import { fileToBase64 } from './mailTools'
 import { attachmentsFromPaste } from './pasteAttachments'
 import { isFilePaste } from './pasteClipboard'
+import { newCid, outboundInline, type InlineImage } from './inlineImages'
 import { useAutoGrow } from './useAutoGrow'
 
 interface Props {
@@ -206,6 +207,57 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
   const [receipt, setReceipt] = useState(draft.readReceipt ?? loadSendPrefs().receiptDefault)
   const [schedOpen, setSchedOpen] = useState(false)
   const [dropping, setDropping] = useState(false)
+  // Картинки внутри текста письма: файл, data:-адрес для редактора и Content-ID для письма.
+  const [inline, setInline] = useState<InlineImage[]>([])
+
+  // Черновик с встроенными картинками: в HTML они приходят как data:-адреса (бэкенд
+  // разворачивает cid из related-частей). Прикрепляем их файлами заново, иначе при
+  // следующей отправке картинка не уйдёт — внешние data:-ссылки вырезаются санитайзером.
+  useEffect(() => {
+    const html = draft.html
+    if (!html || !html.includes('src="data:image/')) return
+    void (async () => {
+      const found: InlineImage[] = []
+      const re = /src="(data:image\/([a-z0-9.+-]+);base64,([^"]+))"/gi
+      for (const m of html.matchAll(re)) {
+        try {
+          const ext = m[2].replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '') || 'png'
+          const picked = await api.attachData(`Встроенная картинка.${ext}`, m[3])
+          found.push({ id: picked.id, cid: newCid(), url: m[1] })
+        } catch { /* картинку не удалось сохранить — при отправке её не будет */ }
+      }
+      if (found.length) setInline((prev) => [...prev, ...found])
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** Вставить картинки в текст письма (как в Outlook): они уходят внутрь письма,
+   *  а не отдельными вложениями. */
+  async function insertImages(list: PickedFile[]) {
+    if (!list.length) return
+    const items = list.map((f) => ({ file: f, cid: newCid(), alt: f.name.replace(/["<>]/g, '') }))
+    // Сразу все картинки одной вставкой, пока курсор на месте: адрес подставим, когда
+    // бэкенд сохранит файл (он нужен для показа в редакторе).
+    editor.current?.insertHtml(items.map((it) => `<img data-cid="${it.cid}" alt="${it.alt}">`).join(' '))
+    const added: InlineImage[] = []
+    for (const it of items) {
+      const url = await api.pickedPreview(it.file.id).catch(() => null)
+      if (!url) continue
+      editor.current?.setImageSrc(it.cid, url)
+      added.push({ id: it.file.id, cid: it.cid, url })
+    }
+    if (!added.length) return
+    setInline((prev) => [...prev, ...added])
+    markChanged()
+  }
+
+  /** HTML письма для отправки и черновика: то, что видно в редакторе (data:), заменяется
+   *  на cid: — содержимое картинок уходит в related-части письма. */
+  function outboundHtml(): { html: string | null; inline: { id: string; cid: string }[] } {
+    const html = editor.current?.html() ?? null
+    if (!html) return { html, inline: [] }
+    return outboundInline(html, inline)
+  }
 
   /** Файлы, перетащенные в окно письма (из проводника или с рабочего стола), — во вложения. */
   async function dropFiles(list: FileList) {
@@ -220,8 +272,8 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
     }
   }
 
-  /** Ctrl+V: картинки и файлы из буфера — вложениями письма, как кнопкой «Вложить файл».
-   *  Обычный текст вставляется в письмо как есть. */
+  /** Ctrl+V: картинки вставляются в текст письма (как в Outlook), остальные файлы —
+   *  вложениями. Обычный текст вставляется в письмо как есть. */
   async function pasteFiles(e: React.ClipboardEvent<HTMLDivElement>) {
     const dt = e.clipboardData
     const data = { files: [...dt.files], types: [...dt.types], text: dt.getData('text/plain'), uris: dt.getData('text/uri-list') }
@@ -230,7 +282,10 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
     try {
       const picked = await attachmentsFromPaste(data)
       if (picked.length === 0) { setError('В буфере обмена нет файла — приложите его кнопкой «Вложить файл».'); return }
-      setFiles((list) => [...list, ...picked])
+      const images = picked.filter((f) => /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name))
+      const rest = picked.filter((f) => !images.includes(f))
+      await insertImages(images)
+      if (rest.length) setFiles((list) => [...list, ...rest])
       setError('')
     } catch (err) { setError(errorText(err)) }
   }
@@ -291,16 +346,17 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
     ...draft, to, cc, subject, body: editor.current?.text() ?? draft.body, html: editor.current?.html() ?? draft.html,
     files, readReceipt: receipt, key: key.current, replace: replace.current, signatureId: sigId, from: sender,
   })
-  const meaningful = () => Boolean(to.trim() || subject.trim() || (editor.current?.text() ?? '').replace(/-- [\s\S]*$/, '').trim() || files.length)
+  const meaningful = () => Boolean(to.trim() || subject.trim() || (editor.current?.text() ?? '').replace(/-- [\s\S]*$/, '').trim() || files.length || inline.length)
 
   async function saveDraft(): Promise<boolean> {
     if (!meaningful()) return true
     setSave({ state: 'saving' })
     changed.current = false
+    const out = outboundHtml()
     try {
       await api.draftSave({
-        key: key.current, to, cc, subject, body: editor.current?.text() ?? '', html: editor.current?.html() ?? null,
-        inReplyTo: draft.inReplyTo, references: draft.references, attachments: files.map((f) => f.id), readReceipt: receipt,
+        key: key.current, to, cc, subject, body: editor.current?.text() ?? '', html: out.html,
+        inReplyTo: draft.inReplyTo, references: draft.references, attachments: files.map((f) => f.id), inline: out.inline, readReceipt: receipt,
         replaceFolder: replace.current?.folder ?? null, replaceUid: replace.current?.uid ?? null, from: sender,
       })
       // Исходный черновик заменён новой версией — дальше заменяются версии по ключу.
@@ -401,7 +457,8 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
     setBusy(true)
     setError('')
     try {
-      const html = editor.current?.html() ?? null
+      const out = outboundHtml()
+      const html = out.html
       const body = editor.current?.text() ?? ''
       const delaySecs = onQueued && !sendAt ? loadSendPrefs().undoSecs : 0
       const ticket = await api.sendMessage({
@@ -409,6 +466,7 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
         inReplyTo: draft.inReplyTo,
         references: draft.references,
         attachments: files.map((f) => f.id),
+        inline: out.inline,
         readReceipt: receipt,
         delaySecs,
         sendAt: sendAt ? sendAt.toISOString() : null,
