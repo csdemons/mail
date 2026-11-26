@@ -736,7 +736,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       }
     }
     if (files.length > 0) {
-      startDraft({ mode: 'new', to: '', cc: '', subject: files.length === 1 ? files[0].name : '', body: withSignature('', signature), inReplyTo: null, references: null, files })
+      composeInWindow({ ...newDraft(''), subject: files.length === 1 ? files[0].name : '', files })
     }
     if (errors.length > 0) setNotice(`Не приложено: ${errors.join('; ')}`)
   }
@@ -764,9 +764,26 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     }
   }
 
+  /** Новое письмо: черновик для отдельного окна (там его можно перенести на другой монитор). */
+  function newDraft(to: string, files?: PickedFile[]): Draft {
+    return { mode: 'new', to, cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null, files, signatureId: sigs?.newId ?? null }
+  }
+
+  /** Открыть новое письмо отдельным окном; если окно не открылось — обычным окном-модалом. */
+  function composeInWindow(draft: Draft) {
+    const from = profile?.displayName ? `${profile.displayName} <${myAddress}>` : myAddress
+    void api.openComposeWindow(JSON.stringify({ from, draft })).then(() => {
+      // Возврат фокуса в главное окно обновит папки и список после отправки.
+      windowOpened.current = true
+    }).catch((error) => {
+      setNotice(`Не удалось открыть окно письма: ${errorText(error)}`)
+      startDraft(draft)
+    })
+  }
+
   function openComposer(mode: 'new' | 'reply' | 'replyAll' | 'forward') {
     if (mode === 'new' || !detail) {
-      startDraft({ mode: 'new', to: '', cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null })
+      composeInWindow(newDraft(''))
       return
     }
     if (mode === 'forward') {
@@ -777,7 +794,7 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   }
 
   function composeTo(to: string) {
-    startDraft({ mode: 'new', to: `${to}, `, cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null })
+    composeInWindow(newDraft(`${to}, `))
   }
 
   /** Ответ/пересылка из меню — письмо может быть ещё не открыто: загружаем его. */

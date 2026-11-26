@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api, errorText, resetSession } from './api'
 import App from './App'
 import MessageWindow from './MessageWindow'
+import ComposeWindow from './ComposeWindow'
 import Login from './Login'
 import LockScreen from './LockScreen'
 import UpdateNotice from './UpdateNotice'
@@ -20,9 +21,12 @@ type State =
 export default function Root() {
   // Окно отдельного письма: вход уже выполнен в главном окне (общее состояние бэкенда).
   const msg = window.__RRCKI_MESSAGE
+  const compose = window.__RRCKI_COMPOSE
   return (
     <>
-      {msg ? <MessageWindow folder={msg.folder} uid={msg.uid} /> : <MainRoot />}
+      {msg ? <MessageWindow folder={msg.folder} uid={msg.uid} />
+        : compose ? <ComposeWindow payload={compose} />
+        : <MainRoot />}
       <ContextMenuHost />
     </>
   )

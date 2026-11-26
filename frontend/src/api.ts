@@ -296,6 +296,7 @@ export const api = {
     invoke<MessagePage>('list_messages', { folder, beforeUid, limit }),
   createFolder: (name: string) => invoke<void>('create_folder', { name }),
   openMessageWindow: (folder: string, uid: number, title: string) => invoke<void>('open_message_window', { folder, uid, title }),
+  openComposeWindow: (draft: string) => invoke<void>('open_compose_window', { draft }),
   pollNewMail: (folder: string, afterUid: number, limit: number) =>
     invoke<{ items: MessageSummary[]; lastUid: number }>('poll_new_mail', { folder, afterUid, limit }),
   notify: (title: string, body: string) => invoke<void>('notify', { title, body }),

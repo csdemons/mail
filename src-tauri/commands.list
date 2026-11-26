@@ -29,8 +29,8 @@ talk_reminder
 talk_set_reminder
 nc_user_profile
 nc_free_busy
-clipboard_paste_files
-picked_preview
+clipboard_paste_files   msg
+picked_preview          msg
 mailboxes_save
 mailboxes_rediscover
 signatures_save
@@ -138,6 +138,7 @@ app_info
 move_messages           msg
 create_folder           msg
 open_message_window
+open_compose_window
 attachment_data         msg
 message_html_remote     msg
 nc_avatar
