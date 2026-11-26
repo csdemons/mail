@@ -222,3 +222,21 @@ pub async fn open_message_window(app: AppHandle, folder: String, uid: u32, title
     let title = if title.trim().is_empty() { "Письмо — Atom Workspace".to_string() } else { format!("{title} — Atom Workspace") };
     crate::host::open_window(&app, &label, &title, &format!("window.__RRCKI_MESSAGE = {params};"))
 }
+
+/// Открывает новое письмо в отдельном окне — его можно перенести на другой монитор
+/// и развернуть: модальное окно главного окна за его пределы выйти не может.
+/// Метка `msg-compose-*`: окна писем уже имеют разрешения на отправку и черновики.
+#[tauri::command]
+pub async fn open_compose_window(app: AppHandle, draft: String) -> Result<()> {
+    // Черновик нового письма небольшой (тема, текст, подпись). Ограничение защищает
+    // от случайной огромной строки в скрипте инициализации окна.
+    if draft.len() > 256 * 1024 {
+        return Err(AppError::Other("Черновик слишком большой для отдельного окна".into()));
+    }
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let label = format!("msg-compose-{}", NEXT.fetch_add(1, Ordering::SeqCst));
+    // Экранируем разделители строк JS, чтобы содержимое письма не сломало скрипт.
+    let json = draft.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
+    let init = format!("window.__RRCKI_COMPOSE = {json};");
+    crate::host::open_window(&app, &label, "Новое письмо — Atom Workspace", &init)
+}

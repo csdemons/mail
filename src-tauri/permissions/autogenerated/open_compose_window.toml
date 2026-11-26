@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-compose-window"
+description = "Enables the open_compose_window command without any pre-configured scope."
+commands.allow = ["open_compose_window"]
+
+[[permission]]
+identifier = "deny-open-compose-window"
+description = "Denies the open_compose_window command without any pre-configured scope."
+commands.deny = ["open_compose_window"]

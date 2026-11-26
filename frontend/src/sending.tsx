@@ -31,11 +31,11 @@ interface Queued { id: number; snapshot: Draft; deadline: number }
 
 /** Письма в «окне отмены»: плашка с обратным отсчётом, «Отменить» и «Отправить сейчас».
  *  Отменённое (или не отправленное из-за ошибки) письмо возвращается в редактор. */
-export function useOutbox(onReopen: (draft: Draft) => void, onNotice: (text: string) => void) {
+export function useOutbox(onReopen: (draft: Draft) => void, onNotice: (text: string) => void, onSent?: () => void) {
   const [queue, setQueue] = useState<Queued[]>([])
   const [, tick] = useState(0)
-  const cb = useRef({ onReopen, onNotice })
-  cb.current = { onReopen, onNotice }
+  const cb = useRef({ onReopen, onNotice, onSent })
+  cb.current = { onReopen, onNotice, onSent }
 
   useEffect(() => {
     if (queue.length === 0) return
@@ -46,7 +46,11 @@ export function useOutbox(onReopen: (draft: Draft) => void, onNotice: (text: str
   function queued(id: number, snapshot: Draft, delaySecs: number) {
     setQueue((q) => [...q, { id, snapshot, deadline: Date.now() + delaySecs * 1000 }])
     api.sendWait(id)
-      .then((r) => cb.current.onNotice(r.warning ?? 'Письмо отправлено.'))
+      .then((r) => {
+        cb.current.onNotice(r.warning ?? 'Письмо отправлено.')
+        // Окно нового письма после успешной отправки закрывается само.
+        cb.current.onSent?.()
+      })
       .catch((e) => {
         const text = errorText(e)
         if (text.includes('отменена')) {

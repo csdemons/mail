@@ -139,6 +139,7 @@
     "allow-move-messages",
     "allow-create-folder",
     "allow-open-message-window",
+    "allow-open-compose-window",
     "allow-attachment-data",
     "allow-message-html-remote",
     "allow-nc-avatar",
