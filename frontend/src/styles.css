@@ -11,7 +11,7 @@
   font-size: 14px;
   /* Цвета темы — на всей странице: и в окне программы, и в том, что выводится поверх
      (уведомление об обновлении, всплывающие окна). */
-  --line: #e8edf4; --muted: #778397; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed;
+  --line: #e8edf4; --muted: #5f6b7d; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed;
   /* Оттенки акцента (Настройки → Вид → Цвет) */
   --accent-soft: #eaf2ff; --accent-soft2: #dbe9ff; --accent-line: #b9d2ff; --accent-ink: #1c6ce6;
 }
@@ -22,7 +22,7 @@ body { margin: 0; min-width: 360px; min-height: calc(100vh / var(--css-zoom, 1))
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid #75a7ff; outline-offset: 2px; }
-.app-shell { height: calc(100vh / var(--css-zoom, 1)); min-height: 0; display: flex; flex-direction: column; background: #fff; color: #202939; overflow: hidden; --line: #e8edf4; --muted: #778397; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed; }
+.app-shell { height: calc(100vh / var(--css-zoom, 1)); min-height: 0; display: flex; flex-direction: column; background: #fff; color: #202939; overflow: hidden; --line: #e8edf4; --muted: #5f6b7d; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed; }
 .theme-dark { background: #151a23; color: #e6ebf3; --line: #30394a; --muted: #9aa7ba; --panel: #1c2330; --surface: #202735; --hover: #2b3547; --blue: #5794ff; }
 .topbar { height: 58px; flex: 0 0 58px; border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 18px; gap: 24px; position: relative; z-index: 5; background: var(--surface); }
 .brand { width: 205px; flex: 0 0 205px; display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--blue); font-size: 16px; }
@@ -800,7 +800,7 @@ body.deck-dragging, body.deck-dragging * { cursor: grabbing !important; }
 .create-doc-form .settings-actions { margin-top: 4px; }
 
 /* Контекстное меню (правая кнопка мыши): вне .app-shell — свои значения цветов */
-:root:not(.theme-dark) { --line: #e8edf4; --muted: #778397; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed; --text: #202939; }
+:root:not(.theme-dark) { --line: #e8edf4; --muted: #5f6b7d; --panel: #f8fafc; --surface: #fff; --hover: #f1f5fb; --blue: #2474ed; --text: #202939; }
 .theme-dark { --text: #e6ebf3; }
 .context-menu { position: fixed; z-index: 80; min-width: 250px; padding: 4px; background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 34px #0003; outline: none; font-size: 13px; }
 .context-menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; }
@@ -1779,3 +1779,60 @@ button.talk-author:hover { text-decoration: underline; }
 .talk-bans { display: flex; flex-direction: column; gap: 4px; }
 .talk-bans strong { display: flex; align-items: center; gap: 6px; }
 .talk-ban-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+
+/* --- Полировка оформления -----------------------------------------------------------
+   Один набор токенов и одинаковые состояния у элементов. Компоновка не меняется:
+   только скругления, тени, цвет вторичного текста и короткие переходы. Блок стоит в
+   конце файла, поэтому правила ниже перекрывают прежние с той же специфичностью. */
+
+:root {
+  /* Отступы кратны 4 — блоки выравниваются друг с другом, а не «на глаз». */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
+  /* Четыре скругления вместо двадцати одного. */
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-pill: 999px;
+  /* Три уровня тени: кнопка, всплывающее меню, окно. */
+  --e-1: 0 1px 2px rgba(16, 24, 40, .06);
+  --e-2: 0 4px 12px rgba(16, 24, 40, .10);
+  --e-3: 0 12px 32px rgba(16, 24, 40, .16);
+  --t-fast: 120ms; --t-base: 180ms; --ease: cubic-bezier(.2, .7, .3, 1);
+}
+
+html.theme-dark {
+  --e-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --e-2: 0 6px 18px rgba(0, 0, 0, .45);
+  --e-3: 0 16px 40px rgba(0, 0, 0, .55);
+}
+
+/* Движение короткое и одинаковое; по системной настройке выключается полностью. */
+button, .module, .message-row, .filter-chip, .text-button, .icon-button,
+.primary-button, .secondary-button, input, textarea, select, .suggestions button {
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+/* Кнопки: единое скругление, лёгкая тень при наведении, «нажатие» на пиксель. */
+.primary-button, .secondary-button { border-radius: var(--r-md); }
+.primary-button:hover { background: var(--accent-ink); box-shadow: var(--e-1); }
+.primary-button:active, .secondary-button:active { transform: translateY(1px); box-shadow: none; }
+.icon-button:hover { background: var(--hover); color: var(--text); }
+
+/* Рейл разделов: подпись читается (было 9 px), наведение заметно. */
+.module { font-size: 10px; line-height: 1.15; letter-spacing: .1px; border-radius: var(--r-md); color: var(--muted); }
+.module:hover { background: var(--hover); color: var(--text); }
+
+/* Фильтры: подпись следует теме — раньше был жёсткий серый, в тёмной теме почти невидимый. */
+.filter-chip { border-radius: var(--r-pill); color: var(--muted); }
+.filter-chip.active, .filter-chip[aria-selected="true"] { color: var(--accent-ink); background: var(--accent-soft); border-color: var(--accent-line); }
+
+/* Всплывающие меню и окна: одна тень и одно скругление на все поверхности. */
+.popover, .settings-modal { border-radius: var(--r-lg); box-shadow: var(--e-3); }
+
+/* Отмеченная строка письма — на акцентном оттенке темы, а не отдельным синим. */
+.message-row.checked { background: var(--accent-soft2); box-shadow: inset 3px 0 var(--blue); }
