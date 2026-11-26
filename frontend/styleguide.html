@@ -130,18 +130,21 @@
   <section>
     <h2>Рейл разделов</h2>
     <div class="sg-card" style="display:flex;gap:16px;align-items:flex-start">
+      <!-- rail:start -->
       <nav class="module-rail sg-rail" aria-label="Модули">
-        <button class="module active"><span>Почта</span></button>
-        <button class="module"><span>Календарь</span></button>
-        <button class="module"><span>Контакты</span></button>
-        <button class="module"><span>Контрагенты</span></button>
-        <button class="module"><span>Задачи</span></button>
-        <button class="module"><span>Чат</span><b class="rail-badge">3</b></button>
-        <button class="module"><span>Файлы</span></button>
+        <button class="module active" title="Почта" aria-label="Почта" aria-current="page"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-mail" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"></rect><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path></svg></button>
+        <button class="module" title="Календарь" aria-label="Календарь"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar-days" aria-hidden="true"><path d="M8 2v4"></path><path d="M16 2v4"></path><rect width="18" height="18" x="3" y="4" rx="2"></rect><path d="M3 10h18"></path><path d="M8 14h.01"></path><path d="M12 14h.01"></path><path d="M16 14h.01"></path><path d="M8 18h.01"></path><path d="M12 18h.01"></path><path d="M16 18h.01"></path></svg></button>
+        <button class="module" title="Контакты" aria-label="Контакты"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-contact-round" aria-hidden="true"><path d="M16 2v2"></path><path d="M17.915 22a6 6 0 0 0-12 0"></path><path d="M8 2v2"></path><circle cx="12" cy="12" r="4"></circle><rect x="3" y="4" width="18" height="18" rx="2"></rect></svg></button>
+        <button class="module" title="Контрагенты" aria-label="Контрагенты"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-handshake" aria-hidden="true"><path d="m11 17 2 2a1 1 0 1 0 3-3"></path><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4"></path><path d="m21 3 1 11h-2"></path><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"></path><path d="M3 4h8"></path></svg></button>
+        <button class="module" title="Задачи (Deck)" aria-label="Задачи (Deck)"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="M10 9H8"></path><path d="M16 13H8"></path><path d="M16 17H8"></path></svg></button>
+        <button class="module" title="Чат" aria-label="Чат"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-message-circle" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"></path></svg><b class="rail-badge">3</b></button>
+        <button class="module" title="Файлы" aria-label="Файлы"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-cloud" aria-hidden="true"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path></svg></button>
       </nav>
-      <div class="sg-note" style="max-width:260px">
-        Подпись раздела — 10 px, наведение подсвечивает фон, активный раздел помечен
-        акцентной подложкой и линией снизу. Значок чата показывает непрочитанное.
+      <!-- rail:end -->
+      <div class="sg-note" style="max-width:280px">
+        Только значки: название раздела — в подсказке при наведении. Значки 22 px,
+        активный раздел помечен акцентной подложкой и линией слева, счётчик чата
+        показывается поверх значка.
       </div>
     </div>
   </section>

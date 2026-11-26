@@ -1836,3 +1836,19 @@ button, .module, .message-row, .filter-chip, .text-button, .icon-button,
 
 /* Отмеченная строка письма — на акцентном оттенке темы, а не отдельным синим. */
 .message-row.checked { background: var(--accent-soft2); box-shadow: inset 3px 0 var(--blue); }
+/* Рейл разделов: только значки. Подпись раздела — в подсказке (title) и для
+   программ чтения с экрана (aria-label), поэтому полоса уже, а значки крупнее.
+   Активный раздел — акцентная подложка и линия слева, как в панелях приложений. */
+.module-rail { flex-basis: 60px; padding: 10px 8px; gap: 6px; }
+.module { padding: 10px 0; gap: 0; }
+.module svg { width: 22px; height: 22px; stroke-width: 1.75; }
+.module.active { box-shadow: inset 2px 0 0 var(--accent-line); }
+.rail-badge { top: 3px; right: 5px; }
+@media (max-width: 900px) {
+  .module-rail { flex-basis: 54px; padding: 8px 6px; }
+  .module { padding: 9px 0; }
+}
+@media (max-width: 680px) {
+  .module-rail { flex-basis: 50px; padding: 7px 5px; }
+  .module svg { width: 20px; height: 20px; }
+}
