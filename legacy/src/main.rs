@@ -8,7 +8,7 @@
 
 #[path = "../../src-tauri/src/commands/mod.rs"]
 mod commands;
-#[path = "../../src-tauri/src/dav.rs"]
+#[path = "../../src-tauri/src/dav/mod.rs"]
 mod dav;
 #[path = "../../src-tauri/src/error.rs"]
 mod error;
