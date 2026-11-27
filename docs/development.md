@@ -48,8 +48,10 @@ src-tauri/src/
                      sending, diagnostics — общий обзор в mod.rs
   smtp.rs            отправка по SMTP
   ews.rs ntlm.rs     Exchange Web Services, вход NTLMv2 (MIC, привязка к TLS)
-  dav.rs sogo.rs     CalDAV/CardDAV, веб-API и фильтры SOGo
-  nextcloud.rs       Login Flow v2, Deck, Talk, файлы
+  dav/               CalDAV/CardDAV: client, contacts, events, ics — обзор в mod.rs
+  sogo.rs            веб-API и фильтры SOGo
+  nextcloud/         Login Flow v2, Deck, Talk, файлы, поиск, профиль (обзор в mod.rs);
+                     talk_more.rs и talk_tools.rs — ветки бесед и инструменты чата
   store.rs search.rs зашифрованное хранилище писем и индекс поиска
   offline.rs         очередь действий без сети
   rules.rs           правила обработки почты программы

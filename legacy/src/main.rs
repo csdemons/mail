@@ -8,7 +8,7 @@
 
 #[path = "../../src-tauri/src/commands/mod.rs"]
 mod commands;
-#[path = "../../src-tauri/src/dav.rs"]
+#[path = "../../src-tauri/src/dav/mod.rs"]
 mod dav;
 #[path = "../../src-tauri/src/error.rs"]
 mod error;
@@ -21,7 +21,7 @@ mod policy;
 mod tls;
 #[path = "../../src-tauri/src/imap/mod.rs"]
 mod imap;
-#[path = "../../src-tauri/src/nextcloud.rs"]
+#[path = "../../src-tauri/src/nextcloud/mod.rs"]
 mod nextcloud;
 #[path = "../../src-tauri/src/settings.rs"]
 mod settings;
