@@ -241,6 +241,15 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
 
   /** Вставить картинки в текст письма (как в Outlook): они уходят внутрь письма,
    *  а не отдельными вложениями. */
+  /** Открыть приложенный файл до отправки: проверить, что приложен нужный документ. */
+  async function openPicked(f: PickedFile) {
+    try {
+      await api.pickedOpen(f.id)
+    } catch (e) {
+      setError(`Не удалось открыть файл: ${errorText(e)}`)
+    }
+  }
+
   async function insertImages(list: PickedFile[]) {
     if (!list.length) return
     const items = list.map((f) => ({ file: f, cid: newCid(), alt: f.name.replace(/["<>]/g, '') }))
@@ -552,7 +561,11 @@ export default function Composer({ from, draft, contacts, ncConnected, onClose, 
           <div className="compose-files">
             {files.map((f) => (
               <span key={f.id} className="file-chip">
-                <Paperclip size={13} /> {f.name} <small>{formatSize(f.size)}</small>
+                <Paperclip size={13} />{' '}
+                <button type="button" className="file-chip-name" title={`Открыть «${f.name}» — проверить документ до отправки`} onClick={() => void openPicked(f)}>
+                  {f.name}
+                </button>{' '}
+                <small>{formatSize(f.size)}</small>
                 <button type="button" aria-label={`Убрать ${f.name}`} onClick={() => setFiles((l) => l.filter((x) => x.id !== f.id))}><X size={12} /></button>
               </span>
             ))}

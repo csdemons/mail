@@ -1858,3 +1858,7 @@ button, .module, .message-row, .filter-chip, .text-button, .icon-button,
 .compose-window .modal-backdrop { position: static; inset: auto; display: block; background: transparent; padding: 0; }
 .compose-window .compose-modal { width: 100%; max-height: none; min-height: 100vh; border: 0; border-radius: 0; box-shadow: none; padding: 16px 20px; }
 .compose-window-wait { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: var(--muted); font-size: 13px; }
+/* Вложение в письме до отправки: имя файла — кнопка, открывает документ в программе
+   компьютера, чтобы проверить вложение до отправки. Крестик рядом убирает файл. */
+.file-chip-name { border: 0; background: transparent; color: inherit; font: inherit; padding: 0; max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
+.file-chip-name:hover { color: var(--blue); text-decoration-style: solid; }

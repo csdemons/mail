@@ -1014,6 +1014,19 @@ pub async fn picked_preview(state: State<'_, AppState>, id: String) -> Result<Op
     Ok(Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(data))))
 }
 
+/// Открывает выбранный файл до отправки в программе компьютера — чтобы проверить,
+/// что приложен нужный документ. Доступны только файлы, выбранные в этом сеансе.
+#[tauri::command]
+pub async fn picked_open(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
+    let ctx = state.ctx().await?;
+    let Some(path) = ctx.picked.lock().await.get(&id).cloned() else {
+        return Err(AppError::Other("Файл уже не в письме — приложите его заново".into()));
+    };
+    if tokio::fs::metadata(&path).await.is_err() {
+        return Err(AppError::Other("Файл не найден: возможно, его переместили или удалили".into()));
+    }
+    crate::host::open_file(&app, &path)
+}
 /// Сбрасывает выбранный, но не отправленный файл.
 #[tauri::command]
 pub async fn forget_attachment(state: State<'_, AppState>, attachment: String) -> Result<()> {

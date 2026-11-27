@@ -32,6 +32,7 @@
     "allow-nc-free-busy",
     "allow-clipboard-paste-files",
     "allow-picked-preview",
+    "allow-picked-open",
     "allow-mailboxes-save",
     "allow-mailboxes-rediscover",
     "allow-signatures-save",

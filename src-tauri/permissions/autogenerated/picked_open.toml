@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-picked-open"
+description = "Enables the picked_open command without any pre-configured scope."
+commands.allow = ["picked_open"]
+
+[[permission]]
+identifier = "deny-picked-open"
+description = "Denies the picked_open command without any pre-configured scope."
+commands.deny = ["picked_open"]

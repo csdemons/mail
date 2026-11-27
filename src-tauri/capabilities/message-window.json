@@ -17,6 +17,7 @@
     "allow-send-identities",
     "allow-clipboard-paste-files",
     "allow-picked-preview",
+    "allow-picked-open",
     "allow-signatures-get",
     "allow-draft-discard",
     "allow-draft-save",
