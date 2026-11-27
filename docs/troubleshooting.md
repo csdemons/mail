@@ -49,7 +49,7 @@
 
 «Не удаётся проверить разработчика» при первом запуске — «Системные настройки →
 Конфиденциальность и безопасность → Всё равно открыть» или
-`xattr -dr com.apple.quarantine "/Applications/RRCKI Mail.app"`.
+`xattr -dr com.apple.quarantine "/Applications/Atom Workspace.app"`.
 
 ## Сообщить об ошибке
 

@@ -19,15 +19,15 @@
 
 Пакет для своей системы — на странице [Releases](https://github.com/csdemons/mail/releases):
 
-- **Windows 10/11** — `rrcki-mail_*_x64-setup.exe`. Ставится поверх старой версии,
+- **Windows 10/11** — `atom-workspace_*_x64-setup.exe`. Ставится поверх старой версии,
   настройки и пароли сохраняются.
-- **Windows 8/8.1** — `rrcki-mail_*_x64-setup-windows8.exe` (нужен WebView2 Runtime 109).
+- **Windows 8/8.1** — `atom-workspace_*_x64-setup-windows8.exe` (нужен WebView2 Runtime 109).
 - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+** —
-  `sudo apt install ./rrcki-mail_*_amd64-astra1.8.deb`.
-- **Astra Linux SE 1.7** — только `rrcki-mail_*_amd64-astra1.7.deb`. Версию Astra покажет
+  `sudo apt install ./atom-workspace_*_amd64-astra1.8.deb`.
+- **Astra Linux SE 1.7** — только `atom-workspace_*_amd64-astra1.7.deb`. Версию Astra покажет
   `cat /etc/astra_version`.
 - **РЕД ОС, ALT, Fedora** — `.rpm`; любой Linux — `.AppImage` (`chmod +x`, запустить).
-- **macOS** — `rrcki-mail_*_universal.dmg`, перетащить «RRCKI Mail» в «Программы». При первом
+- **macOS** — `atom-workspace_*_universal.dmg`, перетащить «Atom Workspace» в «Программы». При первом
   запуске: «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть».
 
 ## Вход

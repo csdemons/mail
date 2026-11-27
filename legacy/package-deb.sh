@@ -48,6 +48,6 @@ Description: Atom Workspace — почта, календарь, задачи, ч
  чат Talk из Nextcloud. Сборка для Debian 10 / Astra 1.7 (WebKitGTK 4.0).
 CONTROL
 mkdir -p "$OUT"
-dpkg-deb --root-owner-group --build "$ROOT" "$OUT/rrcki-mail_${VER}_amd64-astra1.7.deb"
-dpkg-deb -I "$OUT/rrcki-mail_${VER}_amd64-astra1.7.deb"
+dpkg-deb --root-owner-group --build "$ROOT" "$OUT/atom-workspace_${VER}_amd64-astra1.7.deb"
+dpkg-deb -I "$OUT/atom-workspace_${VER}_amd64-astra1.7.deb"
 rm -rf "$WORK"

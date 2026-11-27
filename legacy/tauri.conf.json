@@ -6,7 +6,7 @@
     "withGlobalTauri": false
   },
   "package": {
-    "productName": "RRCKI Mail",
+    "productName": "Atom Workspace",
     "version": "0.48.1"
   },
   "tauri": {
