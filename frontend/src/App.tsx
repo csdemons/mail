@@ -3,7 +3,7 @@ import {
   Mail, Paperclip, PanelRightOpen, X } from 'lucide-react'
 
 import {
-  api, errorText, messageKey, NC_MAIL_DIR, PAGE_SIZE } from './api'
+  api, errorText, messageKey, PAGE_SIZE } from './api'
 import type {
   Account, Contact, Draft, PickedFile, SignatureSet, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, UnifiedFilters, UnifiedRole, UnifiedItem } from './types'
 import Composer from './Composer'
@@ -18,7 +18,7 @@ import { QueuePanel, useConnection } from './OfflineQueue'
 import CalendarView from './CalendarView'
 import MailFilters from './MailFilters'
 import ContextMenu from './ContextMenu'
-import GlobalSearch, { type Found } from './GlobalSearch'
+import GlobalSearch from './GlobalSearch'
 import TaskFromMail from './TaskFromMail'
 import type { MenuItem } from './ContextMenu'
 import DuePicker from './DuePicker'
@@ -45,6 +45,7 @@ import { useFolders } from './useFolders'
 import { useNewMailPolling } from './useNewMailPolling'
 import { rowMenuItems as rowMenuFor } from './mailRowMenu'
 import { useSavedViews } from './useSavedViews'
+import { createReading } from './appReading'
 import { useMailSearch } from './useMailSearch'
 import { useProfile } from './useProfile'
 import IncomingCall from './IncomingCall'
@@ -374,6 +375,37 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     setFolders((list) => list.map((f) => (f.id === folder ? { ...f, unseen: Math.max(0, f.unseen + delta) } : f)))
   }
 
+  function mailboxOf(folder: string | null | undefined): string | null {
+    const path = folders.find((f) => f.id === folder)?.path ?? folder ?? ''
+    const m = /^shared\/([^/]+@[^/]+)(\/|$)/i.exec(path)
+    return m ? m[1].toLowerCase() : null
+  }
+
+  /** «Я» для «Ответить всем»: свой адрес и ящик, из которого отвечают. */
+  const meFor = (folder: string | null | undefined) => [myAddress, mailboxOf(folder)].filter(Boolean).join(',')
+
+  function startDraft(next: Draft, folder: string | null = folderId) {
+    // Свёрнутое письмо не теряем: сначала его нужно дописать или закрыть.
+    if (draftRef.current) { setComposeMin(false); setNotice('Уже открыто письмо — допишите или закройте его, затем начните новое.'); return }
+    // Письмо из подключённого ящика (или новое, пока открыт его ящик) — от имени этого ящика.
+    if (next.from === undefined) next = { ...next, from: mailboxOf(folder) }
+    // Какая подпись вставлена — чтобы в окне письма можно было выбрать другую.
+    setDraft(next.signatureId !== undefined ? next : { ...next, signatureId: (next.mode === 'new' ? sigs?.newId : sigs?.replyId) ?? null })
+    // Контакты для подсказок адресов — один раз за сессию, ошибки не мешают письму.
+    if (!contactsRequested.current) {
+      contactsRequested.current = true
+      api.listContacts().then((r) => setContacts(r.contacts)).catch(() => undefined)
+    }
+  }
+
+  // Открытие писем, вложения и отписка — в appReading.ts; зависимости передаются явно.
+  const { openFound, openMailById, continueDraft, openMessage, doUnsubscribe, sendLinks, saveToNextcloud, saveAttachment } = createReading({
+    setNotice, startDraft, patchMessage, adjustUnseen, messageKey, nextFocus, openHistory, clearSearch,
+    lastOpened, detailRequest, detail, myAddress, signature,
+    setModule, setUnified, setFolderId, setSelectedKey, setReaderOpen, setDetail, setDetailError, setDetailLoading,
+    setFilesFocus, setContactFocus, setEventFocus, setDeckFocus, setTalkFocus,
+  })
+
   // Переключились из общей папки на другую учётную запись — сразу открыть выбранное
   // письмо; иначе — вернуть письмо, открытое в этой учётной записи в прошлый раз.
   const openedInitial = useRef(false)
@@ -403,121 +435,11 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     if (saved && saved.folderId === folderId && saved.scrollTop > 0 && listRef.current) listRef.current.scrollTop = saved.scrollTop
   }, [loading, messages.length, unified, folderId, saved])
 
-  /** Открыть найденное (общий поиск, история организации) в его разделе. */
-  function openFound(f: Found) {
-    const n = nextFocus()
-    switch (f.kind) {
-      case 'mail':
-        setModule('mail')
-        clearSearch()
-        setUnified(null)
-        setFolderId(f.m.folder)
-        void openMessage(f.m)
-        break
-      case 'file': setFilesFocus({ path: f.f.path, isDir: f.f.isDir, n }); setModule('files'); break
-      case 'contact': setContactFocus({ contact: f.c, n }); setModule('contacts'); break
-      case 'event': setEventFocus({ e: f.e, n }); setModule('calendar'); break
-      case 'card': setDeckFocus({ boardId: f.h.boardId, cardId: f.h.card.id, n }); setModule('deck'); break
-      case 'chat': setTalkFocus({ token: f.h.token, messageId: f.h.messageId, n }); setModule('chat'); break
-      case 'org': openHistory(f.domain); break
-    }
-  }
-
-  /** Письмо по Message-ID (ссылка из карточки Deck). */
-  async function openMailById(msgId: string) {
-    const m = await api.mailByMsgid(msgId).catch(() => null)
-    if (m) openFound({ kind: 'mail', m })
-    else setNotice('Письмо не найдено среди хранящихся на компьютере — найдите его поиском по теме.')
-  }
-
-  /** Письмо из «Черновиков» — дописать: тот же текст, получатели и вложения; при сохранении заменяется. */
-  async function continueDraft(d: MessageDetail) {
-    const ids = (d.references ?? '').split(/\s+/).filter(Boolean)
-    let files: PickedFile[] = []
-    if (d.attachments.length) {
-      try { files = await api.forwardAttachments(d.folder, d.uid) } catch (e) { setNotice(`Вложения черновика не приложены: ${errorText(e)}`) }
-    }
-    startDraft({
-      mode: 'new', to: d.to.join(', '), cc: d.cc.join(', '), subject: d.subject, body: d.bodyText, html: d.bodyHtml ?? undefined,
-      inReplyTo: ids[ids.length - 1] ?? null, references: d.references, files, readReceipt: false,
-      replace: { folder: d.folder, uid: d.uid }, signatureId: null,
-      from: d.fromAddress && d.fromAddress.toLowerCase() !== myAddress.toLowerCase() ? d.fromAddress.toLowerCase() : null })
-  }
-
-  async function openMessage(message: MessageSummary) {
-    lastOpened.current = message
-    const key = messageKey(message)
-    const request = ++detailRequest.current
-    setSelectedKey(key)
-    setReaderOpen(true)
-    setDetail(null)
-    setDetailError('')
-    setDetailLoading(true)
-    try {
-      const loaded = await api.getMessage(message.folder, message.uid)
-      if (request !== detailRequest.current) return
-      setDetail(loaded)
-      patchMessage(key, { hasAttachments: loaded.hasAttachments })
-      if (loaded.unread) {
-        patchMessage(key, { unread: false })
-        adjustUnseen(message.folder, -1)
-        api.setFlag(message.folder, message.uid, 'seen', true).catch((error) => {
-          patchMessage(key, { unread: true })
-          adjustUnseen(message.folder, +1)
-          setNotice(`Не удалось отметить письмо прочитанным: ${errorText(error)}`)
-        })
-      }
-    } catch (error) {
-      if (request === detailRequest.current) setDetailError(errorText(error))
-    } finally {
-      if (request === detailRequest.current) setDetailLoading(false)
-    }
-  }
-
   const { toggleFlag, setCategory, setDueFor, dueMenuItems, categoryMenuItems, markSpam, snoozeItems, unsnoozeItems, snoozeMenuItems } = useMessageFlags({
     patchMessage, adjustUnseen, dropFromList, categories, setDuePick, setSnoozePick, setNotice,
     openSettings: () => setShowSettings(true) })
 
-  async function doUnsubscribe(d: MessageDetail) {
-    try {
-      const r = await api.unsubscribe(d.folder, d.uid)
-      if (r.done) setNotice(`Вы отписаны от рассылки (${r.how}).`)
-      else if (r.openUrl) { setNotice('Отписка — на сайте рассылки: открываю в браузере.'); void api.openLink(r.openUrl).catch(() => undefined) }
-    } catch (e) {
-      setNotice(`Не удалось отписаться: ${errorText(e)}`)
-    }
-  }
-
   const { diagText, diagBusy, runDiagnostics, copyDiagnostics } = useDiagnostics(folderId, currentFolder, messages.length, setNotice)
-
-  /** Новое письмо со ссылками на файлы Nextcloud. */
-  function sendLinks(links: { name: string; url: string }[]) {
-    const lines = links.map((l) => `${l.name}: ${l.url}`).join('\n')
-    startDraft({
-      mode: 'new', to: '', cc: '', inReplyTo: null, references: null,
-      subject: links.length === 1 ? links[0].name : `Файлы (${links.length})`,
-      body: `\n\n${links.length === 1 ? 'Ссылка на файл' : 'Ссылки на файлы'}:\n${lines}` + withSignature('', signature) })
-  }
-
-  async function saveToNextcloud(index: number, name: string) {
-    if (!detail) return
-    try {
-      const path = await api.ncSaveMailAttachment(detail.folder, detail.uid, index, NC_MAIL_DIR)
-      setNotice(`«${name}» сохранено в Nextcloud: ${path}`)
-    } catch (error) {
-      setNotice(`Не удалось сохранить в Nextcloud: ${errorText(error)}`)
-    }
-  }
-
-  async function saveAttachment(index: number) {
-    if (!detail) return
-    try {
-      const path = await api.saveAttachment(detail.folder, detail.uid, index)
-      if (path) setNotice(`Сохранено: ${path}`)
-    } catch (error) {
-      setNotice(`Не удалось сохранить вложение: ${errorText(error)}`)
-    }
-  }
 
   const visibleMessages = useMemo(() => {
     const q = searching ? '' : query.trim().toLowerCase()
@@ -742,28 +664,6 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   }
 
   /** Адрес подключённого ящика, которому принадлежит папка (`shared/<адрес>/…`), — отвечать от его имени. */
-  function mailboxOf(folder: string | null | undefined): string | null {
-    const path = folders.find((f) => f.id === folder)?.path ?? folder ?? ''
-    const m = /^shared\/([^/]+@[^/]+)(\/|$)/i.exec(path)
-    return m ? m[1].toLowerCase() : null
-  }
-  /** «Я» для «Ответить всем»: свой адрес и ящик, из которого отвечают. */
-  const meFor = (folder: string | null | undefined) => [myAddress, mailboxOf(folder)].filter(Boolean).join(',')
-
-  function startDraft(next: Draft, folder: string | null = folderId) {
-    // Свёрнутое письмо не теряем: сначала его нужно дописать или закрыть.
-    if (draftRef.current) { setComposeMin(false); setNotice('Уже открыто письмо — допишите или закройте его, затем начните новое.'); return }
-    // Письмо из подключённого ящика (или новое, пока открыт его ящик) — от имени этого ящика.
-    if (next.from === undefined) next = { ...next, from: mailboxOf(folder) }
-    // Какая подпись вставлена — чтобы в окне письма можно было выбрать другую.
-    setDraft(next.signatureId !== undefined ? next : { ...next, signatureId: (next.mode === 'new' ? sigs?.newId : sigs?.replyId) ?? null })
-    // Контакты для подсказок адресов — один раз за сессию, ошибки не мешают письму.
-    if (!contactsRequested.current) {
-      contactsRequested.current = true
-      api.listContacts().then((r) => setContacts(r.contacts)).catch(() => undefined)
-    }
-  }
-
   /** Новое письмо: черновик для отдельного окна (там его можно перенести на другой монитор). */
   function newDraft(to: string, files?: PickedFile[]): Draft {
     return { mode: 'new', to, cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null, files, signatureId: sigs?.newId ?? null }
