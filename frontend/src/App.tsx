@@ -5,7 +5,7 @@ import {
 import {
   api, errorText, messageKey, PAGE_SIZE } from './api'
 import type {
-  Account, Contact, Draft, PickedFile, SignatureSet, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, UnifiedFilters, UnifiedRole, UnifiedItem } from './types'
+  Account, Contact, Draft, SignatureSet, MailFilter, MessageDetail, MessageSummary, Scheduled, Category, UnifiedFilters, UnifiedRole } from './types'
 import Composer from './Composer'
 import DeckView from './DeckView'
 import TalkView from './TalkView'
@@ -22,20 +22,18 @@ import GlobalSearch from './GlobalSearch'
 import TaskFromMail from './TaskFromMail'
 import type { MenuItem } from './ContextMenu'
 import DuePicker from './DuePicker'
-import { fileToBase64 } from './mailTools'
-import { threadKeys, userCategories } from './mailExtras'
+import { userCategories } from './mailExtras'
 import ScheduledMail from './ScheduledMail'
 import { useOutbox } from './sending'
 import { signatureById } from './drafting'
 import { NO_FILTERS, UnifiedColumn, useAccounts } from './Accounts'
 import { saveView, savedView, type ModuleName, type ViewContext } from './viewContext'
-import { buildDraft, ensureArchive, forwardDraft, withSignature } from './mailActions'
-import FolderPicker, { trashFor } from './FolderPicker'
-import { loadPrefs, savePrefs } from './notifications'
+import FolderPicker from './FolderPicker'
+import { loadPrefs } from './notifications'
 import type { NotifyPrefs } from './notifications'
 import Splitter from './Splitter'
 
-import { byFolder, dateGroup, folderLabel, pluralLetters } from './mailLabels'
+import { dateGroup, folderLabel, pluralLetters } from './mailLabels'
 import { useAutolock } from './useAutolock'
 import { useTheme } from './useTheme'
 import { useDiagnostics } from './useDiagnostics'
@@ -46,6 +44,11 @@ import { useNewMailPolling } from './useNewMailPolling'
 import { rowMenuItems as rowMenuFor } from './mailRowMenu'
 import { useSavedViews } from './useSavedViews'
 import { createReading } from './appReading'
+import { createListOps } from './appListOps'
+import { createActions } from './appActions'
+import { createRowClick } from './appRowClick'
+import { createFileDrop } from './appFileDrop'
+import { filterVisible, threadRows } from './mailView'
 import { useMailSearch } from './useMailSearch'
 import { useProfile } from './useProfile'
 import IncomingCall from './IncomingCall'
@@ -233,16 +236,6 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   const othersUnseen = Object.values(acc.unread).reduce<number>((a, n) => a + (n ?? 0), 0)
   useEffect(() => { void api.setUnread(inboxUnseen + othersUnseen).catch(() => undefined) }, [inboxUnseen, othersUnseen])
 
-  function updatePrefs(patch: Partial<NotifyPrefs>) {
-    setPrefs((p) => {
-      const next = { ...p, ...patch }
-      savePrefs(next)
-      return next
-    })
-  }
-
-
-
   // Защита от гонок: ответ на устаревший запрос игнорируется.
   const listRequest = useRef(0)
   const detailRequest = useRef(0)
@@ -298,18 +291,11 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   })
   const [showQueue, setShowQueue] = useState(false)
   const [checkingConn, setCheckingConn] = useState(false)
-  async function checkConnection() {
-    setCheckingConn(true)
-    try {
-      const s = await api.offlineCheck()
-      conn.setStatus(s)
-      if (!s.online) setNotice('Связи с сервером пока нет.')
-    } catch (error) {
-      setNotice(errorText(error))
-    } finally {
-      setCheckingConn(false)
-    }
-  }
+  // Операции со списком — в appListOps.ts; зависимости передаются явно.
+  const { updatePrefs, checkConnection, loadMore, refresh, patchMessage, adjustUnseen } = createListOps({
+    setNotice, setPrefs, conn, setCheckingConn, messages, folderId, listRequest, setLoadingMore,
+    setMessages, setTotal, setHasMore, total, loadFolders, loadFirstPage, setSearchResults, setDetail, setFolders,
+  })
   const offline = conn.status ? !conn.status.online : Boolean(account.offline)
 
   // Действия в окне письма (ответ, флажок, архив, удаление) видны в списке после возврата.
@@ -339,41 +325,6 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
-
-  async function loadMore() {
-    const request = listRequest.current
-    setLoadingMore(true)
-    try {
-      const oldest = messages.reduce<number | null>((min, m) => (min === null || m.uid < min ? m.uid : min), null)
-      const page = await api.listMessages(folderId, oldest, PAGE_SIZE)
-      if (request !== listRequest.current) return
-      setMessages((items) => {
-        const known = new Set(items.map(messageKey))
-        return [...items, ...page.items.filter((m) => !known.has(messageKey(m)))]
-      })
-      setTotal(page.total)
-      setHasMore(page.hasMore)
-    } catch (error) {
-      setNotice(`Не удалось загрузить письма: ${errorText(error)}`)
-    } finally {
-      setLoadingMore(false)
-    }
-  }
-
-  async function refresh() {
-    const [, count] = await Promise.all([loadFolders(), loadFirstPage(folderId, true)])
-    if (typeof count === 'number') setNotice(`Список обновлён: ${count} из ${total || count} писем загружено.`)
-  }
-
-  function patchMessage(key: string, patch: Partial<MessageSummary>) {
-    setMessages((items) => items.map((m) => (messageKey(m) === key ? { ...m, ...patch } : m)))
-    setSearchResults((items) => items && items.map((m) => (messageKey(m) === key ? { ...m, ...patch } : m)))
-    setDetail((d) => (d && messageKey(d) === key ? { ...d, ...patch } : d))
-  }
-
-  function adjustUnseen(folder: string, delta: number) {
-    setFolders((list) => list.map((f) => (f.id === folder ? { ...f, unseen: Math.max(0, f.unseen + delta) } : f)))
-  }
 
   function mailboxOf(folder: string | null | undefined): string | null {
     const path = folders.find((f) => f.id === folder)?.path ?? folder ?? ''
@@ -441,41 +392,23 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
 
   const { diagText, diagBusy, runDiagnostics, copyDiagnostics } = useDiagnostics(folderId, currentFolder, messages.length, setNotice)
 
-  const visibleMessages = useMemo(() => {
-    const q = searching ? '' : query.trim().toLowerCase()
-    return pool.filter((m) => {
-      const filterMatch =
-        filter === 'Все' ? true :
-        filter === 'Непрочитанные' ? m.unread :
-        filter === 'Важные' ? m.important :
-        filter === 'С флажком' ? m.flagged :
-        m.hasAttachments
-      if (!filterMatch) return false
-      if (catFilter && !(m.keywords ?? []).some((k) => k.toLowerCase() === catFilter.toLowerCase())) return false
-      if (!q) return true
-      return `${m.fromName} ${m.fromAddress} ${m.subject} ${m.to.join(' ')}`.toLowerCase().includes(q)
-    })
-  }, [pool, searching, filter, query, catFilter])
+  const visibleMessages = useMemo(() => filterVisible(pool, { searching, query, filter, catFilter }), [pool, searching, filter, query, catFilter])
 
 
-  /** Строки списка: цепочки свёрнуты в одну строку (новое письмо сверху), раскрываются стрелкой. */
-  const listRows = useMemo(() => {
-    if (!threadsOn || searching) return visibleMessages.map((m) => ({ m, count: 1, child: false, thread: '' }))
-    const keys = threadKeys(visibleMessages)
-    const groups = new Map<string, MessageSummary[]>()
-    for (const m of visibleMessages) {
-      const k = keys.get(m) ?? messageKey(m)
-      groups.set(k, [...(groups.get(k) ?? []), m])
-    }
-    const rows: { m: MessageSummary; count: number; child: boolean; thread: string }[] = []
-    for (const [k, items] of groups) {
-      rows.push({ m: items[0], count: items.length, child: false, thread: k })
-      if (items.length > 1 && openThreads.has(k)) for (const c of items.slice(1)) rows.push({ m: c, count: 1, child: true, thread: k })
-    }
-    return rows
-  }, [visibleMessages, threadsOn, searching, openThreads])
+  // Строки списка: цепочки свёрнуты в одну строку (новое письмо сверху), раскрываются стрелкой.
+  const listRows = useMemo(() => threadRows(visibleMessages, { threadsOn, searching, openThreads }), [visibleMessages, threadsOn, searching, openThreads])
 
   const selected = pool.find((m) => messageKey(m) === selectedKey)
+
+  // Действия над письмами и черновики — в appActions.ts.
+  const {
+    actionTargets, otherOf, moveTo, requestDelete, deleteNow, archive, openInWindow, openRowMenu,
+    newDraft, composeInWindow, openComposer, composeTo, composeFor,
+  } = createActions({
+    setNotice, folders, loadFolders, setConfirmDelete, setRowMenu, checked, pool, selected,
+    setChecked, dropFromList, detail, windowOpened, profile, myAddress, sigs, signature,
+    replySignature, startDraft, meFor,
+  })
 
 
   const { views, viewsOpen, setViewsOpen, saveViewName, setSaveViewName, runView, storeViews, saveCurrentSearch, activeView } = useSavedViews({
@@ -487,47 +420,6 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       setQuery(v.query)
     } })
 
-
-  /** Письма, над которыми выполняется действие: отмеченные, иначе открытое. */
-  function actionTargets(): MessageSummary[] {
-    if (checked.size > 0) return pool.filter((m) => checked.has(messageKey(m)))
-    return selected ? [selected] : []
-  }
-
-  /** Письмо другой учётной записи (поиск по всем ящикам) открывается с переключением на неё. */
-  function otherOf(m: MessageSummary): UnifiedItem | null {
-    const u = m as UnifiedItem
-    return u.account && !u.active ? u : null
-  }
-
-  function onRowClick(e: React.MouseEvent, m: MessageSummary) {
-    if (suppressRowClick.current) return
-    const other = otherOf(m)
-    if (other) { switchAccount(other.account, other); return }
-    const key = messageKey(m)
-    if (e.ctrlKey || e.metaKey) {
-      setChecked((prev) => {
-        const next = new Set(prev.size === 0 && selectedKey ? [selectedKey] : prev)
-        if (next.has(key)) next.delete(key)
-        else next.add(key)
-        return next
-      })
-      anchorKey.current = key
-      return
-    }
-    if (e.shiftKey && (anchorKey.current || selectedKey)) {
-      const keys = visibleMessages.map(messageKey)
-      const a = keys.indexOf(anchorKey.current || selectedKey)
-      const b = keys.indexOf(key)
-      if (a >= 0 && b >= 0) {
-        setChecked(new Set(keys.slice(Math.min(a, b), Math.max(a, b) + 1)))
-        return
-      }
-    }
-    anchorKey.current = key
-    setChecked(new Set())
-    void openMessage(m)
-  }
 
   /** Убирает письма из списка и поправляет счётчики папок. */
   function dropFromList(items: MessageSummary[], target: string | null) {
@@ -552,54 +444,6 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
       setSelectedKey('')
       setDetail(null)
       if (nextMsg) void openMessage(nextMsg)
-    }
-  }
-
-
-  async function moveTo(items: MessageSummary[], target: string) {
-    const groups = byFolder(items)
-    if (groups.length > 1) {
-      for (const g of groups) await moveTo(g, target)
-      return
-    }
-    if (items.length === 0) return
-    const source = items[0].folder
-    if (target === source) return
-    const dest = folders.find((f) => f.id === target)
-    try {
-      await api.moveMessages(source, items.map((m) => m.uid), target)
-      dropFromList(items, target)
-      setNotice(`${items.length === 1 ? 'Письмо перемещено' : `Перемещено писем: ${items.length}`} в «${dest ? folderLabel(dest) : target}».`)
-    } catch (error) {
-      setNotice(`Не удалось переместить: ${errorText(error)}`)
-    }
-  }
-
-  /** Удаление: в корзину своего ящика; из корзины (или без корзины) — безвозвратно, с подтверждением. */
-  function requestDelete(items: MessageSummary[], force = false) {
-    if (items.length === 0) return
-    const trash = trashFor(folders, items[0].folder)
-    if (!trash || trash.id === items[0].folder || force) setConfirmDelete(items)
-    else void deleteNow(items, false)
-  }
-
-  async function deleteNow(items: MessageSummary[], permanentAsked: boolean) {
-    setConfirmDelete(null)
-    const groups = byFolder(items)
-    if (groups.length > 1) {
-      for (const g of groups) await deleteNow(g, permanentAsked)
-      return
-    }
-    const source = items[0].folder
-    const trash = trashFor(folders, source)
-    const toTrash = !permanentAsked && trash && trash.id !== source ? trash.id : null
-    try {
-      const permanent = await api.deleteMessages(source, items.map((m) => m.uid), toTrash)
-      dropFromList(items, permanent ? null : toTrash)
-      const n = items.length === 1 ? 'Письмо' : `Писем: ${items.length},`
-      setNotice(permanent ? `${n} удалено безвозвратно.` : `${n} перемещено в корзину.`)
-    } catch (error) {
-      setNotice(`Не удалось удалить: ${errorText(error)}`)
     }
   }
 
@@ -637,120 +481,18 @@ export default function App({ account, initialNotice, onLogout, onLock, onSwitch
   })
 
   const { dragInfo, beginDrag, suppressRowClick } = useMessageDrag((items, target) => void moveTo(items, target))
-  function startMessageDrag(e: React.PointerEvent, m: MessageSummary) {
-    const key = messageKey(m)
-    beginDrag(e, checked.has(key) ? pool.filter((x) => checked.has(messageKey(x))) : [m])
-  }
-
-
+  // Клик по строке и перетаскивание — в appRowClick.ts (нужен suppressRowClick выше).
+  const { onRowClick, startMessageDrag } = createRowClick({
+    suppressRowClick, beginDrag, anchorKey, selectedKey, visibleMessages, checked, pool, setChecked, openMessage,
+    switchAccount, otherOf,
+  })
   // Файлы с компьютера, брошенные на окно почты (редактор закрыт), — новое письмо с ними.
   const [fileOver, setFileOver] = useState(false)
   const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes('Files')
-  async function dropToNewMail(list: FileList) {
-    setFileOver(false)
-    const files: PickedFile[] = []
-    const errors: string[] = []
-    for (const file of Array.from(list)) {
-      try {
-        files.push(await api.attachData(file.name, await fileToBase64(file)))
-      } catch (e) {
-        errors.push(`${file.name}: ${errorText(e)}`)
-      }
-    }
-    if (files.length > 0) {
-      composeInWindow({ ...newDraft(''), subject: files.length === 1 ? files[0].name : '', files })
-    }
-    if (errors.length > 0) setNotice(`Не приложено: ${errors.join('; ')}`)
-  }
-
-  /** Адрес подключённого ящика, которому принадлежит папка (`shared/<адрес>/…`), — отвечать от его имени. */
-  /** Новое письмо: черновик для отдельного окна (там его можно перенести на другой монитор). */
-  function newDraft(to: string, files?: PickedFile[]): Draft {
-    return { mode: 'new', to, cc: '', subject: '', body: withSignature('', signature), inReplyTo: null, references: null, files, signatureId: sigs?.newId ?? null }
-  }
-
-  /** Открыть новое письмо отдельным окном; если окно не открылось — обычным окном-модалом. */
-  function composeInWindow(draft: Draft) {
-    const from = profile?.displayName ? `${profile.displayName} <${myAddress}>` : myAddress
-    void api.openComposeWindow(JSON.stringify({ from, draft })).then(() => {
-      // Возврат фокуса в главное окно обновит папки и список после отправки.
-      windowOpened.current = true
-    }).catch((error) => {
-      setNotice(`Не удалось открыть окно письма: ${errorText(error)}`)
-      startDraft(draft)
-    })
-  }
-
-  function openComposer(mode: 'new' | 'reply' | 'replyAll' | 'forward') {
-    if (mode === 'new' || !detail) {
-      composeInWindow(newDraft(''))
-      return
-    }
-    if (mode === 'forward') {
-      void forwardDraft(detail, myAddress, replySignature).then(({ draft, error }) => { startDraft(draft, detail.folder); if (error) setNotice(error) })
-      return
-    }
-    startDraft(buildDraft(mode, detail, meFor(detail.folder), replySignature), detail.folder)
-  }
-
-  function composeTo(to: string) {
-    composeInWindow(newDraft(`${to}, `))
-  }
-
-  /** Ответ/пересылка из меню — письмо может быть ещё не открыто: загружаем его. */
-  async function composeFor(m: MessageSummary, mode: 'reply' | 'replyAll' | 'forward') {
-    try {
-      const full = detail && messageKey(detail) === messageKey(m) ? detail : await api.getMessage(m.folder, m.uid)
-      if (mode === 'forward') {
-        const { draft, error } = await forwardDraft(full, myAddress, replySignature)
-        startDraft(draft, full.folder)
-        if (error) setNotice(error)
-        return
-      }
-      startDraft(buildDraft(mode, full, meFor(full.folder), replySignature), full.folder)
-    } catch (error) {
-      setNotice(`Не удалось открыть письмо: ${errorText(error)}`)
-    }
-  }
-
-  function openRowMenu(e: React.MouseEvent, m: MessageSummary) {
-    e.preventDefault()
-    const key = messageKey(m)
-    // Как в Outlook: правый щелчок по отмеченным — меню для всех отмеченных, иначе — для этого письма.
-    const items = checked.has(key) && checked.size > 1 ? pool.filter((x) => checked.has(messageKey(x))) : [m]
-    if (!checked.has(key) && checked.size > 0) setChecked(new Set())
-    setRowMenu({ x: e.clientX, y: e.clientY, items })
-  }
+  const { dropToNewMail } = createFileDrop({ setFileOver, composeInWindow, newDraft, setNotice })
 
   const rowMenuItems = (items: MessageSummary[]) => rowMenuFor(items, {
     toggleFlag, openMessage, openInWindow, composeFor, ncStatus, setTaskFor, setDuePick, unsnoozeItems, snoozeItems, setSnoozePick, categories, setCategory, archive, setMovePicker, setFilterSeed, setShowFilters, folders, markSpam, detail, setNotice, requestDelete })
-
-  async function archive(items: MessageSummary[]) {
-    const groups = byFolder(items)
-    if (groups.length > 1) {
-      for (const g of groups) await archive(g)
-      return
-    }
-    if (items.length === 0) return
-    try {
-      const target = await ensureArchive(folders, items[0].folder)
-      if (target.id === items[0].folder) {
-        setNotice('Письмо уже в архиве.')
-        return
-      }
-      if (target.created) await loadFolders()
-      await moveTo(items, target.id)
-    } catch (error) {
-      setNotice(`Не удалось архивировать: ${errorText(error)}`)
-    }
-  }
-
-  function openInWindow(m: MessageSummary) {
-    api.openMessageWindow(m.folder, m.uid, m.subject || '(без темы)')
-      .then(() => { windowOpened.current = true })
-      .catch((error) => setNotice(`Не удалось открыть окно: ${errorText(error)}`))
-  }
-
 
   const listTitle = currentFolder ? folderLabel(currentFolder) : 'Входящие'
 
