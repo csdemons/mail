@@ -98,6 +98,7 @@ export const api = {
   attachData: (name: string, data: string) => invoke<PickedFile>('attach_data', { name, data }),
   clipboardPasteFiles: () => invoke<PickedFile[]>('clipboard_paste_files'),
   pickedPreview: (id: string) => invoke<string | null>('picked_preview', { id }),
+  pickedOpen: (id: string) => invoke<void>('picked_open', { id }),
   forwardAttachments: (folder: string, uid: number) => invoke<PickedFile[]>('forward_attachments', { folder, uid }),
   attachmentDragOut: (folder: string, uid: number, index: number) => invoke<void>('attachment_drag_out', { folder, uid, index }),
   /** Открыть вложение программой компьютера (копия во временном каталоге); возвращает путь копии. */
