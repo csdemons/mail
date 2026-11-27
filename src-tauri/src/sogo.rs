@@ -32,7 +32,7 @@ fn http() -> Result<Client> {
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(15))
-        .user_agent(concat!("RRCKI Mail/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Atom Workspace/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| AppError::Other(format!("HTTP-клиент: {e}")))
 }

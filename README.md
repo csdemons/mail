@@ -20,12 +20,12 @@ CalDAV/CardDAV, Nextcloud — без промежуточного сервера
 
 | Система | Файл |
 |---|---|
-| Windows 10/11 | `rrcki-mail_*_x64-setup.exe` или `.msi` (для GPO) |
-| Windows 8/8.1 | `rrcki-mail_*_x64-setup-windows8.exe` |
-| Astra Linux SE 1.8, Debian 12, Ubuntu 22.04+ | `rrcki-mail_*_amd64-astra1.8.deb` |
-| Astra Linux SE 1.7 | `rrcki-mail_*_amd64-astra1.7.deb` (только для 1.7) |
+| Windows 10/11 | `atom-workspace_*_x64-setup.exe` или `.msi` (для GPO) |
+| Windows 8/8.1 | `atom-workspace_*_x64-setup-windows8.exe` |
+| Astra Linux SE 1.8, Debian 12, Ubuntu 22.04+ | `atom-workspace_*_amd64-astra1.8.deb` |
+| Astra Linux SE 1.7 | `atom-workspace_*_amd64-astra1.7.deb` (только для 1.7) |
 | РЕД ОС, ALT, Fedora | `.rpm`; любой дистрибутив — `.AppImage` |
-| macOS 10.15+ (Apple Silicon и Intel) | `rrcki-mail_*_universal.dmg` |
+| macOS 10.15+ (Apple Silicon и Intel) | `atom-workspace_*_universal.dmg` |
 
 Программа обновляется сама: проверяет новую версию при запуске и раз в 6 часов. Обновления
 подписаны (Ed25519, SHA-256 каждого пакета); администратор может отключить проверку или

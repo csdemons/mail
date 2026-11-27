@@ -196,7 +196,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
           lipo -archs "$app/Contents/MacOS/rrcki-mail"
           mkdir -p out
-          tar -czf "out/rrcki-mail_${v}_universal.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")"
+          tar -czf "out/atom-workspace_${v}_universal.app.tar.gz" -C "$(dirname "$app")" "$(basename "$app")"
           cp "$b"/dmg/*.dmg out/
           ls -la out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -251,7 +251,7 @@ jobs:
       - name: Rename installer
         run: |
           cd src-tauri/target/x86_64-win7-windows-gnu/release/bundle/nsis
-          for f in *-setup.exe; do mv "$f" "$(echo "$f" | sed 's/^RRCKI Mail/rrcki-mail/; s/ /-/g; s/-setup\.exe$/-setup-windows8.exe/')"; done
+          for f in *-setup.exe; do mv "$f" "$(echo "$f" | sed 's/^Atom Workspace/atom-workspace/; s/ /-/g; s/-setup\.exe$/-setup-windows8.exe/')"; done
           ls -la
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -360,7 +360,7 @@ jobs:
         run: |
           find dist -type f | while read -r f; do
             # Обычный deb — для Astra 1.8: в имени явно, чтобы на 1.7 не ставили его по ошибке.
-            n="$(dirname "$f")/$(basename "$f" | sed 's/^RRCKI Mail/rrcki-mail/; s/ /-/g; s/_amd64\.deb$/_amd64-astra1.8.deb/')"
+            n="$(dirname "$f")/$(basename "$f" | sed 's/^Atom Workspace/atom-workspace/; s/ /-/g; s/_amd64\.deb$/_amd64-astra1.8.deb/')"
             [ "$f" = "$n" ] || mv "$f" "$n"
           done
           find dist -type f -printf '%f  %s bytes\n'
@@ -372,13 +372,13 @@ jobs:
           cat >> notes.md <<'TXT'
 
           ### Установка
-          - **Windows 10/11:** `rrcki-mail_*_x64-setup.exe` (или `.msi` для GPO). Ставится поверх предыдущей версии, настройки и пароли сохраняются.
-          - **Windows 8/8.1:** `rrcki-mail_*_x64-setup-windows8.exe` (нужен WebView2 Runtime 109 — последняя версия для этих систем).
-          - **Astra Linux SE 1.7:** только `rrcki-mail_*_amd64-astra1.7.deb` → `sudo apt install ./rrcki-mail_*_amd64-astra1.7.deb`
-          - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+:** `rrcki-mail_*_amd64-astra1.8.deb` → `sudo apt install ./rrcki-mail_*_amd64-astra1.8.deb`
+          - **Windows 10/11:** `atom-workspace_*_x64-setup.exe` (или `.msi` для GPO). Ставится поверх предыдущей версии, настройки и пароли сохраняются.
+          - **Windows 8/8.1:** `atom-workspace_*_x64-setup-windows8.exe` (нужен WebView2 Runtime 109 — последняя версия для этих систем).
+          - **Astra Linux SE 1.7:** только `atom-workspace_*_amd64-astra1.7.deb` → `sudo apt install ./atom-workspace_*_amd64-astra1.7.deb`
+          - **Astra Linux SE 1.8 / Debian 12 / Ubuntu 22.04+:** `atom-workspace_*_amd64-astra1.8.deb` → `sudo apt install ./atom-workspace_*_amd64-astra1.8.deb`
           - Узнать версию Astra: `cat /etc/astra_version`. Пакет для 1.8 на 1.7 не встанет (нет WebKitGTK 4.1) — и наоборот ставить не нужно.
           - **RED OS / ALT / Fedora:** `.rpm`; любой дистрибутив — `.AppImage` (`chmod +x` и запустить).
-          - MACOS_LINE **macOS 10.15+ (Apple Silicon и Intel):** `rrcki-mail_*_universal.dmg` → открыть и перетащить «RRCKI Mail» в «Программы». Программа без сертификата Apple: при первом запуске macOS сообщит, что не может проверить разработчика, — «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть» (или в Терминале `xattr -dr com.apple.quarantine "/Applications/RRCKI Mail.app"`). Дальше обновляется сама.
+          - MACOS_LINE **macOS 10.15+ (Apple Silicon и Intel):** `atom-workspace_*_universal.dmg` → открыть и перетащить «Atom Workspace» в «Программы». Программа без сертификата Apple: при первом запуске macOS сообщит, что не может проверить разработчика, — «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть» (или в Терминале `xattr -dr com.apple.quarantine "/Applications/Atom Workspace.app"`). Дальше обновляется сама.
           TXT
           if ls dist/*_universal.dmg >/dev/null 2>&1; then
             sed -i 's/^- MACOS_LINE /- /' notes.md
@@ -468,6 +468,6 @@ jobs:
           gh release upload "v$v" -R "$R" --clobber dist/*_universal.dmg dist/*_universal.app.tar.gz
           gh release upload "v$v" -R "$R" --clobber rel/SHA256SUMS.txt rel/SHA256SUMS.txt.sig rel/latest.json rel/latest.json.sig
           gh release view "v$v" -R "$R" --json body -q .body > body.md
-          awk '/^- \*\*macOS:\*\* пакет будет добавлен/ { print "- **macOS 10.15+ (Apple Silicon и Intel):** `rrcki-mail_*_universal.dmg` → открыть и перетащить «RRCKI Mail» в «Программы». Программа без сертификата Apple: при первом запуске — «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть». Дальше обновляется сама."; next } { print }' body.md > body2.md
+          awk '/^- \*\*macOS:\*\* пакет будет добавлен/ { print "- **macOS 10.15+ (Apple Silicon и Intel):** `atom-workspace_*_universal.dmg` → открыть и перетащить «Atom Workspace» в «Программы». Программа без сертификата Apple: при первом запуске — «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть». Дальше обновляется сама."; next } { print }' body.md > body2.md
           gh release edit "v$v" -R "$R" --notes-file body2.md
           echo "Пакет macOS добавлен к v$v"
