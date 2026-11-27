@@ -44,7 +44,9 @@ src-tauri/src/
     counterparties.rs, calendar.rs, cloud.rs (Nextcloud), talk.rs, deck.rs, files.rs
     ui.rs            окна, трей, уведомления, навигация окон, веб-профили
     system.rs        о программе, обновления, импорт и резервная копия
-  imap.rs smtp.rs    IMAP (с переходником на EWS) и отправка
+  imap/              IMAP (с переходником на EWS): connect, folders, content, messages,
+                     sending, diagnostics — общий обзор в mod.rs
+  smtp.rs            отправка по SMTP
   ews.rs ntlm.rs     Exchange Web Services, вход NTLMv2 (MIC, привязка к TLS)
   dav.rs sogo.rs     CalDAV/CardDAV, веб-API и фильтры SOGo
   nextcloud.rs       Login Flow v2, Deck, Talk, файлы
