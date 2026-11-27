@@ -19,7 +19,7 @@ mod html;
 mod policy;
 #[path = "../../src-tauri/src/tls.rs"]
 mod tls;
-#[path = "../../src-tauri/src/imap.rs"]
+#[path = "../../src-tauri/src/imap/mod.rs"]
 mod imap;
 #[path = "../../src-tauri/src/nextcloud.rs"]
 mod nextcloud;
